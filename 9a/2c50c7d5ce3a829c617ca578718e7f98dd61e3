@@ -1,0 +1,31 @@
+.gitignore
+  s_31ffceedbf654a::t_4def3613abf2f6 24
+scripts/test-pilot-ui.mjs
+  s_31ffceedbf654a::t_f78101a7860cbd 16-17,304-308,314-317,320,322,324-325,1046-1082,1094
+src/App.tsx
+  s_8f0044f36e14e9::t_4078ad80d09b07 79-82,1290,1298-1300,1319,2390-2397,2577-2581,2598,2603-2616,2618-2621
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9a2c50c7d5ce3a829c617ca578718e7f98dd61e3",
+  "prompts": {},
+  "sessions": {
+    "s_31ffceedbf654a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec6fed37-8641-432e-a470-fd001ad752b4",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    },
+    "s_8f0044f36e14e9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4c09-dd30-7fc3-8b4f-2bb336b613dc",
+        "model": "unknown"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
