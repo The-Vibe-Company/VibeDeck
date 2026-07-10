@@ -336,6 +336,8 @@ export default function App() {
   const [updateState, setUpdateState] = useState<UpdateState | null>(null);
   const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState<string | null>(null);
   const [updateInstallConfirmationOpen, setUpdateInstallConfirmationOpen] = useState(false);
+  const [restorePilotToolsUpdateFocus, setRestorePilotToolsUpdateFocus] = useState(false);
+  const [restoreGlobalToolsFocus, setRestoreGlobalToolsFocus] = useState(false);
   const [semanticSearchStatus, setSemanticSearchStatus] = useState<SemanticSearchStatus>({
     phase: "not-installed", progress: 0, message: null, bytes: 0,
   });
@@ -352,17 +354,43 @@ export default function App() {
 
   useEffect(() => {
     if (updateInstallConfirmationOpen && !readyUpdateVersion) {
+      if (!restorePilotToolsUpdateFocus) setRestoreGlobalToolsFocus(true);
       setUpdateInstallConfirmationOpen(false);
     }
-  }, [readyUpdateVersion, updateInstallConfirmationOpen]);
+  }, [readyUpdateVersion, restorePilotToolsUpdateFocus, updateInstallConfirmationOpen]);
 
   const layoutRef = useRef<LayoutNode | null>(null);
+  const pilotToolsUpdateActionRef = useRef<HTMLButtonElement>(null);
+  const globalToolsButtonRef = useRef<HTMLButtonElement>(null);
   const linkPreviewRef = useRef<LinkPreview | null>(null);
   const feedUiRef = useRef<Record<string, FeedPanelUi>>({});
   const draftsRef = useRef<Record<string, DraftPanel>>({});
   const revisionRef = useRef(0);
   const hydratedRef = useRef(false);
   const serverLayoutMutationRef = useRef(false);
+
+  useEffect(() => {
+    if (
+      !restorePilotToolsUpdateFocus ||
+      modal?.kind !== "pilot-tools" ||
+      updateInstallConfirmationOpen
+    ) return;
+    const frame = window.requestAnimationFrame(() => {
+      pilotToolsUpdateActionRef.current?.focus({ preventScroll: true });
+      setRestorePilotToolsUpdateFocus(false);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [modal, restorePilotToolsUpdateFocus, updateInstallConfirmationOpen]);
+
+  useEffect(() => {
+    if (restoreGlobalToolsFocus && !updateInstallConfirmationOpen) {
+      const frame = window.requestAnimationFrame(() => {
+        globalToolsButtonRef.current?.focus({ preventScroll: true });
+        setRestoreGlobalToolsFocus(false);
+      });
+      return () => window.cancelAnimationFrame(frame);
+    }
+  }, [restoreGlobalToolsFocus, updateInstallConfirmationOpen]);
   const pendingRatioLayoutRef = useRef<LayoutNode | null>(null);
   const saveChainRef = useRef<Promise<void>>(Promise.resolve());
   const toastTimerRef = useRef<number | null>(null);
@@ -1598,6 +1626,7 @@ export default function App() {
           </button>
         )}
         <button
+          ref={globalToolsButtonRef}
           type="button"
           className="quiet-button global-tools"
           aria-label={updateNoticeDeferred
@@ -1716,11 +1745,15 @@ export default function App() {
         />
       )}
 
-      {modal?.kind === "pilot-tools" && (
+      {modal?.kind === "pilot-tools" && !updateInstallConfirmationOpen && (
         <PilotToolsModal
           updateState={updateState}
           onUpdateState={setUpdateState}
-          onRequestRestart={() => setUpdateInstallConfirmationOpen(true)}
+          onRequestRestart={() => {
+            setRestorePilotToolsUpdateFocus(true);
+            setUpdateInstallConfirmationOpen(true);
+          }}
+          updateActionRef={pilotToolsUpdateActionRef}
           onClose={() => setModal(null)}
           onImported={(nextState, backupCreated) => {
             applyServerState(nextState, true, true);
@@ -1745,6 +1778,7 @@ export default function App() {
           version={readyUpdateVersion}
           onLater={() => {
             setDismissedUpdateVersion(readyUpdateVersion);
+            if (!restorePilotToolsUpdateFocus) setRestoreGlobalToolsFocus(true);
             setUpdateInstallConfirmationOpen(false);
           }}
           onClose={() => setUpdateInstallConfirmationOpen(false)}
@@ -3696,6 +3730,7 @@ function PilotToolsModal({
   updateState,
   onUpdateState,
   onRequestRestart,
+  updateActionRef,
   onClose,
   onImported,
   onToast,
@@ -3705,6 +3740,7 @@ function PilotToolsModal({
   updateState: UpdateState | null;
   onUpdateState: (state: UpdateState) => void;
   onRequestRestart: () => void;
+  updateActionRef: RefObject<HTMLButtonElement | null>;
   onClose: () => void;
   onImported: (state: AppState, backupCreated: boolean) => void;
   onToast: (message: string) => void;
@@ -3764,6 +3800,7 @@ function PilotToolsModal({
           </span>
           {updateState?.status === "ready" ? (
             <button
+              ref={updateActionRef}
               type="button"
               className="primary-button"
               disabled={Boolean(pending)}

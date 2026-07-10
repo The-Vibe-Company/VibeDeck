@@ -240,6 +240,15 @@ try {
   const updateDialog = page.getByRole("alertdialog", { name: "Installer VibeDeck 0.4.0 ?" });
   await updateDialog.waitFor();
   const laterButton = updateDialog.getByRole("button", { name: "Plus tard" });
+  await laterButton.evaluate(
+    (button) => new Promise((resolve) => {
+      const waitForFocus = () => {
+        if (document.activeElement === button) resolve(undefined);
+        else window.requestAnimationFrame(waitForFocus);
+      };
+      waitForFocus();
+    }),
+  );
   assert.equal(
     await laterButton.evaluate((button) => document.activeElement === button),
     true,
@@ -247,6 +256,15 @@ try {
   );
   await page.keyboard.press("Escape");
   await updateDialog.waitFor({ state: "detached" });
+  await updateCta.evaluate(
+    (button) => new Promise((resolve) => {
+      const waitForFocus = () => {
+        if (document.activeElement === button) resolve(undefined);
+        else window.requestAnimationFrame(waitForFocus);
+      };
+      waitForFocus();
+    }),
+  );
   assert.equal(
     await updateCta.evaluate((button) => document.activeElement === button),
     true,
@@ -259,6 +277,15 @@ try {
   await updateCta.waitFor({ state: "detached" });
   assert.equal(await updateCta.count(), 0, "Le report masque seulement le CTA de cette version.");
   const deferredTools = page.getByRole("button", { name: "Outils — mise à jour 0.4.0 prête" });
+  await deferredTools.evaluate(
+    (button) => new Promise((resolve) => {
+      const waitForFocus = () => {
+        if (document.activeElement === button) resolve(undefined);
+        else window.requestAnimationFrame(waitForFocus);
+      };
+      waitForFocus();
+    }),
+  );
   await deferredTools.click();
   await toolsDialog.getByRole("button", { name: "Installer" }).waitFor();
 
@@ -272,6 +299,7 @@ try {
   await installFromTools.click();
   const nextUpdateDialog = page.getByRole("alertdialog", { name: "Installer VibeDeck 0.4.1 ?" });
   await nextUpdateDialog.waitFor();
+  await toolsDialog.waitFor({ state: "detached" });
   await nextUpdateDialog.getByRole("button", { name: "Plus tard" }).evaluate(
     (button) => new Promise((resolve) => {
       const waitForFocus = () => {
@@ -283,6 +311,7 @@ try {
   );
   await page.keyboard.press("Escape");
   await nextUpdateDialog.waitFor({ state: "detached" });
+  await toolsDialog.waitFor({ state: "visible" });
   await installFromTools.evaluate(
     (button) => new Promise((resolve) => {
       const waitForFocus = () => {
