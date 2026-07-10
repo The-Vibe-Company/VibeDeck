@@ -136,7 +136,7 @@ npm run build
 
 Ajouter selon le périmètre :
 
-- UI, clavier, focus, layout, buffers : `npm run test:pilot-ui` ;
+- UI, clavier, focus, layout, buffers : `npm run test:pilot-ui` (ne vole jamais le focus de l’écran : fenêtre cachée sur macOS, affichée sans activation ailleurs ; `MEDIAGEN_PILOT_UI_SHOW=1` pour la mettre au premier plan en débogage) ;
 - connecteur ou politique réseau : tests ciblés puis `npm run test:live` si le réseau est disponible ;
 - preload, IPC, SQLite ou import/export : tests Electron correspondants et scénario d’échec/rollback ;
 - release, dépendances ou packaging : `npm run verify:release` et les deux audits npm ;
