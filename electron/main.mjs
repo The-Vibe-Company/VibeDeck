@@ -19,6 +19,7 @@ import {
   collectEnterpriseNetworkDiagnostics,
   createElectronSessionFetch,
   createWebPanelController,
+  validateWebPanelDescriptorList,
   WEB_PANEL_SESSION_STRATEGY,
 } from "./web-panel-controller.mjs";
 import { runWithFinalStateBroadcast } from "./final-state-operation.mjs";
@@ -66,6 +67,7 @@ let mainWindow = null;
 let engine = null;
 let feedNetworkSession = null;
 let articleReaderService = null;
+let lastRendererState = null;
 let refreshTimer = null;
 let refreshScheduler = null;
 let pilotHeartbeatTimer = null;
@@ -295,9 +297,9 @@ function cleanWebDataRequest(value) {
   return { scope: value.scope };
 }
 
-function resolveWebPanelDescriptors(value) {
-  if (!Array.isArray(value)) throw new TypeError("La liste des panels web doit être un tableau.");
-  const state = engine.getState();
+function resolveWebPanelDescriptors(value, controller) {
+  validateWebPanelDescriptorList(value);
+  const state = lastRendererState ?? readEngineState();
   const webPanels = new Map(
     state.panels
       .filter((panel) => panel.kind === "web")
@@ -311,7 +313,12 @@ function resolveWebPanelDescriptors(value) {
       if (descriptor.panelId !== "reader:article") {
         throw new TypeError("Identifiant du lecteur d’article invalide.");
       }
-      const article = resolveReaderArticle(cleanId(descriptor.itemId), state);
+      const itemId = cleanId(descriptor.itemId);
+      const article = resolveReaderArticle(
+        itemId,
+        state,
+        controller.getActiveReaderArticle(itemId),
+      );
       return {
         kind: "reader",
         panelId: "reader:article",
@@ -336,11 +343,6 @@ function resolveWebPanelDescriptors(value) {
       visible: descriptor.visible,
     };
   });
-}
-
-function resolveOriginalReaderArticle(itemId) {
-  const article = resolveReaderArticle(cleanId(itemId), engine.getState());
-  return { itemId: article.itemId, url: article.url };
 }
 
 function assertNoArguments(args) {
@@ -446,8 +448,15 @@ function sendToWindow(window, channel, value) {
   }
 }
 
-function broadcastState(state = engine?.getState()) {
+function readEngineState() {
+  const state = engine?.getState() ?? null;
+  lastRendererState = state;
+  return state;
+}
+
+function broadcastState(state = readEngineState()) {
   if (!state) return;
+  lastRendererState = state;
   for (const window of webPanelControllers.keys()) {
     sendToWindow(window, "aggregator:state-changed", state);
   }
@@ -535,7 +544,7 @@ function runEngineOperation(operation) {
 }
 
 function registerIpcHandlers() {
-  registerHandle("aggregator:get-state", () => engine.getState());
+  registerHandle("aggregator:get-state", () => readEngineState());
   registerHandle("aggregator:create-panel", (_event, input, placement) => runEngineOperation(async () => {
     const cleanedInput = cleanPanelInput(input);
     if (
@@ -824,7 +833,7 @@ function registerIpcHandlers() {
     try {
       const controller = controllerForEvent(event);
       if (!resettingWebPanelControllers.has(controller)) {
-        controller.sync(resolveWebPanelDescriptors(descriptors));
+        controller.sync(resolveWebPanelDescriptors(descriptors, controller));
       }
     } catch (error) {
       // This one-way channel intentionally cannot mutate anything after a
@@ -847,7 +856,9 @@ function registerIpcHandlers() {
   registerHandle("web-panels:open-external", (event, panelId) =>
     controllerForEvent(event).openExternal(cleanId(panelId)));
   registerHandle("reader:show-original", (event, itemId) =>
-    controllerForEvent(event).showOriginalArticle(resolveOriginalReaderArticle(itemId)));
+    controllerForEvent(event).showOriginalArticle(cleanId(itemId)));
+  registerHandle("reader:retry-original", (event, itemId) =>
+    controllerForEvent(event).retryOriginalArticle(cleanId(itemId)));
   registerHandle("web-panels:set-muted", (event, panelId, muted) => {
     if (typeof muted !== "boolean") throw new TypeError("L’état audio doit être un booléen.");
     return controllerForEvent(event).setMuted(cleanId(panelId), muted);
@@ -960,6 +971,7 @@ async function handleStartupFailure(error) {
   engine = null;
   feedNetworkSession = null;
   articleReaderService = null;
+  lastRendererState = null;
   refreshScheduler = null;
   const detail = error instanceof Error ? error.message : "Erreur de démarrage inconnue.";
   dialog.showErrorBox(
@@ -1013,6 +1025,7 @@ if (!hasSingleInstanceLock) {
       allowPrivateNetwork:
         !app.isPackaged && process.env.MEDIAGEN_ALLOW_PRIVATE_NETWORK === "true",
     });
+    lastRendererState = engine.getState();
     refreshScheduler = createRefreshScheduler({
       getSources: () => engine.getState().sources,
       refreshSource: (sourceId) => engine.refreshSource(sourceId),
@@ -1069,6 +1082,7 @@ app.on("before-quit", (event) => {
         engine = null;
         feedNetworkSession = null;
         articleReaderService = null;
+        lastRendererState = null;
         refreshScheduler = null;
       }
     },

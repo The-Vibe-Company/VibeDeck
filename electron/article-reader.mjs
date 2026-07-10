@@ -1,4 +1,7 @@
 import * as cheerio from "cheerio";
+import { Worker } from "node:worker_threads";
+
+import { isNonPublicIpAddress, proxyRouteKind } from "./network-safety.mjs";
 
 export const ARTICLE_READER_LIMITS = Object.freeze({
   maxBytes: 2 * 1024 * 1024,
@@ -183,12 +186,16 @@ export function isProfileArticleUrl(adapter, value) {
 }
 
 /** Resolves a renderer-supplied item id exclusively against main-owned state. */
-export function resolveReaderArticle(itemId, state) {
+export function resolveReaderArticle(itemId, state, activeArticle = null) {
   if (typeof itemId !== "string" || !itemId.trim() || itemId.length > 128) {
     throw new TypeError("Identifiant d’article invalide.");
   }
-  const item = state?.items?.find((candidate) => candidate.id === itemId);
-  if (!item) throw new Error("Article introuvable.");
+  const normalizedItemId = itemId.trim();
+  const item = state?.items?.find((candidate) => candidate.id === normalizedItemId);
+  if (!item) {
+    if (activeArticle?.itemId === normalizedItemId) return activeArticle;
+    throw new Error("Article introuvable.");
+  }
   const source = state.sources?.find((candidate) => candidate.id === item.sourceId);
   if (!source) throw new Error("Source de l’article introuvable.");
   const url = cleanArticleUrl(item.canonicalUrl);
@@ -286,36 +293,42 @@ export function normalizeExtractedArticle(value) {
   };
 }
 
-function structuredDataContainsFreeFalse(value, budget, depth = 0) {
+function collectStructuredAccess(value, budget, access, depth = 0) {
   if (budget.remaining <= 0 || depth > 20 || value === null || typeof value !== "object") {
-    return false;
+    return;
   }
   budget.remaining -= 1;
-  if (
-    value.isAccessibleForFree === false ||
-    (typeof value.isAccessibleForFree === "string" &&
-      value.isAccessibleForFree.trim().toLowerCase() === "false")
+  const marker = value.isAccessibleForFree;
+  if (marker === false || (typeof marker === "string" && marker.trim().toLowerCase() === "false")) {
+    access.premium = true;
+  } else if (
+    marker === true ||
+    (typeof marker === "string" && marker.trim().toLowerCase() === "true")
   ) {
-    return true;
+    access.free = true;
   }
-  return Object.values(value).some((child) =>
-    structuredDataContainsFreeFalse(child, budget, depth + 1));
+  for (const child of Object.values(value)) {
+    if (access.premium) return;
+    collectStructuredAccess(child, budget, access, depth + 1);
+  }
 }
 
-function isDeclaredPremium($) {
+function structuredAccess($) {
   let bytes = 0;
+  const access = { free: false, premium: false };
   for (const element of $("script[type='application/ld+json']").toArray().slice(0, 32)) {
     const raw = $(element).text().trim();
     bytes += Buffer.byteLength(raw);
     if (!raw) continue;
     if (bytes > ARTICLE_READER_LIMITS.maxStructuredDataBytes) break;
     try {
-      if (structuredDataContainsFreeFalse(JSON.parse(raw), { remaining: 10_000 })) return true;
+      collectStructuredAccess(JSON.parse(raw), { remaining: 10_000 }, access);
+      if (access.premium) return "premium";
     } catch {
       // Invalid metadata is ignored, never interpreted as an access signal.
     }
   }
-  return false;
+  return access.free ? "free" : "unknown";
 }
 
 function firstText($, selectors, maximum) {
@@ -405,7 +418,11 @@ export function extractArticleHtml({ connectorId, html, url }) {
   } catch {
     return fallback("extraction-failed");
   }
-  if (isDeclaredPremium($)) return fallback("paywalled");
+  const declaredAccess = structuredAccess($);
+  if (declaredAccess === "premium") return fallback("paywalled");
+  if (connectorId === "le-parisien" && declaredAccess !== "free") {
+    return fallback("blocked");
+  }
 
   const bodyText = cleanText($("body").text(), 20_000).toLowerCase();
   if (adapter.blockedPhrases.some((phrase) => bodyText.includes(phrase))) {
@@ -456,7 +473,12 @@ function stripCookieHeaders(headers) {
 }
 
 export function secureArticleReaderSession(networkSession) {
-  if (!networkSession || typeof networkSession.fetch !== "function") {
+  if (
+    !networkSession ||
+    typeof networkSession.fetch !== "function" ||
+    typeof networkSession.resolveHost !== "function" ||
+    typeof networkSession.resolveProxy !== "function"
+  ) {
     throw new TypeError("Session réseau du lecteur invalide.");
   }
   if (configuredSessions.has(networkSession)) return networkSession;
@@ -473,6 +495,37 @@ export function secureArticleReaderSession(networkSession) {
     );
   }
   return networkSession;
+}
+
+async function isSafeArticleNetworkHop(session, url, signal) {
+  try {
+    const route = await session.resolveProxy(url);
+    if (signal.aborted) throw createAbortError();
+    // Dynamic article URLs are not curated proxy roots. Only a direct route
+    // can be proven against the local DNS result before the request is sent.
+    if (proxyRouteKind(route) !== "direct") return false;
+
+    const hostname = new URL(url).hostname.replace(/^\[|\]$/g, "");
+    const resolved = await session.resolveHost(hostname, {
+      cacheUsage: "allowed",
+      source: "any",
+      secureDnsPolicy: "allow",
+    });
+    if (signal.aborted) throw createAbortError();
+    const endpoints = resolved?.endpoints;
+    return (
+      Array.isArray(endpoints) &&
+      endpoints.length > 0 &&
+      endpoints.every(
+        (endpoint) =>
+          typeof endpoint?.address === "string" &&
+          !isNonPublicIpAddress(endpoint.address),
+      )
+    );
+  } catch (error) {
+    if (signal.aborted || error?.name === "AbortError") throw createAbortError();
+    return false;
+  }
 }
 
 function createAbortError() {
@@ -520,6 +573,9 @@ async function downloadArticleHtml({ session, adapter, url, signal, maxBytes, ma
   let currentUrl = url;
   for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount += 1) {
     if (signal.aborted) throw createAbortError();
+    if (!(await isSafeArticleNetworkHop(session, currentUrl, signal))) {
+      return fallback("blocked");
+    }
     const response = await session.fetch(currentUrl, {
       method: "GET",
       headers: {
@@ -531,7 +587,14 @@ async function downloadArticleHtml({ session, adapter, url, signal, maxBytes, ma
       signal,
       bypassCustomProtocolHandlers: true,
     });
-    if (response.url && !isProfileArticleUrl(adapter, response.url)) return fallback("blocked");
+    const observedUrl = response.url || currentUrl;
+    if (
+      response.redirected === true ||
+      observedUrl !== currentUrl ||
+      !isProfileArticleUrl(adapter, observedUrl)
+    ) {
+      return fallback("blocked");
+    }
     if (REDIRECT_STATUSES.has(response.status)) {
       if (redirectCount === maxRedirects) return fallback("blocked");
       const location = response.headers?.get?.("location");
@@ -555,6 +618,31 @@ async function downloadArticleHtml({ session, adapter, url, signal, maxBytes, ma
     return body.ok ? { ok: true, html: body.html, url: currentUrl } : body;
   }
   return fallback("blocked");
+}
+
+function extractArticleInWorker(input, { signal, deadlineAt }) {
+  if (signal.aborted) return Promise.reject(createAbortError());
+  const remainingMs = Math.floor(deadlineAt - performance.now());
+  if (remainingMs < 1) return Promise.resolve(fallback("timeout"));
+
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL("./article-reader-worker.mjs", import.meta.url));
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      void worker.terminate();
+      callback(value);
+    };
+    const onAbort = () => finish(reject, createAbortError());
+    const timer = setTimeout(() => finish(resolve, fallback("timeout")), remainingMs);
+    signal.addEventListener("abort", onAbort, { once: true });
+    worker.once("message", (result) => finish(resolve, result));
+    worker.once("error", (error) => finish(reject, error));
+    worker.postMessage(input);
+  });
 }
 
 /** Owns bounded, cookie-free article downloads and never caches article HTML. */
@@ -618,7 +706,7 @@ export function createArticleReaderService({
     };
     operationController.signal.addEventListener("abort", onOperationAbort, { once: true });
     signal?.addEventListener("abort", onCallerAbort, { once: true });
-    const timer = setTimeout(onTimeout, downloadBudgetMs);
+    let timer = setTimeout(onTimeout, downloadBudgetMs);
     try {
       const outcome = await Promise.race([
         downloadArticleHtml({
@@ -635,8 +723,13 @@ export function createArticleReaderService({
       if (outcome.type === "aborted") throw createAbortError();
       const { response } = outcome;
       if (!response.ok) return response;
+      clearTimeout(timer);
+      timer = null;
       if (performance.now() >= deadlineAt) return fallback("timeout");
-      const result = extractArticleHtml({ connectorId, html: response.html, url: response.url });
+      const result = await extractArticleInWorker(
+        { connectorId, html: response.html, url: response.url },
+        { signal: operationController.signal, deadlineAt },
+      );
       return performance.now() >= deadlineAt ? fallback("timeout") : result;
     } catch (error) {
       if (signal?.aborted || (operationController.signal.aborted && !timeoutController.signal.aborted)) {
@@ -645,7 +738,7 @@ export function createArticleReaderService({
       if (timeoutController.signal.aborted) return fallback("timeout");
       return fallback("extraction-failed");
     } finally {
-      clearTimeout(timer);
+      if (timer !== null) clearTimeout(timer);
       signal?.removeEventListener("abort", onCallerAbort);
       operationController.signal.removeEventListener("abort", onOperationAbort);
       activeControllers.delete(operationController);

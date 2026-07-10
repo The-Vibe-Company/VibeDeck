@@ -56,9 +56,19 @@ function htmlResponse(html, { status = 200, headers = {} } = {}) {
 }
 
 class FakeReaderSession {
-  constructor(fetchImpl) {
+  constructor(
+    fetchImpl,
+    {
+      proxyRoute = "DIRECT",
+      endpoints = [{ address: "93.184.216.34" }],
+    } = {},
+  ) {
     this.fetchImpl = fetchImpl;
+    this.proxyRoute = proxyRoute;
+    this.endpoints = endpoints;
     this.fetchCalls = [];
+    this.resolveHostCalls = [];
+    this.resolveProxyCalls = [];
     this.clearStorageDataCalls = [];
     this.webRequest = {
       onHeadersReceived: (filter, handler) => {
@@ -71,6 +81,16 @@ class FakeReaderSession {
   fetch(url, options) {
     this.fetchCalls.push([url, options]);
     return this.fetchImpl(url, options, this.fetchCalls.length);
+  }
+
+  async resolveHost(hostname, options) {
+    this.resolveHostCalls.push([hostname, options]);
+    return { endpoints: this.endpoints };
+  }
+
+  async resolveProxy(url) {
+    this.resolveProxyCalls.push(url);
+    return this.proxyRoute;
   }
 
   async clearStorageData(options) {
@@ -158,13 +178,18 @@ test("falls back immediately for blocked, wrong-domain, short and oversized docu
   }), { ok: false, reason: "blocked" });
 });
 
-test("invalid structured metadata is ignored without weakening premium checks", () => {
+test("Parisien falls back when public access metadata is invalid or absent", () => {
   const result = extractArticleHtml({
     connectorId: "le-parisien",
     html: publicHtml("le-parisien", { invalidMetadata: true }),
     url: "https://www.leparisien.fr/article-test",
   });
-  assert.equal(result.ok, true);
+  assert.deepEqual(result, { ok: false, reason: "blocked" });
+  assert.deepEqual(extractArticleHtml({
+    connectorId: "le-parisien",
+    html: publicHtml("le-parisien").replace(/<script type="application\/ld\+json">.*?<\/script>/, ""),
+    url: "https://www.leparisien.fr/article-test",
+  }), { ok: false, reason: "blocked" });
 });
 
 test("normalizes bounded blocks and creates an escaped inert static document", () => {
@@ -212,6 +237,8 @@ test("reader service uses one cookie-free document request and reuses its connec
   assert.equal(second.ok, true);
   assert.equal(sessionCreations, 1);
   assert.equal(networkSession.fetchCalls.length, 2, "no subresource may be requested");
+  assert.equal(networkSession.resolveHostCalls.length, 2);
+  assert.equal(networkSession.resolveProxyCalls.length, 2);
   const options = networkSession.fetchCalls[0][1];
   assert.equal(options.credentials, "omit");
   assert.equal(options.cache, "no-store");
@@ -243,6 +270,8 @@ test("reader service follows at most same-adapter HTTPS redirects", async () => 
   });
   assert.equal(result.ok, true);
   assert.equal(session.fetchCalls.length, 2);
+  assert.equal(session.resolveHostCalls.length, 2, "every redirect hop needs a DNS preflight");
+  assert.equal(session.resolveProxyCalls.length, 2, "every redirect hop needs a proxy preflight");
 
   const hostile = new FakeReaderSession(async () =>
     htmlResponse("", { status: 302, headers: { location: "https://attacker.test/article" } }));
@@ -252,6 +281,32 @@ test("reader service follows at most same-adapter HTTPS redirects", async () => 
     url: "https://www.lemonde.fr/article",
   }), { ok: false, reason: "blocked" });
   assert.equal(hostile.fetchCalls.length, 1);
+});
+
+test("reader service blocks proxy and private DNS routes before the document request", async () => {
+  const proxied = new FakeReaderSession(
+    async () => htmlResponse(publicHtml("le-monde")),
+    { proxyRoute: "PROXY proxy.example:8080" },
+  );
+  const proxiedService = createArticleReaderService({ sessionForConnector: () => proxied });
+  assert.deepEqual(await proxiedService.extract({
+    connectorId: "le-monde",
+    url: "https://www.lemonde.fr/article",
+  }), { ok: false, reason: "blocked" });
+  assert.equal(proxied.fetchCalls.length, 0);
+
+  const privateDns = new FakeReaderSession(
+    async () => htmlResponse(publicHtml("le-monde")),
+    { endpoints: [{ address: "10.0.0.7" }] },
+  );
+  const privateDnsService = createArticleReaderService({
+    sessionForConnector: () => privateDns,
+  });
+  assert.deepEqual(await privateDnsService.extract({
+    connectorId: "le-monde",
+    url: "https://www.lemonde.fr/article",
+  }), { ok: false, reason: "blocked" });
+  assert.equal(privateDns.fetchCalls.length, 0);
 });
 
 test("reader service stops a streamed document at its byte limit", async () => {
@@ -297,6 +352,10 @@ test("secure session setup is idempotent", () => {
   const handler = networkSession.headersHandler;
   assert.equal(secureArticleReaderSession(networkSession), networkSession);
   assert.equal(networkSession.headersHandler, handler);
+  assert.throws(
+    () => secureArticleReaderSession({ fetch() {} }),
+    /Session réseau du lecteur invalide/,
+  );
 });
 
 test("resolves items from main-owned state and sends custom sources directly to original", () => {
@@ -307,9 +366,18 @@ test("resolves items from main-owned state and sends custom sources directly to 
   const dedicated = resolveReaderArticle("item-1", state);
   assert.equal(dedicated.readerMode, "extracting");
   assert.equal(dedicated.connectorId, "le-monde");
+  assert.equal(
+    resolveReaderArticle("item-1", { ...state, items: [] }, dedicated),
+    dedicated,
+    "an active main-owned reader must survive renderer-state projection eviction",
+  );
   assert.equal(resolveReaderArticle("item-1", {
     ...state,
     sources: [{ id: "source-1", connectorId: null }],
   }).readerFallback, "unsupported-source");
+  assert.throws(
+    () => resolveReaderArticle("forged", { ...state, items: [] }, dedicated),
+    /introuvable/,
+  );
   assert.throws(() => resolveReaderArticle("forged", state), /introuvable/);
 });

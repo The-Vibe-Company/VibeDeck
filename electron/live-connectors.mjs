@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { lookup } from "node:dns/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -22,6 +23,13 @@ const readerService = createArticleReaderService({
       fetch(url, options) {
         const { bypassCustomProtocolHandlers: _bypass, ...fetchOptions } = options;
         return fetch(url, fetchOptions);
+      },
+      async resolveHost(hostname) {
+        const addresses = await lookup(hostname, { all: true });
+        return { endpoints: addresses.map(({ address }) => ({ address })) };
+      },
+      async resolveProxy() {
+        return "DIRECT";
       },
       async clearStorageData() {},
     };
@@ -76,6 +84,9 @@ try {
       longestDecisionMs = Math.max(longestDecisionMs, performance.now() - startedAt);
       if (result.ok) successes += 1;
       else fallbacks += 1;
+    }
+    if (longestDecisionMs >= 1_000) {
+      throw new Error(`${source.name} a dépassé le budget de décision du lecteur.`);
     }
     console.log(
       `✓ Lecteur ${source.name}: ${successes} succès · ${fallbacks} replis · ${Math.round(longestDecisionMs)} ms max`,

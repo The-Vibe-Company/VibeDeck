@@ -419,7 +419,10 @@ test("keeps the public reader invisible until a bounded extraction becomes stati
 });
 
 test("recreates a persistent original reader after an extraction fallback", async () => {
+  const stalledCleanupSession = new FakeSession();
+  stalledCleanupSession.clearData = () => new Promise(() => {});
   const { controller, states, views } = createHarness({
+    sharedWebSession: stalledCleanupSession,
     readerExtractionResult: { reason: "paywalled" },
   });
   controller.sync([
@@ -439,8 +442,18 @@ test("recreates a persistent original reader after an extraction fallback", asyn
   assert.equal(views.length, 2);
   assert.equal(views[0].options.webPreferences.partition, "mediagen-reader-static");
   assert.equal(views[1].options.webPreferences.partition, WEB_PANEL_SESSION_STRATEGY.partition);
+  assert.deepEqual(views[1].webContents.loadCalls, ["https://www.lemonde.fr/article"]);
   assert.equal(states.at(-1).readerMode, "original");
   assert.equal(states.at(-1).readerFallback, "paywalled");
+  assert.deepEqual(controller.getActiveReaderArticle("article-1"), {
+    itemId: "article-1",
+    url: "https://www.lemonde.fr/article",
+    connectorId: null,
+    readerMode: "original",
+    readerFallback: "paywalled",
+  });
+  controller.retryOriginalArticle("article-1");
+  assert.equal(views[1].webContents.reloadCalls, 1);
 });
 
 test("manual original mode replaces simplified content without accepting a renderer URL", async () => {
@@ -469,11 +482,11 @@ test("manual original mode replaces simplified content without accepting a rende
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
 
-  controller.showOriginalArticle({ itemId: "article-1", url: "https://www.lemonde.fr/article" });
+  controller.showOriginalArticle("article-1");
   assert.equal(views.length, 2);
   assert.equal(views[1].options.webPreferences.partition, WEB_PANEL_SESSION_STRATEGY.partition);
   assert.throws(
-    () => controller.showOriginalArticle({ itemId: "article-1", url: "https://attacker.test/" }),
+    () => controller.showOriginalArticle("article-forged"),
     /correspond pas/,
   );
 });
@@ -521,6 +534,30 @@ test("keeps the extracting view inert and aborts a stale extraction after close"
   });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(views[0].webContents.loadCalls.some((url) => url.startsWith("data:text/html")), false);
+});
+
+test("rejects generic web commands for the dedicated reader", () => {
+  const { controller } = createHarness();
+  controller.sync([{
+    ...descriptor("reader:article"),
+    url: "https://www.lemonde.fr/article",
+    kind: "reader",
+    itemId: "article-1",
+    connectorId: "le-monde",
+    readerMode: "extracting",
+  }]);
+
+  assert.throws(
+    () => controller.navigate("reader:article", "https://example.org/"),
+    /réservée aux panels web/,
+  );
+  for (const command of ["reload", "stop", "goBack", "goForward", "home"]) {
+    assert.throws(() => controller[command]("reader:article"), /réservée aux panels web/);
+  }
+  assert.throws(
+    () => controller.setMuted("reader:article", false),
+    /réservée aux panels web/,
+  );
 });
 
 test("destroys omitted views and destroyAll closes every remaining WebContents", () => {

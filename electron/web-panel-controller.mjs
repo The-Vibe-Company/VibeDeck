@@ -10,7 +10,7 @@ const electronRuntime = require("electron");
 
 // New dashboards are capped at six persistent views. Extra headroom keeps
 // databases created by earlier versions usable alongside the article reader.
-const MAX_WEB_PANELS = 16;
+export const MAX_WEB_PANEL_DESCRIPTORS = 16;
 const MAX_URL_LENGTH = 4_096;
 const MAX_TEXT_LENGTH = 512;
 const MAX_COORDINATE = 10_000_000;
@@ -363,6 +363,13 @@ function cleanPanelId(value) {
   return value;
 }
 
+function cleanItemId(value) {
+  if (typeof value !== "string" || !value.trim() || value.length > 128) {
+    throw new TypeError("Identifiant d’article invalide.");
+  }
+  return value.trim();
+}
+
 function cleanHttpUrl(value) {
   if (typeof value !== "string" || value.length > MAX_URL_LENGTH) {
     throw new TypeError("URL de panel web invalide.");
@@ -514,9 +521,7 @@ function normalizeDescriptor(window, descriptor) {
   if (normalized.panelId !== ARTICLE_READER_PANEL_ID) {
     throw new TypeError("Identifiant du lecteur d’article invalide.");
   }
-  if (typeof descriptor.itemId !== "string" || !descriptor.itemId.trim() || descriptor.itemId.length > 128) {
-    throw new TypeError("Identifiant d’article invalide.");
-  }
+  const itemId = cleanItemId(descriptor.itemId);
   if (descriptor.readerMode !== "extracting" && descriptor.readerMode !== "original") {
     throw new TypeError("Mode du lecteur d’article invalide.");
   }
@@ -528,7 +533,7 @@ function normalizeDescriptor(window, descriptor) {
   }
   return {
     ...normalized,
-    itemId: descriptor.itemId.trim(),
+    itemId,
     connectorId: descriptor.connectorId ?? null,
     readerMode: descriptor.readerMode,
     readerFallback: normalizeReaderFallbackReason(descriptor.readerFallback),
@@ -571,6 +576,18 @@ function normalizeReaderFallbackReason(value) {
   if (value == null) return null;
   if (READER_FALLBACK_REASONS.has(value)) return value;
   throw new TypeError("Motif de repli du lecteur invalide.");
+}
+
+export function validateWebPanelDescriptorList(descriptors) {
+  if (!Array.isArray(descriptors)) {
+    throw new TypeError("La liste des panels web doit être un tableau.");
+  }
+  if (descriptors.length > MAX_WEB_PANEL_DESCRIPTORS) {
+    throw new RangeError(
+      `Un maximum de ${MAX_WEB_PANEL_DESCRIPTORS} panels web est autorisé.`,
+    );
+  }
+  return descriptors;
 }
 
 /**
@@ -800,6 +817,7 @@ export function createWebPanelController({
     });
     listen(record, "did-stop-loading", () => {
       record.loading = false;
+      if (record.kind === "reader" && record.visible) record.contents.focus();
       emit(record);
     });
     listen(record, "did-navigate", (_event, url) => {
@@ -967,22 +985,21 @@ export function createWebPanelController({
       readerMode: "original",
       readerFallback: reason,
     };
-    destroyRecord(record);
+    destroyRecord(record, { focusHost: false });
     createRecord(descriptor);
   }
 
-  function showOriginalArticle(article) {
-    if (!article || typeof article !== "object" || Array.isArray(article)) {
-      throw new TypeError("Article original invalide.");
-    }
+  function requireMatchingReaderItem(itemId) {
+    const normalizedItemId = cleanItemId(itemId);
     const record = requireRecord(ARTICLE_READER_PANEL_ID);
-    if (
-      record.kind !== "reader" ||
-      record.itemId !== article.itemId ||
-      record.originalUrl !== cleanHttpUrl(article.url)
-    ) {
+    if (record.kind !== "reader" || record.itemId !== normalizedItemId) {
       throw new Error("Le lecteur ne correspond pas à cet article.");
     }
+    return record;
+  }
+
+  function showOriginalArticle(itemId) {
+    const record = requireMatchingReaderItem(itemId);
     if (record.readerMode === "original") return snapshot(record);
     const descriptor = {
       kind: "reader",
@@ -995,8 +1012,16 @@ export function createWebPanelController({
       readerMode: "original",
       readerFallback: null,
     };
-    destroyRecord(record);
+    destroyRecord(record, { focusHost: false });
     return snapshot(createRecord(descriptor));
+  }
+
+  function retryOriginalArticle(itemId) {
+    const record = requireMatchingReaderItem(itemId);
+    if (record.readerMode !== "original") {
+      throw new Error("La page originale n’est pas active.");
+    }
+    return reloadRecord(record);
   }
 
   async function beginReaderExtraction(record) {
@@ -1115,7 +1140,11 @@ export function createWebPanelController({
       // were closed. Do not let the replacement page register workers while
       // cleanup of the previous generation is still running.
       const initialLoadGeneration = record.loadGeneration;
-      void cleanupTask.then(() => {
+      const initialLoadBarrier =
+        record.kind === "reader" && record.readerMode === "original"
+          ? Promise.resolve()
+          : cleanupTask;
+      void initialLoadBarrier.then(() => {
         if (
           !record.destroyed &&
           !record.closing &&
@@ -1159,7 +1188,15 @@ export function createWebPanelController({
     return record;
   }
 
-  function destroyRecord(record) {
+  function requireWebRecord(panelId) {
+    const record = requireRecord(panelId);
+    if (record.kind !== "web") {
+      throw new Error("Cette commande est réservée aux panels web.");
+    }
+    return record;
+  }
+
+  function destroyRecord(record, { focusHost = true } = {}) {
     if (!record || record.destroyed || record.closing) return false;
     record.closing = true;
     record.loadGeneration += 1;
@@ -1192,6 +1229,13 @@ export function createWebPanelController({
         record.contents.close({ waitForBeforeUnload: false });
       } catch {
         // Cleanup remains best-effort after renderer failure.
+      }
+    }
+    if (focusHost && record.kind === "reader" && !isDestroyed(window.webContents)) {
+      try {
+        window.webContents.focus();
+      } catch {
+        // The owning renderer may already be closing with the window.
       }
     }
     scheduleWebSessionCleanup(record.visitedOrigins);
@@ -1238,12 +1282,7 @@ export function createWebPanelController({
 
   function sync(descriptors) {
     assertWindowOpen();
-    if (!Array.isArray(descriptors)) {
-      throw new TypeError("La liste des panels web doit être un tableau.");
-    }
-    if (descriptors.length > MAX_WEB_PANELS) {
-      throw new RangeError(`Un maximum de ${MAX_WEB_PANELS} panels web est autorisé.`);
-    }
+    validateWebPanelDescriptorList(descriptors);
 
     const normalized = descriptors.map((descriptor) => normalizeDescriptor(window, descriptor));
     const ids = new Set();
@@ -1270,7 +1309,7 @@ export function createWebPanelController({
         (record.kind === "reader" &&
           (record.itemId !== descriptor.itemId || record.originalUrl !== descriptor.url))
       ) {
-        destroyRecord(record);
+        destroyRecord(record, { focusHost: false });
         createRecord(descriptor);
         continue;
       }
@@ -1291,14 +1330,10 @@ export function createWebPanelController({
   }
 
   function navigate(panelId, url) {
-    return load(requireRecord(panelId), cleanHttpUrl(url));
+    return load(requireWebRecord(panelId), cleanHttpUrl(url));
   }
 
-  function reload(panelId) {
-    const record = requireRecord(panelId);
-    if (record.kind === "reader" && record.readerMode === "simplified") {
-      return emit(record);
-    }
+  function reloadRecord(record) {
     record.loadGeneration += 1;
     record.error = null;
     record.errorCode = null;
@@ -1311,29 +1346,33 @@ export function createWebPanelController({
     return emit(record);
   }
 
+  function reload(panelId) {
+    return reloadRecord(requireWebRecord(panelId));
+  }
+
   function stop(panelId) {
-    const record = requireRecord(panelId);
+    const record = requireWebRecord(panelId);
     record.contents.stop();
     record.loading = false;
     return emit(record);
   }
 
   function goBack(panelId) {
-    const record = requireRecord(panelId);
+    const record = requireWebRecord(panelId);
     const history = record.contents.navigationHistory;
     if (history?.canGoBack()) history.goBack();
     return emit(record);
   }
 
   function goForward(panelId) {
-    const record = requireRecord(panelId);
+    const record = requireWebRecord(panelId);
     const history = record.contents.navigationHistory;
     if (history?.canGoForward()) history.goForward();
     return emit(record);
   }
 
   function home(panelId) {
-    const record = requireRecord(panelId);
+    const record = requireWebRecord(panelId);
     return load(record, record.homeUrl);
   }
 
@@ -1354,7 +1393,7 @@ export function createWebPanelController({
     if (typeof muted !== "boolean") {
       throw new TypeError("L’état audio doit être un booléen.");
     }
-    const record = requireRecord(panelId);
+    const record = requireWebRecord(panelId);
     record.contents.setAudioMuted(muted);
     record.muted = muted;
     return emit(record);
@@ -1395,6 +1434,27 @@ export function createWebPanelController({
     });
   }
 
+  function getActiveReaderArticle(itemId) {
+    const normalizedItemId = cleanItemId(itemId);
+    const record = records.get(ARTICLE_READER_PANEL_ID);
+    if (
+      !record ||
+      record.kind !== "reader" ||
+      record.destroyed ||
+      record.closing ||
+      record.itemId !== normalizedItemId
+    ) {
+      return null;
+    }
+    return Object.freeze({
+      itemId: record.itemId,
+      url: record.originalUrl,
+      connectorId: record.connectorId,
+      readerMode: record.readerMode === "original" ? "original" : "extracting",
+      readerFallback: record.readerFallback,
+    });
+  }
+
   async function shutdown() {
     destroyAll();
     await scheduleWebSessionCleanup();
@@ -1417,10 +1477,12 @@ export function createWebPanelController({
     home,
     openExternal,
     showOriginalArticle,
+    retryOriginalArticle,
     setMuted,
     destroy,
     destroyAll,
     getDescriptors,
+    getActiveReaderArticle,
     shutdown,
   });
 }

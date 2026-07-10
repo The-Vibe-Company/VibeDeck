@@ -146,6 +146,11 @@ type LinkPreview = {
   title: string;
 };
 
+type ReaderReturnFocus = {
+  panelId: string;
+  rowId: string;
+};
+
 type PendingCustomSource = Required<Pick<SourceRequest, "url" | "connectorKind">>;
 
 type ModalState =
@@ -240,6 +245,15 @@ function focusDashboardPanelRoot(panelId: string) {
   return document.activeElement === panel;
 }
 
+function restoreArticleFocus(target: ReaderReturnFocus) {
+  const article = document.getElementById(target.rowId);
+  if (article instanceof HTMLElement) {
+    article.focus({ preventScroll: true });
+    return;
+  }
+  focusDashboardPanelRoot(target.panelId);
+}
+
 export default function App() {
   const [state, setState] = useState<AppState | null>(null);
   const [layout, setLayout] = useState<LayoutNode | null>(null);
@@ -257,6 +271,7 @@ export default function App() {
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
 
   const layoutRef = useRef<LayoutNode | null>(null);
+  const linkPreviewRef = useRef<LinkPreview | null>(null);
   const feedUiRef = useRef<Record<string, FeedPanelUi>>({});
   const draftsRef = useRef<Record<string, DraftPanel>>({});
   const revisionRef = useRef(0);
@@ -273,8 +288,10 @@ export default function App() {
     identity: PanelFocusIdentity;
   } | null>(null);
   const pendingKeyboardPanelFocusRef = useRef<string | null>(null);
+  const readerReturnFocusRef = useRef<ReaderReturnFocus | null>(null);
 
   layoutRef.current = layout;
+  linkPreviewRef.current = linkPreview;
   feedUiRef.current = feedUi;
   draftsRef.current = drafts;
 
@@ -478,6 +495,17 @@ export default function App() {
       unsubscribeWebEscape();
     };
   }, [applyServerState]);
+
+  useEffect(() => {
+    if (linkPreview || !readerReturnFocusRef.current) return;
+    const timer = window.setTimeout(() => {
+      const target = readerReturnFocusRef.current;
+      if (!target || linkPreviewRef.current) return;
+      readerReturnFocusRef.current = null;
+      restoreArticleFocus(target);
+    }, 150);
+    return () => window.clearTimeout(timer);
+  }, [linkPreview]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setClock(new Date()), 15_000);
@@ -886,7 +914,14 @@ export default function App() {
     }
   }
 
-  function openItem(item: FeedItem) {
+  function openItem(item: FeedItem, returnFocus: ReaderReturnFocus) {
+    readerReturnFocusRef.current = returnFocus;
+    setWebStates((current) => {
+      if (!(LINK_READER_ID in current)) return current;
+      const next = { ...current };
+      delete next[LINK_READER_ID];
+      return next;
+    });
     setLinkPreview({ itemId: item.id, title: item.title });
     void window.mediagen
       .markItemOpened(item.id)
@@ -921,7 +956,9 @@ export default function App() {
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         if (isTypingTarget(event.target)) return;
-        if (!modal && linkPreview) setLinkPreview(null);
+        if (!modal && linkPreview) {
+          setLinkPreview(null);
+        }
         else if (!modal && maximizedPanelId) setMaximizedPanelId(null);
         return;
       }
@@ -1037,7 +1074,7 @@ export default function App() {
           if (ui.visibilityFilter === "unseen") {
             patchFeedUi(panel.id, { focusedItemId: null });
           }
-          void openItem(item);
+          void openItem(item, { panelId: keyboardPanelId, rowId: focusedArticleId });
         }
       }
     }
@@ -1128,7 +1165,7 @@ export default function App() {
           state={state!}
           ui={ui}
           onUi={(patch) => patchFeedUi(panel.id, patch)}
-          onOpen={openItem}
+          onOpen={(item, rowId) => openItem(item, { panelId: panel.id, rowId })}
           onSeen={markItemsSeen}
           onRefresh={() => refreshFeedPanel(panel)}
           onConfigure={() => setModal({ kind: "configure-feed", panelId: panel.id })}
@@ -1158,7 +1195,13 @@ export default function App() {
         <time>{clock.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}</time>
         <div className="global-bar__spacer" />
         {linkPreview && (
-          <button type="button" className="restore-pill" onClick={() => setLinkPreview(null)}>
+          <button
+            type="button"
+            className="restore-pill"
+            onClick={() => {
+              setLinkPreview(null);
+            }}
+          >
             Retour au fil <kbd>Échap</kbd>
           </button>
         )}
@@ -1240,7 +1283,9 @@ export default function App() {
           <LinkPreviewView
             preview={linkPreview}
             runtime={webStates[LINK_READER_ID]}
-            onClose={() => setLinkPreview(null)}
+            onClose={() => {
+              setLinkPreview(null);
+            }}
           />
         )}
       </main>
@@ -1600,7 +1645,7 @@ function FeedPanelView({
   state: AppState;
   ui: FeedPanelUi;
   onUi: (patch: Partial<FeedPanelUi>) => void;
-  onOpen: (item: FeedItem) => void | Promise<void>;
+  onOpen: (item: FeedItem, rowId: string) => void | Promise<void>;
   onSeen: (itemIds: string[]) => void;
   onRefresh: () => void | Promise<void>;
   onConfigure: () => void;
@@ -1782,7 +1827,7 @@ function FeedPanelView({
                     if (ui.visibilityFilter === "unseen") {
                       onUi({ focusedItemId: null });
                     }
-                    void onOpen(item);
+                    void onOpen(item, `article-${panel.id}-${item.id}`);
                   }}
                 >
                   <time
@@ -1991,6 +2036,7 @@ function LinkPreviewView({
   runtime?: WebPanelRuntimeState;
   onClose: () => void;
 }) {
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
   const failed = ["error", "crashed", "unresponsive"].includes(runtime?.status ?? "");
   const readerMode = runtime?.readerMode ?? "extracting";
   const readerStatus =
@@ -2002,6 +2048,10 @@ function LinkPreviewView({
           ? "Page originale · lecture simplifiée indisponible"
           : "Page originale";
 
+  useLayoutEffect(() => {
+    closeButtonRef.current?.focus({ preventScroll: true });
+  }, [preview.itemId]);
+
   return (
     <section className="dashboard-panel link-reader" aria-label={`Lecture — ${preview.title}`}>
       <header className="panel-header">
@@ -2011,6 +2061,7 @@ function LinkPreviewView({
         </strong>
         <button
           type="button"
+          ref={closeButtonRef}
           className="icon-button icon-button--danger"
           aria-label="Retour au fil"
           title="Retour au fil"
@@ -2048,8 +2099,10 @@ function LinkPreviewView({
               icon={<Globe2 size={20} />}
               title="Impossible d’afficher cet article"
               body={runtime?.error ?? "La page ne répond pas dans l’application."}
-              action="Réessayer"
-              onAction={() => void window.mediagen.reloadWebPanel(LINK_READER_ID)}
+              action={readerMode === "original" ? "Réessayer" : "Page originale"}
+              onAction={() => void (readerMode === "original"
+                ? window.mediagen.retryOriginalArticle(preview.itemId)
+                : window.mediagen.showOriginalArticle(preview.itemId))}
             />
           )}
           {!runtime && (

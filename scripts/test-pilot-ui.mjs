@@ -429,8 +429,17 @@ try {
   const readerSourceRow = page.locator(".article-row").first();
   const readerSourceId = await readerSourceRow.getAttribute("id");
   await readerSourceRow.focus();
+  const readerDecisionStartedAt = performance.now();
   await page.keyboard.press("Enter");
   await page.locator(".link-reader").waitFor({ state: "visible" });
+  await page
+    .locator(".link-reader__toolbar .web-address")
+    .filter({ hasText: "Page originale · lecture simplifiée indisponible" })
+    .waitFor({ state: "visible" });
+  assert.ok(
+    performance.now() - readerDecisionStartedAt < 1_000,
+    "La décision du lecteur doit rester sous une seconde.",
+  );
   await electronApp.evaluate(async ({ webContents }, articlePrefix) => {
     let reader;
     for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -441,11 +450,15 @@ try {
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
     if (!reader) throw new Error("Le WebContentsView du lecteur est introuvable.");
-    reader.focus();
+    if (!reader.isFocused()) throw new Error("Le lecteur natif n’a pas reçu le focus.");
     reader.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
     reader.sendInputEvent({ type: "keyUp", keyCode: "Escape" });
   }, `${origin}/articles/`);
   await page.locator(".link-reader").waitFor({ state: "detached" });
+  await page.waitForFunction(
+    (articleId) => document.activeElement?.id === articleId,
+    readerSourceId,
+  );
   await page.keyboard.press("ArrowDown");
   await page.waitForFunction(
     (previousId) => {
@@ -576,6 +589,31 @@ try {
         document.activeElement?.classList.contains("article-row");
     },
     narrowPanelId,
+  );
+  const sharedReaderSourceId = await page.evaluate(() => document.activeElement?.id ?? null);
+  assert.ok(sharedReaderSourceId, "Le panel partagé doit exposer un article actif.");
+  await page.keyboard.press("Enter");
+  await page.locator(".link-reader").waitFor({ state: "visible" });
+  await electronApp.evaluate(async ({ webContents }, articlePrefix) => {
+    let reader;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      reader = webContents
+        .getAllWebContents()
+        .find((contents) => contents.getURL().startsWith(articlePrefix));
+      if (reader) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    if (!reader) throw new Error("Le lecteur du panel partagé est introuvable.");
+    reader.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
+    reader.sendInputEvent({ type: "keyUp", keyCode: "Escape" });
+  }, `${origin}/articles/`);
+  await page.locator(".link-reader").waitFor({ state: "detached" });
+  await page.waitForFunction(
+    ({ articleId, targetPanelId }) =>
+      document.activeElement?.id === articleId &&
+      document.activeElement?.closest(".split-layout__leaf")?.getAttribute("data-panel-id") ===
+        targetPanelId,
+    { articleId: sharedReaderSourceId, targetPanelId: narrowPanelId },
   );
 
   await narrowLeaf.getByLabel("Agrandir").click();

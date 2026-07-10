@@ -242,6 +242,7 @@ export interface MediaGenApi {
   homeWebPanel: (panelId: string) => Promise<void>;
   openExternalWebPanel: (panelId: string) => Promise<void>;
   showOriginalArticle: (itemId: string) => Promise<void>;
+  retryOriginalArticle: (itemId: string) => Promise<void>;
   setWebPanelMuted: (panelId: string, muted: boolean) => Promise<void>;
   onStateChanged: (callback: (state: AppState) => void) => () => void;
   onWebPanelStateChanged: (
