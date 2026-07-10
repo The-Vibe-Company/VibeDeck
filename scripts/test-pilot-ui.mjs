@@ -1049,32 +1049,65 @@ try {
 
   // Marquage « vu » par survol : seule une immobilité prolongée sur une ligne compte.
   const dwellTitle = "ARRIVÉE DWELL — survol prolongé marque « vu »";
-  articles = [
-    {
-      id: "dwell-arrival",
-      title: dwellTitle,
-      summary: "Doit passer « vue » uniquement après un survol maintenu.",
-      publishedAt: new Date(),
-    },
-    ...articles,
-  ];
-  await page.evaluate((id) => window.mediagen.refreshSource(id), sourceId);
-  const dwellRow = page.locator(".article-row").filter({ hasText: dwellTitle }).first();
-  await dwellRow.waitFor({ state: "visible" });
-  const dwellId = await dwellRow.getAttribute("id");
-  assert.equal(
-    await dwellRow.evaluate((row) => row.classList.contains("article-row--seen")),
-    false,
-    "Une arrivée fraîche doit être non vue avant tout survol.",
-  );
-  // Survol bref puis sortie du fil avant le délai : le marquage est annulé.
-  await dwellRow.hover();
-  await page.locator(".global-bar").hover();
-  await page.waitForTimeout(HOVER_SEEN_DELAY_MS + 300);
-  assert.equal(
-    await dwellRow.evaluate((row) => row.classList.contains("article-row--seen")),
-    false,
-    "Quitter le fil avant le délai de dwell doit annuler le marquage « vu ».",
+  const globalBar = page.locator(".global-bar");
+  const globalBarBox = await globalBar.boundingBox();
+  const dwellProbeAttempts = 3;
+  let dwellRow = null;
+  let dwellId = null;
+  let dwellProbeExitDelay = null;
+  for (let attempt = 1; attempt <= dwellProbeAttempts; attempt += 1) {
+    const probeTitle = `${dwellTitle} (essai ${attempt})`;
+    articles = [
+      {
+        id: `dwell-arrival-${attempt}`,
+        title: probeTitle,
+        summary: "Doit passer « vue » uniquement après un survol maintenu.",
+        publishedAt: new Date(),
+      },
+      ...articles,
+    ];
+    await page.evaluate((id) => window.mediagen.refreshSource(id), sourceId);
+    dwellRow = page.locator(".article-row").filter({ hasText: probeTitle }).first();
+    await dwellRow.waitFor({ state: "visible" });
+    dwellId = await dwellRow.getAttribute("id");
+    assert.equal(
+      await dwellRow.evaluate((row) => row.classList.contains("article-row--seen")),
+      false,
+      "Une arrivée fraîche doit être non vue avant tout survol.",
+    );
+    // Survol bref puis sortie du fil avant le délai : le marquage est annulé.
+    // Deux mouvements souris bruts dos à dos, sans checks d'actionabilité
+    // entre l'armement du minuteur et la sortie, pour que la sortie précède
+    // largement le délai de dwell même sur un runner lent. Si la sortie est
+    // quand même trop tardive pour prouver l'annulation, nouvel article et
+    // nouvel essai plutôt qu'un verdict ambigu.
+    await dwellRow.scrollIntoViewIfNeeded();
+    const dwellRowBox = await dwellRow.boundingBox();
+    const enteredAt = Date.now();
+    await page.mouse.move(
+      dwellRowBox.x + dwellRowBox.width / 2,
+      dwellRowBox.y + dwellRowBox.height / 2,
+    );
+    await page.mouse.move(
+      globalBarBox.x + globalBarBox.width / 2,
+      globalBarBox.y + globalBarBox.height / 2,
+    );
+    dwellProbeExitDelay = Date.now() - enteredAt;
+    if (dwellProbeExitDelay > HOVER_SEEN_DELAY_MS - 300) {
+      dwellProbeExitDelay = null;
+      continue;
+    }
+    await page.waitForTimeout(HOVER_SEEN_DELAY_MS + 300);
+    assert.equal(
+      await dwellRow.evaluate((row) => row.classList.contains("article-row--seen")),
+      false,
+      `Quitter le fil avant le délai de dwell doit annuler le marquage « vu » (sortie après ${dwellProbeExitDelay}ms).`,
+    );
+    break;
+  }
+  assert.ok(
+    dwellProbeExitDelay !== null,
+    `Impossible de sortir du fil en moins de ${HOVER_SEEN_DELAY_MS - 300}ms après ${dwellProbeAttempts} essais : runner trop lent pour prouver l'annulation du dwell.`,
   );
   // Survol immobile maintenu au-delà du délai : la ligne devient « vue ».
   await dwellRow.hover();
@@ -1082,7 +1115,7 @@ try {
     (articleId) => document.getElementById(articleId)?.classList.contains("article-row--seen") === true,
     dwellId,
   );
-  await page.locator(".global-bar").hover();
+  await globalBar.hover();
 
   console.log(`✓ baseline: ${baselineArticleCount} articles interclassés, roving tabindex actif`);
   console.log(`✓ viewport initial: scrollTop ${beforeArrival.scrollTop.toFixed(1)}px`);
