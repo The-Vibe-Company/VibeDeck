@@ -5,6 +5,7 @@ import {
   compareFeedItems,
   formatCheckedAt,
   formatItemTime,
+  formatNextRefresh,
 } from "../src/feed-presentation.ts";
 
 function item(overrides = {}) {
@@ -25,6 +26,27 @@ function item(overrides = {}) {
     isNew: false,
     seenAt: "2026-07-10T12:00:00.000Z",
     openedAt: null,
+    ...overrides,
+  };
+}
+
+function source(overrides = {}) {
+  return {
+    id: "source",
+    name: "Source",
+    inputUrl: "https://example.test",
+    feedUrl: "https://example.test/feed.xml",
+    connectorId: null,
+    connectorKind: "rss",
+    refreshIntervalSeconds: 60,
+    status: "healthy",
+    lastCheckedAt: "2026-07-10T12:00:00.000Z",
+    lastSuccessAt: "2026-07-10T12:00:00.000Z",
+    errorMessage: null,
+    baselineCompletedAt: "2026-07-10T12:00:00.000Z",
+    consecutiveFailures: 0,
+    nextRetryAt: null,
+    itemCount: 0,
     ...overrides,
   };
 }
@@ -136,5 +158,33 @@ test("renders an explicit calendar context after sixty minutes", () => {
   assert.equal(
     formatCheckedAt(new Date(2026, 6, 9, 23, 10).toISOString(), now),
     "hier 23:10",
+  );
+});
+
+test("formats the nearest scheduler refresh with retry and active states", () => {
+  const now = new Date("2026-07-10T12:00:00.000Z");
+
+  assert.deepEqual(
+    formatNextRefresh([source({ lastCheckedAt: "2026-07-10T11:59:30.000Z" })], now),
+    { full: "mise à jour dans 30 s", compact: "màj 00:30" },
+  );
+  assert.deepEqual(
+    formatNextRefresh([
+      source({ lastCheckedAt: "2026-07-10T11:55:00.000Z" }),
+      source({ id: "retry", nextRetryAt: "2026-07-10T12:02:05.000Z" }),
+    ], now),
+    { full: "imminente", compact: "immin." },
+  );
+  assert.deepEqual(
+    formatNextRefresh([source({ nextRetryAt: "2026-07-10T12:12:34.000Z" })], now),
+    { full: "réessai dans 12 min 34 s", compact: "réessai 12:34" },
+  );
+  assert.deepEqual(
+    formatNextRefresh([source({ status: "refreshing" })], now),
+    { full: "actualisation…", compact: "actualisation…" },
+  );
+  assert.deepEqual(
+    formatNextRefresh([source({ lastCheckedAt: "date invalide", nextRetryAt: "date invalide" })], now),
+    { full: "imminente", compact: "immin." },
   );
 });

@@ -737,28 +737,6 @@ button:disabled {
   overflow: hidden;
 }
 
-.feed-arrivals {
-  position: absolute;
-  z-index: 4;
-  top: 8px;
-  right: 12px;
-  min-height: 27px;
-  padding: 5px 10px;
-  border: 1px solid var(--amber);
-  border-radius: 14px;
-  background: var(--amber-wash);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.34);
-  color: var(--amber-light);
-  cursor: pointer;
-  font: 9px/1 var(--mono);
-  white-space: nowrap;
-}
-
-.feed-arrivals:hover {
-  background: var(--amber-line);
-  color: var(--text);
-}
-
 .article-list {
   overflow-x: hidden;
   overflow-y: auto;
