@@ -55,9 +55,9 @@ Raccourcis principaux :
 - `Cmd/Ctrl + N` : créer un panel ;
 - `Cmd/Ctrl + K` : ouvrir la recherche globale et placer le focus dans la requête ;
 - dans la recherche, `↑` / `↓` sélectionnent un résultat ; `Entrée` filtre les fils depuis le champ ou ouvre le résultat sélectionné ;
-- `↑` / `↓` ou `J` / `K` : parcourir le fil sous la souris ;
+- `↑` / `↓` : parcourir le fil sous la souris, avec un défilement fluide et continu quand la touche reste enfoncée ;
 - `Entrée` : ouvrir l’article ;
-- dans le lecteur, `↑` / `↓` : avancer ou reculer rapidement en gardant environ 28 % de recouvrement visuel ;
+- dans le lecteur, `↑` / `↓` : un appui avance d’une page animée (≈ 28 % de recouvrement visuel), maintenir la touche déclenche un défilement rapide continu ;
 - double-appui rapide sur `←` / `→` : passer au panel précédent ou suivant ;
 - `Alt + ←` / `Alt + →` : déplacer le panel à la position précédente ou suivante, sans glisser-déposer ;
 - `R` : actualiser le fil actif ;

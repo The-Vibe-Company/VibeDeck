@@ -53,6 +53,7 @@ import {
   formatNextRefresh,
 } from "./feed-presentation";
 import { saveFeedPanelConfiguration } from "./feed-settings";
+import { cancelSmoothScroll, smoothScrollIntoView } from "./smooth-scroll";
 import type {
   AppState,
   ConnectorKind,
@@ -1332,12 +1333,7 @@ export default function App() {
         void refreshFeedPanel(panel);
         return;
       }
-      if (
-        event.key.toLowerCase() === "j" ||
-        event.key.toLowerCase() === "k" ||
-        event.key === "ArrowDown" ||
-        event.key === "ArrowUp"
-      ) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
         const focusedIndex = items.findIndex(({ id }) => id === ui.focusedItemId);
         const activeArticleId =
@@ -1350,8 +1346,7 @@ export default function App() {
         const currentIndex = focusedIndex >= 0
           ? focusedIndex
           : activeArticleIndex;
-        const direction =
-          event.key.toLowerCase() === "j" || event.key === "ArrowDown" ? 1 : -1;
+        const direction = event.key === "ArrowDown" ? 1 : -1;
         const nextIndex = Math.max(
           0,
           Math.min(items.length - 1, currentIndex < 0 ? 0 : currentIndex + direction),
@@ -1360,8 +1355,12 @@ export default function App() {
         if (item) {
           patchFeedUi(panel.id, { focusedItemId: item.id });
           const article = document.getElementById(`article-${panel.id}-${item.id}`);
-          article?.focus({ preventScroll: true });
-          article?.scrollIntoView({ block: "nearest" });
+          if (article) {
+            article.focus({ preventScroll: true });
+            const list = article.closest<HTMLElement>(".article-list");
+            if (list) smoothScrollIntoView(list, article);
+            else article.scrollIntoView({ block: "nearest" });
+          }
         }
         return;
       }
@@ -2499,6 +2498,10 @@ function FeedPanelView({
     if (ui.automaticInsertionIds.size === 0 || ui.searchItemIds) return;
     if (list && previous) {
       if (previous.scrollTop < 4) {
+        // Keeping arrivals visible at the top outranks a keyboard glide in
+        // flight — without the cancel, the animation would pull the list
+        // back down toward the focused row.
+        cancelSmoothScroll(list);
         list.scrollTop = 0;
       } else {
         list.scrollTop = previous.scrollTop + Math.max(0, list.scrollHeight - previous.scrollHeight);

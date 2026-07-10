@@ -8,8 +8,8 @@ const PRELOAD_SOURCE = readFileSync(
   "utf8",
 );
 
-function createHarness() {
-  const keydownListeners = [];
+function createHarness({ reducedMotion = false, matchMedia = true } = {}) {
+  const listeners = new Map();
 
   class FakeHTMLElement {
     constructor({
@@ -40,6 +40,11 @@ function createHarness() {
       const maximum = Math.max(0, this.scrollHeight - this.clientHeight);
       this.scrollTop = Math.max(0, Math.min(maximum, this.scrollTop + options.top));
     }
+
+    scrollTo(options) {
+      const maximum = Math.max(0, this.scrollHeight - this.clientHeight);
+      this.scrollTop = Math.max(0, Math.min(maximum, options.top));
+    }
   }
 
   const root = new FakeHTMLElement({
@@ -56,20 +61,62 @@ function createHarness() {
     scrollingElement: root,
     elementFromPoint: () => leaf,
   };
+
+  // Virtual clock driving rAF callbacks and timers in 16 ms steps.
+  let now = 0;
+  let rafId = 0;
+  const rafQueue = new Map();
+  let timerId = 0;
+  const timers = new Map();
+
   const window = {
     innerHeight: 700,
     innerWidth: 1_000,
     addEventListener(type, listener) {
-      if (type === "keydown") keydownListeners.push(listener);
+      if (!listeners.has(type)) listeners.set(type, []);
+      listeners.get(type).push(listener);
     },
     getComputedStyle: (element) => ({ overflowY: element.overflowY }),
+    requestAnimationFrame(callback) {
+      rafQueue.set(++rafId, callback);
+      return rafId;
+    },
+    cancelAnimationFrame(id) {
+      rafQueue.delete(id);
+    },
+    setTimeout(fn, delay) {
+      timers.set(++timerId, { fn, at: now + delay });
+      return timerId;
+    },
+    clearTimeout(id) {
+      timers.delete(id);
+    },
   };
+  if (matchMedia) {
+    window.matchMedia = () => ({ matches: reducedMotion });
+  }
 
   vm.runInNewContext(PRELOAD_SOURCE, {
     document,
     HTMLElement: FakeHTMLElement,
     window,
   });
+
+  function tick(ms) {
+    const end = now + ms;
+    while (now < end) {
+      now = Math.min(now + 16, end);
+      for (const [id, timer] of [...timers]) {
+        if (timer.at <= now) {
+          timers.delete(id);
+          timer.fn();
+        }
+      }
+      const frames = [...rafQueue.values()];
+      rafQueue.clear();
+      for (const callback of frames) callback(now);
+    }
+  }
 
   function press(key, overrides = {}) {
     let prevented = false;
@@ -91,15 +138,224 @@ function createHarness() {
       },
       ...overrides,
     };
-    for (const listener of keydownListeners) listener(event);
+    for (const listener of listeners.get("keydown") ?? []) listener(event);
     return { event, prevented, stopped };
   }
 
-  return { FakeHTMLElement, body, document, leaf, press, root };
+  function release(key) {
+    const event = { key };
+    for (const listener of listeners.get("keyup") ?? []) listener(event);
+  }
+
+  function dispatch(type) {
+    for (const listener of listeners.get(type) ?? []) listener({ type });
+  }
+
+  function pendingFrames() {
+    return rafQueue.size;
+  }
+
+  return { FakeHTMLElement, body, document, leaf, press, release, dispatch, tick, pendingFrames, root };
 }
 
-test("arrow keys move the article by most of one viewport", () => {
-  const { press, root } = createHarness();
+test("an arrow tap glides by most of one viewport", () => {
+  const { press, release, tick, root } = createHarness();
+
+  const down = press("ArrowDown");
+  assert.equal(down.prevented, true);
+  assert.equal(down.stopped, true);
+  assert.equal(root.scrollTop, 0);
+
+  tick(16);
+  assert.ok(root.scrollTop > 0 && root.scrollTop < 504, "moves progressively, not in one jump");
+
+  tick(80);
+  release("ArrowDown");
+  tick(2_000);
+  assert.equal(root.scrollTop, 504);
+
+  press("ArrowUp");
+  tick(80);
+  release("ArrowUp");
+  tick(2_000);
+  assert.equal(root.scrollTop, 0);
+});
+
+test("quick repeated taps accumulate their destinations", () => {
+  const { press, release, tick, root } = createHarness();
+
+  press("ArrowDown");
+  tick(32);
+  release("ArrowDown");
+  press("ArrowDown");
+  release("ArrowDown");
+  tick(2_000);
+  assert.equal(root.scrollTop, 1_008);
+});
+
+test("holding an arrow switches to a continuous constant-speed scroll", () => {
+  const { press, release, tick, root } = createHarness();
+
+  press("ArrowDown");
+  tick(256);
+  const atHoldStart = root.scrollTop;
+
+  tick(320);
+  const travelled = root.scrollTop - atHoldStart;
+  // 1.5 viewports/s on a 700 px viewport = 1.05 px/ms → 336 px over 320 ms.
+  assert.ok(Math.abs(travelled - 336) < 2, `expected ≈336 px, got ${travelled}`);
+
+  release("ArrowDown");
+  const atRelease = root.scrollTop;
+  tick(500);
+  assert.equal(root.scrollTop, atRelease, "stops dead on keyup");
+});
+
+test("pressing the opposite arrow during a hold reverses direction", () => {
+  const { press, release, tick, root } = createHarness();
+
+  press("ArrowDown");
+  tick(500);
+  const beforeReverse = root.scrollTop;
+  assert.ok(beforeReverse > 0);
+
+  press("ArrowUp");
+  tick(200);
+  assert.ok(root.scrollTop < beforeReverse, "scrolls back up while ArrowUp drives");
+
+  release("ArrowUp");
+  release("ArrowDown");
+  const atRelease = root.scrollTop;
+  tick(500);
+  assert.equal(root.scrollTop, atRelease);
+});
+
+test("releasing the driving key keeps the hold going for the other held arrow", () => {
+  const { press, release, tick, root } = createHarness();
+
+  press("ArrowDown");
+  tick(600);
+  press("ArrowUp");
+  tick(200);
+  const beforeRelease = root.scrollTop;
+  release("ArrowUp");
+  tick(200);
+  assert.ok(
+    root.scrollTop > beforeRelease,
+    "scroll resumes downward under the surviving key",
+  );
+});
+
+test("a brief opposite tap does not strand a still-held arrow before hold", () => {
+  const { press, release, tick, root } = createHarness();
+
+  press("ArrowDown");
+  tick(96);
+  press("ArrowUp");
+  tick(32);
+  release("ArrowUp");
+  tick(400);
+  const midHold = root.scrollTop;
+  tick(160);
+  assert.ok(
+    root.scrollTop > midHold + 100,
+    "the still-held ArrowDown reaches hold and keeps scrolling",
+  );
+});
+
+test("an OS key repeat arriving before the timer promotes the hold early", () => {
+  const { press, tick, root } = createHarness();
+
+  press("ArrowDown");
+  tick(48);
+  press("ArrowDown", { repeat: true });
+  const atHoldStart = root.scrollTop;
+  tick(160);
+  const travelled = root.scrollTop - atHoldStart;
+  assert.ok(Math.abs(travelled - 168) < 2, `expected ≈168 px, got ${travelled}`);
+});
+
+test("a hold crossing a nested scroller's limit hands off to the article", () => {
+  const { FakeHTMLElement, document, leaf, press, tick, root } = createHarness();
+  const nested = new FakeHTMLElement({
+    parent: document.body,
+    overflowY: "auto",
+    scrollHeight: 900,
+    clientHeight: 400,
+    scrollTop: 300,
+  });
+  leaf.parentElement = nested;
+
+  press("ArrowDown");
+  tick(2_000);
+  assert.equal(nested.scrollTop, 500, "nested scroller stops at its limit");
+  assert.ok(root.scrollTop > 0, "the article takes over after the handoff");
+});
+
+test("a hold parked at the end of the article resumes when direction reverses", () => {
+  const { press, tick, pendingFrames, root } = createHarness();
+  root.scrollTop = 2_200;
+
+  press("ArrowDown");
+  tick(600);
+  assert.equal(root.scrollTop, 2_300, "stops at the bottom of the article");
+  assert.equal(pendingFrames(), 0, "the rAF loop is parked, not spinning");
+
+  press("ArrowUp");
+  tick(200);
+  assert.ok(root.scrollTop < 2_300, "reversing restarts the parked loop");
+});
+
+test("an external scroll adjustment during a hold is adopted, not overwritten", () => {
+  const { press, tick, root } = createHarness();
+
+  press("ArrowDown");
+  tick(400);
+  root.scrollTop -= 150;
+  const adjusted = root.scrollTop;
+  tick(48);
+  const travelled = root.scrollTop - adjusted;
+  assert.ok(
+    travelled > 0 && travelled < 150,
+    `keeps scrolling from the adjusted position, moved ${travelled}px`,
+  );
+});
+
+test("a mouse press (scrollbar drag) cancels the scroll", () => {
+  const { press, dispatch, tick, root } = createHarness();
+
+  press("ArrowDown");
+  tick(400);
+  dispatch("mousedown");
+  const atPress = root.scrollTop;
+  tick(500);
+  assert.equal(root.scrollTop, atPress);
+});
+
+test("losing focus stops any scroll in flight", () => {
+  const { press, dispatch, tick, root } = createHarness();
+
+  press("ArrowDown");
+  tick(400);
+  dispatch("blur");
+  const atBlur = root.scrollTop;
+  tick(1_000);
+  assert.equal(root.scrollTop, atBlur);
+});
+
+test("the wheel cancels a running animation", () => {
+  const { press, dispatch, tick, root } = createHarness();
+
+  press("ArrowDown");
+  tick(48);
+  dispatch("wheel");
+  const atWheel = root.scrollTop;
+  tick(1_000);
+  assert.equal(root.scrollTop, atWheel);
+});
+
+test("reduced motion keeps the original instant paged jumps", () => {
+  const { press, tick, root } = createHarness({ reducedMotion: true });
 
   const down = press("ArrowDown");
   assert.equal(down.prevented, true);
@@ -107,20 +363,27 @@ test("arrow keys move the article by most of one viewport", () => {
   assert.deepEqual(root.scrollCalls, [{ top: 504, left: 0, behavior: "auto" }]);
   assert.equal(root.scrollTop, 504);
 
-  assert.equal(press("ArrowUp").prevented, true);
+  assert.equal(press("ArrowDown", { repeat: true }).prevented, true);
+  assert.equal(root.scrollCalls.at(-1).top, 196);
+
+  press("ArrowUp");
   assert.equal(root.scrollCalls.at(-1).top, -504);
-  assert.equal(root.scrollTop, 0);
+  tick(1_000);
+  assert.equal(root.scrollTop, 196);
 });
 
-test("holding an arrow stays fast with smaller controllable increments", () => {
-  const { press, root } = createHarness();
+test("a page without matchMedia still gets the animated scroll", () => {
+  const { press, release, tick, root } = createHarness({ matchMedia: false });
 
-  assert.equal(press("ArrowDown", { repeat: true }).prevented, true);
-  assert.equal(root.scrollCalls[0].top, 196);
+  press("ArrowDown");
+  tick(80);
+  release("ArrowDown");
+  tick(2_000);
+  assert.equal(root.scrollTop, 504);
 });
 
 test("a nested scroller at its boundary hands scrolling back to the article", () => {
-  const { FakeHTMLElement, document, leaf, press, root } = createHarness();
+  const { FakeHTMLElement, document, leaf, press, release, tick, root } = createHarness();
   const nested = new FakeHTMLElement({
     parent: document.body,
     overflowY: "auto",
@@ -131,12 +394,15 @@ test("a nested scroller at its boundary hands scrolling back to the article", ()
   leaf.parentElement = nested;
 
   assert.equal(press("ArrowDown").prevented, true);
-  assert.equal(nested.scrollCalls.length, 0);
-  assert.equal(root.scrollCalls[0].top, 504);
+  tick(80);
+  release("ArrowDown");
+  tick(2_000);
+  assert.equal(nested.scrollTop, 500, "nested scroller at its limit stays put");
+  assert.equal(root.scrollTop, 504);
 });
 
 test("editable controls, including controls in a shadow root, keep native arrows", () => {
-  const { FakeHTMLElement, document, press, root } = createHarness();
+  const { FakeHTMLElement, document, press, pendingFrames, root } = createHarness();
   const host = new FakeHTMLElement();
   const input = new FakeHTMLElement({ editable: true });
   host.shadowRoot = { activeElement: input };
@@ -145,5 +411,6 @@ test("editable controls, including controls in a shadow root, keep native arrows
   const down = press("ArrowDown");
   assert.equal(down.prevented, false);
   assert.equal(down.stopped, false);
-  assert.equal(root.scrollCalls.length, 0);
+  assert.equal(root.scrollTop, 0);
+  assert.equal(pendingFrames(), 0);
 });
