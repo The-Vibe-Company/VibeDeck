@@ -4,6 +4,7 @@ import {
   ArrowUpRight,
   Check,
   Columns2,
+  Download,
   ExternalLink,
   Globe2,
   Home,
@@ -25,6 +26,7 @@ import {
 import {
   type FormEvent,
   type MouseEvent,
+  type RefObject,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -332,6 +334,8 @@ export default function App() {
   const [fatalError, setFatalError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [updateState, setUpdateState] = useState<UpdateState | null>(null);
+  const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState<string | null>(null);
+  const [updateInstallConfirmationOpen, setUpdateInstallConfirmationOpen] = useState(false);
   const [semanticSearchStatus, setSemanticSearchStatus] = useState<SemanticSearchStatus>({
     phase: "not-installed", progress: 0, message: null, bytes: 0,
   });
@@ -340,6 +344,17 @@ export default function App() {
   const [activeSemanticSearch, setActiveSemanticSearch] = useState<ActiveSemanticSearch | null>(null);
   const [clock, setClock] = useState(() => new Date());
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
+  const readyUpdateVersion = updateState?.status === "ready"
+    ? updateState.availableVersion ?? "suivante"
+    : null;
+  const updateNoticeDeferred = readyUpdateVersion !== null && dismissedUpdateVersion === readyUpdateVersion;
+  const updateNoticeVisible = readyUpdateVersion !== null && !updateNoticeDeferred;
+
+  useEffect(() => {
+    if (updateInstallConfirmationOpen && !readyUpdateVersion) {
+      setUpdateInstallConfirmationOpen(false);
+    }
+  }, [readyUpdateVersion, updateInstallConfirmationOpen]);
 
   const layoutRef = useRef<LayoutNode | null>(null);
   const linkPreviewRef = useRef<LinkPreview | null>(null);
@@ -1509,8 +1524,8 @@ export default function App() {
       </div>
       <header
         className="global-bar"
-        aria-hidden={modal || semanticSearchOpen ? true : undefined}
-        inert={modal || semanticSearchOpen ? true : undefined}
+        aria-hidden={modal || semanticSearchOpen || updateInstallConfirmationOpen ? true : undefined}
+        inert={modal || semanticSearchOpen || updateInstallConfirmationOpen ? true : undefined}
       >
         <Brand />
         <time>{clock.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}</time>
@@ -1569,25 +1584,29 @@ export default function App() {
             Panel agrandi · restaurer <kbd>Échap</kbd>
           </button>
         )}
-        {updateState?.status === "ready" && (
+        {updateNoticeVisible && (
           <button
             type="button"
-            className="restore-pill update-pill"
-            onClick={() => {
-              void window.vibedeck.restartForUpdate().catch((error) => {
-                showToast(cleanError(error));
-              });
-            }}
+            className="update-ready-cta"
+            aria-label={`Mise à jour ${readyUpdateVersion} prête`}
+            onClick={() => setUpdateInstallConfirmationOpen(true)}
           >
-            Version {updateState.availableVersion ?? "suivante"} prête · Redémarrer
+            <Download size={13} />
+            <span>Mise à jour</span>
+            <span className="update-ready-cta__version">{readyUpdateVersion}</span>
+            <span>prête</span>
           </button>
         )}
         <button
           type="button"
           className="quiet-button global-tools"
+          aria-label={updateNoticeDeferred
+            ? `Outils — mise à jour ${readyUpdateVersion} prête`
+            : undefined}
           onClick={() => setModal({ kind: "pilot-tools" })}
         >
           <SlidersHorizontal size={13} /> Outils
+          {updateNoticeDeferred && <span className="tools-update-signal" aria-hidden="true" />}
         </button>
         {state.panels.length > 0 && Object.keys(drafts).length === 0 && (
           <button
@@ -1606,8 +1625,8 @@ export default function App() {
       <main
         className="dashboard-stage"
         aria-label="Dashboard de veille"
-        aria-hidden={modal || semanticSearchOpen ? true : undefined}
-        inert={modal || semanticSearchOpen ? true : undefined}
+        aria-hidden={modal || semanticSearchOpen || updateInstallConfirmationOpen ? true : undefined}
+        inert={modal || semanticSearchOpen || updateInstallConfirmationOpen ? true : undefined}
       >
         <div
           className="dashboard-workspace"
@@ -1701,6 +1720,7 @@ export default function App() {
         <PilotToolsModal
           updateState={updateState}
           onUpdateState={setUpdateState}
+          onRequestRestart={() => setUpdateInstallConfirmationOpen(true)}
           onClose={() => setModal(null)}
           onImported={(nextState, backupCreated) => {
             applyServerState(nextState, true, true);
@@ -1717,6 +1737,17 @@ export default function App() {
             clearSemanticSearchFilter();
             await window.vibedeck.removeSemanticSearchData();
           }}
+        />
+      )}
+
+      {updateInstallConfirmationOpen && readyUpdateVersion && (
+        <UpdateInstallModal
+          version={readyUpdateVersion}
+          onLater={() => {
+            setDismissedUpdateVersion(readyUpdateVersion);
+            setUpdateInstallConfirmationOpen(false);
+          }}
+          onClose={() => setUpdateInstallConfirmationOpen(false)}
         />
       )}
 
@@ -3456,7 +3487,15 @@ function MissingPanel({ panelId }: { panelId: string }) {
   );
 }
 
-function Modal({ children, onDismiss }: { children: React.ReactNode; onDismiss: () => void }) {
+function Modal({
+  children,
+  onDismiss,
+  initialFocusRef,
+}: {
+  children: React.ReactNode;
+  onDismiss: () => void;
+  initialFocusRef?: RefObject<HTMLElement | null>;
+}) {
   const layerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -3464,7 +3503,7 @@ function Modal({ children, onDismiss }: { children: React.ReactNode; onDismiss: 
       ? document.activeElement
       : null;
     const frame = window.requestAnimationFrame(() => {
-      const firstField = layerRef.current?.querySelector<HTMLElement>(
+      const firstField = initialFocusRef?.current ?? layerRef.current?.querySelector<HTMLElement>(
         "input:not(:disabled), textarea:not(:disabled), select:not(:disabled), button:not(:disabled)",
       );
       firstField?.focus();
@@ -3493,6 +3532,69 @@ function Modal({ children, onDismiss }: { children: React.ReactNode; onDismiss: 
     >
       {children}
     </div>
+  );
+}
+
+function UpdateInstallModal({
+  version,
+  onLater,
+  onClose,
+}: {
+  version: string;
+  onLater: () => void;
+  onClose: () => void;
+}) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const laterButtonRef = useRef<HTMLButtonElement>(null);
+
+  async function install() {
+    if (pending) return;
+    setPending(true);
+    setError(null);
+    try {
+      await window.vibedeck.restartForUpdate();
+    } catch (caught) {
+      setError(cleanError(caught));
+      setPending(false);
+    }
+  }
+
+  return (
+    <Modal onDismiss={() => !pending && onClose()} initialFocusRef={laterButtonRef}>
+      <section
+        className="modal-card update-install-modal"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="update-install-title"
+        aria-describedby="update-install-description"
+        aria-busy={pending || undefined}
+      >
+        <header><span>Mise à jour prête</span></header>
+        <div>
+          <h2 id="update-install-title">Installer VibeDeck {version} ?</h2>
+          <p id="update-install-description">
+            L’application va se fermer puis se rouvrir. Vos données locales sont conservées.
+          </p>
+          {error && <p className="form-error" role="alert">{error}</p>}
+        </div>
+        <footer>
+          <button
+            ref={laterButtonRef}
+            type="button"
+            className="quiet-button"
+            disabled={pending}
+            onClick={onLater}
+          >
+            Plus tard
+          </button>
+          <button type="button" className="primary-button" disabled={pending} onClick={() => void install()}>
+            {pending && <LoaderCircle className="is-spinning" size={13} />}
+            Redémarrer et installer
+          </button>
+        </footer>
+      </section>
+    </Modal>
   );
 }
 
@@ -3593,6 +3695,7 @@ function updateStateAnnouncement(state: UpdateState | null) {
 function PilotToolsModal({
   updateState,
   onUpdateState,
+  onRequestRestart,
   onClose,
   onImported,
   onToast,
@@ -3601,6 +3704,7 @@ function PilotToolsModal({
 }: {
   updateState: UpdateState | null;
   onUpdateState: (state: UpdateState) => void;
+  onRequestRestart: () => void;
   onClose: () => void;
   onImported: (state: AppState, backupCreated: boolean) => void;
   onToast: (message: string) => void;
@@ -3644,20 +3748,28 @@ function PilotToolsModal({
             <X size={16} />
           </button>
         </header>
-        <div className="pilot-tools-update">
+        <div className={`pilot-tools-update pilot-tools-update--${updateState?.status ?? "unknown"}`}>
           <span>
             <strong>VibeDeck {updateState?.currentVersion ?? ""}</strong>
             {updateStateText(updateState)}
+            {updateState?.status === "downloading" && (
+              <progress
+                aria-label={`Téléchargement de la version ${updateState.availableVersion ?? "suivante"}`}
+                value={updateState.progressPercent ?? undefined}
+                max="100"
+              >
+                {updateState.progressPercent ?? ""}
+              </progress>
+            )}
           </span>
           {updateState?.status === "ready" ? (
             <button
               type="button"
               className="primary-button"
               disabled={Boolean(pending)}
-              onClick={() => void run("restart", () => window.vibedeck.restartForUpdate())}
+              onClick={onRequestRestart}
             >
-              {pending === "restart" && <LoaderCircle className="is-spinning" size={13} />}
-              Redémarrer
+              Installer
             </button>
           ) : (
             <button
