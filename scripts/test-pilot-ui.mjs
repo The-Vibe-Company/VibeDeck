@@ -68,6 +68,11 @@ async function closeServer(server) {
   await new Promise((resolve) => server.close(resolve));
 }
 
+async function hoverRow(row) {
+  await row.hover();
+  await row.dispatchEvent("pointermove", { pointerType: "mouse" });
+}
+
 function assertWithin(actual, expected, tolerance, label) {
   const difference = Math.abs(actual - expected);
   assert.ok(
@@ -261,10 +266,16 @@ try {
     await page.locator('.article-row[tabindex="-1"]').count(),
     baselineArticleCount - 1,
   );
+  const firstArticleId = await page.locator(".article-row").first().getAttribute("id");
+  assert.ok(firstArticleId, "Le premier article doit avoir un identifiant stable.");
   const secondArticleId = await page.locator(".article-row").nth(1).getAttribute("id");
   assert.ok(secondArticleId, "Le deuxième article doit avoir un identifiant stable.");
+  await page.locator(".article-row").first().focus();
+  await page.waitForFunction(
+    (articleId) => document.querySelector(".article-row--focused")?.id === articleId,
+    firstArticleId,
+  );
   const activeArticleIdAfterKeyDown = await page.locator(".article-row").first().evaluate((row) => {
-    row.focus();
     row.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
     return document.activeElement?.id ?? null;
   });
@@ -309,7 +320,7 @@ try {
   // truly isolates hover-preselect: only onPointerMove can move the selection to nth(3).
   const hoveredRow = page.locator(".article-row").nth(3);
   const hoveredRowId = await hoveredRow.getAttribute("id");
-  await hoveredRow.hover();
+  await hoverRow(hoveredRow);
   assert.equal(
     await page.locator(".dashboard-panel").evaluate((panel) => document.activeElement === panel),
     true,
@@ -343,6 +354,7 @@ try {
   );
   await draftLeaf.getByLabel("Fermer le panel").click();
   await draftLeaf.waitFor({ state: "detached" });
+  await page.locator(".global-bar").hover();
 
   const reference = await page.evaluate(async () => {
     const list = document.querySelector(".article-list");
@@ -404,15 +416,15 @@ try {
     1,
     "compensation du scroll",
   );
-  const expectedAfterJ = await page.evaluate(
+  const expectedAfterArrowDown = await page.evaluate(
     (articleId) => document.getElementById(articleId)?.nextElementSibling?.id ?? null,
     reference.id,
   );
-  assert.ok(expectedAfterJ, "L’article suivant après insertion doit exister.");
-  await page.keyboard.press("j");
+  assert.ok(expectedAfterArrowDown, "L’article suivant après insertion doit exister.");
+  await page.keyboard.press("ArrowDown");
   await page.waitForFunction(
     (articleId) => document.activeElement?.id === articleId,
-    expectedAfterJ,
+    expectedAfterArrowDown,
   );
 
   assert.match(
@@ -446,23 +458,42 @@ try {
   const readerSourceRow = page.locator(".article-row").first();
   const readerSourceId = await readerSourceRow.getAttribute("id");
   await readerSourceRow.focus();
+  const readerDecisionStartedAt = performance.now();
   await page.keyboard.press("Enter");
   await page.locator(".link-reader").waitFor({ state: "visible" });
-  await electronApp.evaluate(async ({ webContents }, articlePrefix) => {
+  await page
+    .locator(".link-reader__toolbar .web-address")
+    .filter({ hasText: "Page originale · lecture simplifiée indisponible" })
+    .waitFor({ state: "visible" });
+  assert.ok(
+    performance.now() - readerDecisionStartedAt < 1_000,
+    "La décision du lecteur doit rester sous une seconde.",
+  );
+  // Fenêtre cachée : le focus OS n'existe pas, isFocused() reste faux côté
+  // main process. Le contrat de focus est prouvé après Échap par le retour de
+  // document.activeElement sur la ligne du fil ; ici on attend seulement que
+  // le lecteur soit chargé (et focalisé quand la fenêtre est affichée).
+  await electronApp.evaluate(async ({ webContents }, { articlePrefix, requireFocus }) => {
     let reader;
     for (let attempt = 0; attempt < 100; attempt += 1) {
       reader = webContents
         .getAllWebContents()
-        .find((contents) => contents.getURL().startsWith(articlePrefix));
+        .find((contents) =>
+          contents.getURL().startsWith(articlePrefix) &&
+          !contents.isLoading() &&
+          (!requireFocus || contents.isFocused()));
       if (reader) break;
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    if (!reader) throw new Error("Le WebContentsView du lecteur est introuvable.");
-    reader.focus();
+    if (!reader) throw new Error("Le lecteur natif focalisé est introuvable.");
     reader.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
     reader.sendInputEvent({ type: "keyUp", keyCode: "Escape" });
-  }, `${origin}/articles/`);
+  }, { articlePrefix: `${origin}/articles/`, requireFocus: showWindow });
   await page.locator(".link-reader").waitFor({ state: "detached" });
+  await page.waitForFunction(
+    (articleId) => document.activeElement?.id === articleId,
+    readerSourceId,
+  );
   await page.keyboard.press("ArrowDown");
   await page.waitForFunction(
     (previousId) => {
@@ -728,6 +759,31 @@ try {
         document.activeElement?.classList.contains("article-row");
     },
     narrowPanelId,
+  );
+  const sharedReaderSourceId = await page.evaluate(() => document.activeElement?.id ?? null);
+  assert.ok(sharedReaderSourceId, "Le panel partagé doit exposer un article actif.");
+  await page.keyboard.press("Enter");
+  await page.locator(".link-reader").waitFor({ state: "visible" });
+  await electronApp.evaluate(async ({ webContents }, articlePrefix) => {
+    let reader;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      reader = webContents
+        .getAllWebContents()
+        .find((contents) => contents.getURL().startsWith(articlePrefix));
+      if (reader) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    if (!reader) throw new Error("Le lecteur du panel partagé est introuvable.");
+    reader.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
+    reader.sendInputEvent({ type: "keyUp", keyCode: "Escape" });
+  }, `${origin}/articles/`);
+  await page.locator(".link-reader").waitFor({ state: "detached" });
+  await page.waitForFunction(
+    ({ articleId, targetPanelId }) =>
+      document.activeElement?.id === articleId &&
+      document.activeElement?.closest(".split-layout__leaf")?.getAttribute("data-panel-id") ===
+        targetPanelId,
+    { articleId: sharedReaderSourceId, targetPanelId: narrowPanelId },
   );
 
   await narrowLeaf.getByLabel("Agrandir").click();
@@ -1110,7 +1166,7 @@ try {
     `Impossible de sortir du fil en moins de ${HOVER_SEEN_DELAY_MS - 300}ms après ${dwellProbeAttempts} essais : runner trop lent pour prouver l'annulation du dwell.`,
   );
   // Survol immobile maintenu au-delà du délai : la ligne devient « vue ».
-  await dwellRow.hover();
+  await hoverRow(dwellRow);
   await page.waitForFunction(
     (articleId) => document.getElementById(articleId)?.classList.contains("article-row--seen") === true,
     dwellId,

@@ -135,12 +135,33 @@ export interface WebPanelBounds {
   height: number;
 }
 
-export interface WebPanelDescriptor {
+export interface WebPanelDescriptorBase {
   panelId: string;
-  url: string;
   bounds: WebPanelBounds;
   visible: boolean;
 }
+
+export interface DashboardWebPanelDescriptor extends WebPanelDescriptorBase {
+  kind: "web";
+  url: string;
+}
+
+export interface ArticleReaderPanelDescriptor extends WebPanelDescriptorBase {
+  kind: "reader";
+  panelId: "reader:article";
+  itemId: string;
+}
+
+export type WebPanelDescriptor = DashboardWebPanelDescriptor | ArticleReaderPanelDescriptor;
+
+export type ReaderMode = "extracting" | "simplified" | "original";
+export type ReaderFallbackReason =
+  | "unsupported-source"
+  | "paywalled"
+  | "not-article"
+  | "blocked"
+  | "timeout"
+  | "extraction-failed";
 
 export interface WebPanelRuntimeState {
   panelId: string;
@@ -160,6 +181,8 @@ export interface WebPanelRuntimeState {
   crashed: boolean;
   unresponsive: boolean;
   destroyed: boolean;
+  readerMode: ReaderMode | null;
+  readerFallback: ReaderFallbackReason | null;
 }
 
 export interface LocalFileActionResult {
@@ -252,6 +275,8 @@ export interface MediaGenApi {
   goForwardWebPanel: (panelId: string) => Promise<void>;
   homeWebPanel: (panelId: string) => Promise<void>;
   openExternalWebPanel: (panelId: string) => Promise<void>;
+  showOriginalArticle: (itemId: string) => Promise<void>;
+  retryOriginalArticle: (itemId: string) => Promise<void>;
   setWebPanelMuted: (panelId: string, muted: boolean) => Promise<void>;
   onStateChanged: (callback: (state: AppState) => void) => () => void;
   onWebPanelStateChanged: (
