@@ -4,6 +4,7 @@ import {
   ARTICLE_READER_FALLBACK_REASONS,
   createStaticReaderDocument,
 } from "./article-reader.mjs";
+export { createElectronSessionFetch } from "./electron-session-fetch.mjs";
 
 const require = createRequire(import.meta.url);
 const electronRuntime = require("electron");
@@ -30,7 +31,6 @@ const ARTICLE_READER_STATIC_PARTITION = "vibedeck-reader-static";
 const READER_FALLBACK_REASONS = new Set(ARTICLE_READER_FALLBACK_REASONS);
 const securedSessions = new WeakSet();
 const WEB_DATA_SCOPES = new Set(["cache", "site-data", "all"]);
-const sessionRedirectTrackers = new WeakMap();
 const PROXY_RESOLUTION_TIMEOUT_MS = 5_000;
 const PROXY_ROUTE_TYPES = new Set([
   "direct",
@@ -66,88 +66,6 @@ function requireSessionMethod(session, method) {
   if (!session || typeof session[method] !== "function") {
     throw new TypeError(`La session Electron ne fournit pas ${method}().`);
   }
-}
-
-/**
- * Adapts Electron's Chromium-backed Session.fetch to the Fetch interface used
- * by the feed engine. Unlike Node fetch, this follows Electron's proxy and
- * certificate configuration. Custom application protocols remain bypassed.
- */
-function responseWithUrl(response, url, redirected) {
-  return new Proxy(response, {
-    get(target, property) {
-      if (property === "url") return url;
-      if (property === "redirected") return redirected;
-      const value = Reflect.get(target, property, target);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-}
-
-function inputHttpUrl(input) {
-  if (typeof input === "string") return cleanHttpUrl(input);
-  if (input && typeof input === "object" && typeof input.url === "string") {
-    return cleanHttpUrl(input.url);
-  }
-  throw new TypeError("URL de téléchargement Electron invalide.");
-}
-
-function redirectTrackerFor(networkSession) {
-  if (sessionRedirectTrackers.has(networkSession)) {
-    return sessionRedirectTrackers.get(networkSession);
-  }
-
-  const tracker = { pending: new Set() };
-  const onBeforeRedirect = networkSession.webRequest?.onBeforeRedirect;
-  if (typeof onBeforeRedirect === "function") {
-    onBeforeRedirect.call(
-      networkSession.webRequest,
-      { urls: ["http://*/*", "https://*/*"] },
-      (details) => {
-        const currentUrl = safeHttpUrl(details?.url);
-        const nextUrl = safeHttpUrl(details?.redirectURL);
-        if (!currentUrl || !nextUrl) return;
-        const context = [...tracker.pending].find(
-          (candidate) =>
-            candidate.requestId === details.id ||
-            (candidate.requestId == null && candidate.currentUrl === currentUrl),
-        );
-        if (!context) return;
-        context.requestId = details.id;
-        context.currentUrl = nextUrl;
-        context.redirected = true;
-      },
-    );
-  }
-  sessionRedirectTrackers.set(networkSession, tracker);
-  return tracker;
-}
-
-export function createElectronSessionFetch(networkSession) {
-  requireSessionMethod(networkSession, "fetch");
-  return async (input, init = undefined) => {
-    const tracker = redirectTrackerFor(networkSession);
-    const context = {
-      currentUrl: inputHttpUrl(input),
-      redirected: false,
-      requestId: null,
-    };
-    tracker.pending.add(context);
-    try {
-      const response = await networkSession.fetch(input, {
-        ...(init ?? {}),
-        bypassCustomProtocolHandlers: true,
-      });
-      const responseUrl = safeHttpUrl(response.url);
-      return responseWithUrl(
-        response,
-        context.redirected ? context.currentUrl : (responseUrl ?? context.currentUrl),
-        response.redirected === true || context.redirected,
-      );
-    } finally {
-      tracker.pending.delete(context);
-    }
-  };
 }
 
 function cleanDiagnosticSourceId(value) {

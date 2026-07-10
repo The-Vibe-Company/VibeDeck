@@ -215,13 +215,25 @@ test("normalizes bounded blocks and creates an escaped inert static document", (
   assert.doesNotMatch(document, /<img /);
 });
 
-test("reader service uses one cookie-free document request and reuses its connector session", async () => {
-  const networkSession = new FakeReaderSession(async () => htmlResponse(publicHtml("le-figaro")));
+test("reader service caches an injected fetcher per connector session", async () => {
+  const networkSession = new FakeReaderSession(() => {
+    throw new Error("Le lecteur ne doit pas appeler Session.fetch directement.");
+  });
   let sessionCreations = 0;
+  let fetcherCreations = 0;
+  const fetchCalls = [];
   const service = createArticleReaderService({
     sessionForConnector: () => {
       sessionCreations += 1;
       return networkSession;
+    },
+    fetchForSession(session) {
+      assert.equal(session, networkSession);
+      fetcherCreations += 1;
+      return async (url, options) => {
+        fetchCalls.push([url, options]);
+        return htmlResponse(publicHtml("le-figaro"));
+      };
     },
   });
 
@@ -236,10 +248,12 @@ test("reader service uses one cookie-free document request and reuses its connec
   assert.equal(first.ok, true);
   assert.equal(second.ok, true);
   assert.equal(sessionCreations, 1);
-  assert.equal(networkSession.fetchCalls.length, 2, "no subresource may be requested");
+  assert.equal(fetcherCreations, 1);
+  assert.equal(fetchCalls.length, 2, "no subresource may be requested");
+  assert.equal(networkSession.fetchCalls.length, 0);
   assert.equal(networkSession.resolveHostCalls.length, 2);
   assert.equal(networkSession.resolveProxyCalls.length, 2);
-  const options = networkSession.fetchCalls[0][1];
+  const options = fetchCalls[0][1];
   assert.equal(options.credentials, "omit");
   assert.equal(options.cache, "no-store");
   assert.equal(options.redirect, "manual");
@@ -257,30 +271,53 @@ test("reader service uses one cookie-free document request and reuses its connec
   assert.equal(networkSession.clearStorageDataCalls.length, 1);
 });
 
-test("reader service follows at most same-adapter HTTPS redirects", async () => {
+test("reader service follows injected manual redirects only after each safe preflight", async () => {
   const responses = [
     htmlResponse("", { status: 302, headers: { location: "/article-final" } }),
     htmlResponse(publicHtml("le-monde")),
   ];
-  const session = new FakeReaderSession(async (_url, _options, call) => responses[call - 1]);
-  const service = createArticleReaderService({ sessionForConnector: () => session });
+  const session = new FakeReaderSession(() => {
+    throw new Error("Le lecteur ne doit pas appeler Session.fetch directement.");
+  });
+  const fetchCalls = [];
+  const service = createArticleReaderService({
+    sessionForConnector: () => session,
+    fetchForSession: () => async (url, options) => {
+      fetchCalls.push([url, options]);
+      return responses[fetchCalls.length - 1];
+    },
+  });
   const result = await service.extract({
     connectorId: "le-monde",
     url: "https://www.lemonde.fr/article-initial",
   });
   assert.equal(result.ok, true);
-  assert.equal(session.fetchCalls.length, 2);
+  assert.equal(fetchCalls.length, 2);
+  assert.equal(session.fetchCalls.length, 0);
+  assert.equal(fetchCalls[0][1].redirect, "manual");
   assert.equal(session.resolveHostCalls.length, 2, "every redirect hop needs a DNS preflight");
   assert.equal(session.resolveProxyCalls.length, 2, "every redirect hop needs a proxy preflight");
 
-  const hostile = new FakeReaderSession(async () =>
-    htmlResponse("", { status: 302, headers: { location: "https://attacker.test/article" } }));
-  const hostileService = createArticleReaderService({ sessionForConnector: () => hostile });
+  const hostile = new FakeReaderSession(() => {
+    throw new Error("Le lecteur ne doit pas appeler Session.fetch directement.");
+  });
+  let hostileFetchCalls = 0;
+  const hostileService = createArticleReaderService({
+    sessionForConnector: () => hostile,
+    fetchForSession: () => async () => {
+      hostileFetchCalls += 1;
+      return htmlResponse("", {
+        status: 302,
+        headers: { location: "https://attacker.test/article" },
+      });
+    },
+  });
   assert.deepEqual(await hostileService.extract({
     connectorId: "le-monde",
     url: "https://www.lemonde.fr/article",
   }), { ok: false, reason: "blocked" });
-  assert.equal(hostile.fetchCalls.length, 1);
+  assert.equal(hostileFetchCalls, 1);
+  assert.equal(hostile.fetchCalls.length, 0);
 });
 
 test("reader service blocks proxy and private DNS routes before the document request", async () => {
@@ -333,8 +370,23 @@ test("reader service enforces its total budget and caller cancellation", async (
     url: "https://www.lemonde.fr/article",
   }), { ok: false, reason: "timeout" });
 
+  const cancellationSession = new FakeReaderSession(() => {
+    throw new Error("Le lecteur ne doit pas appeler Session.fetch directement.");
+  });
+  let receivedSignal;
+  let fetchStarted;
+  const fetchStartedPromise = new Promise((resolve) => {
+    fetchStarted = resolve;
+  });
   const cancellationService = createArticleReaderService({
-    sessionForConnector: () => new FakeReaderSession(() => new Promise(() => {})),
+    sessionForConnector: () => cancellationSession,
+    fetchForSession: () => (_url, options) => {
+      receivedSignal = options.signal;
+      fetchStarted();
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener("abort", () => reject(new Error("annulé")), { once: true });
+      });
+    },
   });
   const controller = new AbortController();
   const pending = cancellationService.extract({
@@ -342,8 +394,11 @@ test("reader service enforces its total budget and caller cancellation", async (
     url: "https://www.lemonde.fr/article",
     signal: controller.signal,
   });
+  await fetchStartedPromise;
   controller.abort();
   await assert.rejects(pending, { name: "AbortError" });
+  assert.equal(receivedSignal.aborted, true);
+  assert.equal(cancellationSession.fetchCalls.length, 0);
 });
 
 test("secure session setup is idempotent", () => {
