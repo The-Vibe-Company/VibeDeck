@@ -1,0 +1,19 @@
+scripts/test-pilot-ui.mjs
+  s_0bc20e7e355f13::t_1470a2c21274ec 739-745
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "2f09c0239f2a8daf09ea5411e4daba4eb7da30e3",
+  "prompts": {},
+  "sessions": {
+    "s_0bc20e7e355f13": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4d6b-df33-7be1-aa15-7cbbbeaf01c4",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
