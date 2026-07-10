@@ -71,6 +71,10 @@ import type {
 } from "./types";
 
 const LINK_READER_ID = "reader:article";
+// Temps de survol immobile sur une ligne avant de la marquer « vue ».
+// Assez long pour qu'un simple passage de souris ne compte pas, assez court
+// pour rester réactif quand on s'arrête vraiment pour lire.
+const HOVER_SEEN_DELAY_MS = 1000;
 const MAX_DASHBOARD_WEB_PANELS = 6;
 const MIN_HORIZONTAL_SPLIT_WIDTH = MIN_PANEL_WIDTH * 2 + SPLIT_DIVIDER_SIZE;
 const MIN_VERTICAL_SPLIT_HEIGHT = MIN_PANEL_HEIGHT * 2 + SPLIT_DIVIDER_SIZE;
@@ -1597,6 +1601,14 @@ function FeedPanelView({
   onConfigure: () => void;
 } & StandardPanelActions) {
   const articleListRef = useRef<HTMLDivElement>(null);
+  const hoverSeenTimerRef = useRef<{ id: string; handle: ReturnType<typeof setTimeout> } | null>(null);
+  const clearHoverSeenTimer = () => {
+    if (hoverSeenTimerRef.current) {
+      clearTimeout(hoverSeenTimerRef.current.handle);
+      hoverSeenTimerRef.current = null;
+    }
+  };
+  useEffect(() => clearHoverSeenTimer, []);
   const sources = panel.sourceIds
     .map((sourceId) => state.sources.find(({ id }) => id === sourceId))
     .filter((source): source is Source => Boolean(source));
@@ -1747,7 +1759,11 @@ function FeedPanelView({
             onAction={() => void onRefresh()}
           />
         ) : (
-          <div className="article-list" ref={articleListRef}>
+          <div
+            className="article-list"
+            ref={articleListRef}
+            onPointerLeave={clearHoverSeenTimer}
+          >
             {items.map((item) => {
               const source = state.sources.find(({ id }) => id === item.sourceId);
               const seen = item.seenAt !== null;
@@ -1771,6 +1787,17 @@ function FeedPanelView({
                   }}
                   onPointerMove={() => {
                     if (ui.focusedItemId !== item.id) onUi({ focusedItemId: item.id });
+                    // Déjà « vu » : rien à programmer.
+                    if (seen || opened) return;
+                    // Un minuteur cible déjà cette ligne : laisser le survol immobile
+                    // aboutir sans le réarmer à chaque pixel.
+                    if (hoverSeenTimerRef.current?.id === item.id) return;
+                    clearHoverSeenTimer();
+                    const handle = setTimeout(() => {
+                      hoverSeenTimerRef.current = null;
+                      onSeen([item.id]);
+                    }, HOVER_SEEN_DELAY_MS);
+                    hoverSeenTimerRef.current = { id: item.id, handle };
                   }}
                   onClick={() => {
                     if (ui.focusedItemId !== item.id) {
