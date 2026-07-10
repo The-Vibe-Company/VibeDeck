@@ -92,7 +92,7 @@ jobs:
           chmod 600 "$key_path"
           echo "APPLE_API_KEY=$key_path" >> "$GITHUB_ENV"
       - name: Build, sign, notarize and upload macOS assets
-        run: npm run build && npx electron-builder --mac --universal -c.forceCodeSigning=true -c.mac.notarize=true --publish always
+        run: npm run prepare:mac-universal && npm run build && npx electron-builder --mac --universal -c.forceCodeSigning=true -c.mac.notarize=true --publish always
         env:
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}

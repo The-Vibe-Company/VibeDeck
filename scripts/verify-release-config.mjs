@@ -69,6 +69,28 @@ assert.equal(build.appId, "com.thevibecompany.vibedeck", "Identifiant applicatif
 assert.equal(build.productName, "VibeDeck", "Nom public de l’application inattendu");
 assert.equal(build.asar, true, "Le code de diffusion doit être emballé dans ASAR");
 assert.equal(build.afterSign, "scripts/after-sign.mjs", "Hook de scellement macOS manquant");
+assert.equal(
+  build.mac?.x64ArchFiles,
+  "**/node_modules/{@img,onnxruntime-node}/**",
+  "Le paquet macOS universel doit conserver les variantes natives de sharp et ONNX Runtime",
+);
+for (const dependency of [
+  "@img/sharp-darwin-arm64@0.34.5",
+  "@img/sharp-darwin-x64@0.34.5",
+  "@img/sharp-libvips-darwin-arm64@1.2.4",
+  "@img/sharp-libvips-darwin-x64@1.2.4",
+]) {
+  assert.match(
+    packageJson.scripts?.["prepare:mac-universal"] ?? "",
+    new RegExp(dependency.replaceAll("/", "\\/")),
+    `La préparation macOS doit épingler ${dependency}`,
+  );
+}
+assert.match(
+  releaseWorkflow,
+  /npm run prepare:mac-universal && npm run build/,
+  "La release macOS doit installer les dépendances natives des deux architectures",
+);
 assert.ok(
   build.extraResources?.includes("LICENSE"),
   "La licence MIT doit être copiée à côté de l’application distribuée",

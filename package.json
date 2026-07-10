@@ -28,11 +28,12 @@
     "verify:packaged-fuses": "node scripts/verify-packaged-fuses.mjs",
     "checksums:release": "node scripts/release-checksums.mjs write",
     "verify:checksums": "node scripts/release-checksums.mjs verify",
+    "prepare:mac-universal": "npm install --no-save --package-lock=false --force --include=optional @img/sharp-darwin-arm64@0.34.5 @img/sharp-darwin-x64@0.34.5 @img/sharp-libvips-darwin-arm64@1.2.4 @img/sharp-libvips-darwin-x64@1.2.4",
     "dist:dir": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir",
     "dist": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
-    "dist:mac": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --universal",
+    "dist:mac": "npm run prepare:mac-universal && npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --universal",
     "dist:win": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win --x64",
-    "dist:mac:signed": "npm run build && electron-builder --mac --universal -c.forceCodeSigning=true -c.mac.notarize=true",
+    "dist:mac:signed": "npm run prepare:mac-universal && npm run build && electron-builder --mac --universal -c.forceCodeSigning=true -c.mac.notarize=true",
     "dist:win:signed": "npm run build && node scripts/build-windows-signed.mjs"
   },
   "dependencies": {
@@ -105,6 +106,7 @@
       "category": "public.app-category.news",
       "icon": "build/icon.icns",
       "hardenedRuntime": true,
+      "x64ArchFiles": "**/node_modules/{@img,onnxruntime-node}/**",
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
       "target": [
