@@ -1,0 +1,53 @@
+electron/database.mjs
+  s_31ffceedbf654a::t_dc3bea7f17b8a2 2293-2343
+electron/feed-engine.mjs
+  s_31ffceedbf654a::t_68c04baa35fed7 339,1377-1384
+electron/feed-engine.test.mjs
+  s_31ffceedbf654a::t_9c033c8be72289 11,282-288
+electron/main.mjs
+  s_31ffceedbf654a::t_1ad553e7d4f7f6 2-4,6-7,9,31-35,43,53,76-79,91-92,124-134,425,430-549,635-650,704,712,732,737,742,749,756,846,935-949,953-966,1026-1032,1124,1139-1149,1166-1176,1178,1182-1184,1213,1226-1227
+electron/preload.cjs
+  s_31ffceedbf654a::t_4f2a3e8585877a 43-50,93-104
+electron/preload.test.mjs
+  s_31ffceedbf654a::t_a166e4d4109442 14-16,91-111
+electron/semantic-search-worker.mjs
+  s_31ffceedbf654a::t_cfc82054e86229 1-104
+electron/semantic-search.mjs
+  s_31ffceedbf654a::t_55367b8ac48a35 1-538
+electron/semantic-search.test.mjs
+  s_31ffceedbf654a::t_f294cb5bdcf8b1 1-71
+electron/web-panel-controller.mjs
+  s_31ffceedbf654a::t_db229bb3242b0a 545,562-564,723,727-735,1165-1171,1218
+electron/web-panel-controller.test.mjs
+  s_31ffceedbf654a::t_53f6845978d4fd 143,192,202,371,420-430
+package-lock.json
+  s_31ffceedbf654a::t_3d8664c70412b7 12,506-991,1165-1221,2418,2977,3624,3776-3781,4076-4081,4407,4720-4725,5075-5117,5294-5299,5440-5462,5769,5786-5829,5921,6168
+package.json
+  s_31ffceedbf654a::t_2893c80927150c 35,66-68
+scripts/test-pilot-ui.mjs
+  s_31ffceedbf654a::t_371c35abd7b6ba 173,552-680,682-687
+src/App.tsx
+  s_31ffceedbf654a::t_9fb9a5a1784bdc 10,70-72,147,155-174,228,242-244,260,273-301,315-320,341-346,351-352,450-457,471-480,562-571,578-579,610,643,1015,1021-1198,1202-1209,1214-1218,1276,1424-1428,1448-1449,1454-1487,1526-1527,1628-1657,1670-2089,2375-2377,2388-2390,2409,2423,2436,2450-2452,2511-2523,2547-2554,3442-3443,3448-3449,3451,3454,3557-3585
+src/styles.css
+  s_31ffceedbf654a::t_dfa3c5d1dca1c7 653-685,1355-1695
+src/types.ts
+  s_31ffceedbf654a::t_5c70d5e86ba895 175-198,231-240,261-264
+README.md
+  s_31ffceedbf654a::t_86776dbdfbfa75 26-27,55-56,63,88
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "122e79c4ce1ce0f7bc35226612a564d1af7b7afd",
+  "prompts": {},
+  "sessions": {
+    "s_31ffceedbf654a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec6fed37-8641-432e-a470-fd001ad752b4",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
