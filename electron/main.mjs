@@ -98,6 +98,20 @@ if (!app.isPackaged) {
   });
 }
 
+// Fenêtre pilotée par les tests : jamais affichée ni activée, pour que la
+// suite test:pilot-ui ne vole pas le focus de l'écran.
+const isHeadlessTestWindow =
+  !app.isPackaged && process.env.MEDIAGEN_TEST_HEADLESS === "true";
+if (isHeadlessTestWindow) {
+  // Fenêtre cachée => Chromium étranglerait requestAnimationFrame et les
+  // minuteurs dont dépendent les tests de viewport et de dwell.
+  app.commandLine.appendSwitch("disable-renderer-backgrounding");
+  app.commandLine.appendSwitch("disable-background-timer-throttling");
+  app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+  // Avant ready, sinon l'icône du Dock peut apparaître brièvement sur macOS.
+  app.dock?.hide();
+}
+
 function cleanName(value) {
   if (typeof value !== "string") throw new TypeError("Le nom est invalide.");
   const name = value.trim();
@@ -1007,6 +1021,7 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      backgroundThrottling: !isHeadlessTestWindow,
     },
   });
   mainWindow = window;
@@ -1040,7 +1055,7 @@ function createWindow() {
   }));
 
   window.once("ready-to-show", () => {
-    if (!window.isDestroyed()) window.show();
+    if (!window.isDestroyed() && !isHeadlessTestWindow) window.show();
   });
   for (const eventName of ["show", "hide", "focus", "blur", "minimize", "restore"]) {
     window.on(eventName, () => heartbeatPilotUsage());
@@ -1115,7 +1130,7 @@ if (!hasSingleInstanceLock) {
   app.quit();
 } else {
   app.on("second-instance", () => {
-    if (!mainWindow) return;
+    if (!mainWindow || isHeadlessTestWindow) return;
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show();
     mainWindow.focus();

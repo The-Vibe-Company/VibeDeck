@@ -8,6 +8,9 @@ import electronExecutable from "electron";
 import { _electron as electron } from "playwright-core";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// MEDIAGEN_PILOT_UI_SHOW=1 affiche la fenêtre pour débugger ; sinon la suite
+// tourne fenêtre cachée pour ne pas voler le focus de l'écran.
+const showWindow = process.env.MEDIAGEN_PILOT_UI_SHOW === "1";
 const initialArticleCount = 90;
 const secondaryArticleCount = 2;
 const baselineArticleCount = initialArticleCount + secondaryArticleCount;
@@ -173,6 +176,7 @@ try {
       MEDIAGEN_ALLOW_PRIVATE_NETWORK: "true",
       MEDIAGEN_DB_PATH: databasePath,
       MEDIAGEN_FAKE_SEMANTIC_SEARCH: "true",
+      MEDIAGEN_TEST_HEADLESS: showWindow ? "" : "true",
       VITE_DEV_SERVER_URL: "",
     },
     timeout: 30_000,
@@ -180,7 +184,7 @@ try {
 
   const page = await electronApp.firstWindow({ timeout: 30_000 });
   page.setDefaultTimeout(20_000);
-  await page.bringToFront();
+  if (showWindow) await page.bringToFront();
   await page.waitForFunction(() => Boolean(window.mediagen?.getState));
   await page.evaluate(() => window.mediagen.focusDashboard());
 

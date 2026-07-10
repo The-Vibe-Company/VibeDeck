@@ -30,6 +30,7 @@ async function run() {
     VITE_DEV_SERVER_URL: createDevelopmentServerUrl(port),
   };
   delete env.MEDIAGEN_DB_PATH;
+  delete env.MEDIAGEN_TEST_HEADLESS;
 
   const viteCommand = "vite --host 127.0.0.1";
   const electronCommand = [
