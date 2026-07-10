@@ -92,8 +92,8 @@ Les futurs types de panels doivent étendre le modèle existant sans spécialise
 - `Nouveau`, `Vu` et `Ouvert` sont trois états distincts et persistants.
 - Le focus visuel et `document.activeElement` doivent toujours raconter la même chose.
 - Le survol donne le focus au panel sans voler le clavier à un champ, un bouton actif ou une page web.
-- `Entrée`, `Échap`, les flèches, `J/K`, la double-flèche entre panels et `Alt + flèche` sont des contrats produit.
-- Dans le lecteur, le scroll clavier rapide conserve environ 28 % de recouvrement visuel.
+- `Entrée`, `Échap`, les flèches, la double-flèche entre panels et `Alt + flèche` sont des contrats produit.
+- Le scroll clavier est fluide : dans le fil, maintenir une flèche fait glisser la sélection en continu ; dans le lecteur, un appui avance d'une page animée en conservant environ 28 % de recouvrement visuel et maintenir la flèche déclenche un défilement continu. `prefers-reduced-motion` restaure les sauts instantanés.
 - Un drag externe ou un MIME forgé ne doit jamais modifier le layout.
 
 ## Conventions de code
