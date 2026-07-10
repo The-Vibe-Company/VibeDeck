@@ -1,0 +1,51 @@
+electron/semantic-model-download.test.mjs
+  s_c7dbcf25944687::t_fd9ef66e902a48 109-111,139,227,234,241,248,282,322
+  s_c7dbcf25944687::t_58b2ca2fdda512 149-170
+  s_c7dbcf25944687::t_fa4554473baa52 1-108,112-138,140-148,171-226,228-233,235-240,242-247,249-281,283-321,323-328
+electron/web-panel-controller.mjs
+  s_c7dbcf25944687::t_cb8aad8d541244 7
+electron/main.mjs
+  s_c7dbcf25944687::t_064da9fe712f43 103-108,1230,1253
+  s_c7dbcf25944687::t_9c789959948eef 25
+  s_c7dbcf25944687::t_85acafa2c4afdf 1243-1248
+  s_c7dbcf25944687::t_cdfe7aad2ef07e 33
+electron/feed-engine.mjs
+  s_c7dbcf25944687::t_92b71784a00bcb 935-942,952,1556,1568,1650,1656
+electron/article-reader.test.mjs
+  s_c7dbcf25944687::t_617fca8f6d2496 218-221,223-224,230-237,251-253,256,274,279-289,295-297,301-314,319-320,373-380,382-389,397,400-401
+electron/article-reader.mjs
+  s_c7dbcf25944687::t_6f0bf387dd84d7 748,751-752
+  s_c7dbcf25944687::t_617fca8f6d2496 583-591,598,679,687-689,707-713,792
+  s_c7dbcf25944687::t_92b71784a00bcb 537-544,547-550,615,619,632-639,642
+scripts/test-pilot-ui.mjs
+  s_c7dbcf25944687::t_79284ad6a9efe9 541
+  s_c7dbcf25944687::t_496060ac1fcda4 132,138-142,232,240-244
+electron/electron-session-fetch.test.mjs
+  s_c7dbcf25944687::t_3fa268a70768bc 37-67,152-175
+  s_c7dbcf25944687::t_c60ccbe99822a7 1-36,68-151,176-260
+README.md
+  s_c7dbcf25944687::t_a3241bd64bb5d0 34
+electron/electron-session-fetch.mjs
+  s_c7dbcf25944687::t_cb8aad8d541244 1-204,208-212,214-222,226-378
+  s_c7dbcf25944687::t_3fa268a70768bc 205-207,213,223-225
+electron/semantic-model-download.mjs
+  s_c7dbcf25944687::t_92b71784a00bcb 69-76,116,121,173,176,178,183,195
+  s_c7dbcf25944687::t_fa4554473baa52 1-19,21-32,34-35,37-38,40-41,43-47,49-50,52-53,55-68,77-98,100-103,105-115,117,119-120,122,124-125,127-128,130-144,146-172,174-175,177,180-182,185-191,193-194,196-201
+  s_c7dbcf25944687::t_fd9ef66e902a48 20,33,36,39,42,48,51,54,99,104,118,123,126,129,145,179,184,192
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "4d9d38ffeb91198ecf60ef35c48cf2643a3fb7ba",
+  "prompts": {},
+  "sessions": {
+    "s_c7dbcf25944687": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4d5b-4edb-7c53-af2e-c3422c1a44d0",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
