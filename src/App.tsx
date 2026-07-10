@@ -50,6 +50,7 @@ import {
   formatCheckedAt,
   formatItemTime,
 } from "./feed-presentation";
+import { saveFeedPanelConfiguration } from "./feed-settings";
 import type {
   AppState,
   ConnectorKind,
@@ -2751,96 +2752,23 @@ function FeedConfigModal({
     if (!name.trim() || pending) return;
     setPending(true);
     setError(null);
-    let nextState = state;
-    const initialSourceIds = new Set(currentSources.map(({ id }) => id));
-    const addedSourceIds = new Set<string>();
     try {
-      const existingConnectors = new Set(
-        currentSources
-          .filter(({ id }) => keptSourceIds.has(id))
-          .map(({ connectorId }) => connectorId)
-          .filter(Boolean),
-      );
-      for (const catalogId of selectedCatalogIds) {
-        if (!existingConnectors.has(catalogId)) {
-          const result = await window.mediagen.addCatalogSource(panel.id, catalogId, {
-            refreshIntervalSeconds: defaultRefreshInterval,
-          });
-          nextState = result.state;
-          if (!initialSourceIds.has(result.sourceId)) addedSourceIds.add(result.sourceId);
-        }
-      }
       const submittedCustomSources = [
         ...customSources,
         ...(customInput.trim()
           ? [{ url: customInput.trim(), connectorKind: customConnectorKind }]
           : []),
       ];
-      const uniqueCustomSources = submittedCustomSources.filter(
-        (source, index, all) =>
-          all.findIndex(
-            (candidate) =>
-              candidate.url === source.url &&
-              candidate.connectorKind === source.connectorKind,
-          ) === index,
-      );
-      for (const source of uniqueCustomSources) {
-        const result = await window.mediagen.addSource(panel.id, {
-          ...source,
-          refreshIntervalSeconds: defaultRefreshInterval,
-        });
-        nextState = result.state;
-        if (!initialSourceIds.has(result.sourceId)) addedSourceIds.add(result.sourceId);
-      }
-      // Network-dependent additions are complete. Apply the local, reversible
-      // changes only now so a broken URL cannot first remove a working source.
-      if (name.trim() !== panel.name) {
-        nextState = await window.mediagen.renamePanel(panel.id, name.trim());
-      }
-      if (defaultRefreshInterval !== panel.defaultRefreshIntervalSeconds) {
-        nextState = await window.mediagen.setFeedPanelDefaultRefresh(
-          panel.id,
-          defaultRefreshInterval,
-        );
-      }
-      for (const source of currentSources) {
-        if (!keptSourceIds.has(source.id)) {
-          nextState = await window.mediagen.removeSource(panel.id, source.id);
-        }
-      }
+      const nextState = await saveFeedPanelConfiguration(window.mediagen, panel, state, {
+        name: name.trim(),
+        defaultRefreshIntervalSeconds: defaultRefreshInterval,
+        keptSourceIds: [...keptSourceIds],
+        selectedCatalogIds: [...selectedCatalogIds],
+        customSources: submittedCustomSources,
+      });
       onSaved(nextState, "Sources mises à jour");
     } catch (caught) {
-      const rollbackTasks: Array<Promise<unknown>> = [];
-      for (const sourceId of addedSourceIds) {
-        rollbackTasks.push(window.mediagen.removeSource(panel.id, sourceId));
-      }
-      for (const source of currentSources) {
-        rollbackTasks.push(
-          window.mediagen.addSource(panel.id, {
-            url: source.feedUrl,
-            connectorKind: source.connectorKind,
-            refreshIntervalSeconds: source.refreshIntervalSeconds,
-          }),
-        );
-      }
-      if (name.trim() !== panel.name) {
-        rollbackTasks.push(window.mediagen.renamePanel(panel.id, panel.name));
-      }
-      if (defaultRefreshInterval !== panel.defaultRefreshIntervalSeconds) {
-        rollbackTasks.push(
-          window.mediagen.setFeedPanelDefaultRefresh(
-            panel.id,
-            panel.defaultRefreshIntervalSeconds,
-          ),
-        );
-      }
-      const rollback = await Promise.allSettled(rollbackTasks);
-      const incomplete = rollback.some(({ status }) => status === "rejected");
-      setError(
-        incomplete
-          ? `Configuration interrompue et restauration incomplète : ${cleanError(caught)}`
-          : `Aucune modification conservée : ${cleanError(caught)}`,
-      );
+      setError(cleanError(caught));
       setPending(false);
     }
   }

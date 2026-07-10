@@ -88,6 +88,31 @@ test("keeps post-baseline arrivals ahead by immutable detection time", () => {
   ]);
 });
 
+test("falls through to the stable ID order when every timestamp is malformed", () => {
+  const items = [
+    item({
+      id: "without-date-b",
+      publishedAt: "not-a-date",
+      updatedAt: null,
+      observedAt: "not-a-date",
+      firstSeenAt: "not-a-date",
+    }),
+    item({
+      id: "without-date-a",
+      publishedAt: null,
+      updatedAt: "not-a-date",
+      observedAt: "not-a-date",
+      firstSeenAt: "not-a-date",
+    }),
+  ];
+
+  assert.equal(Number.isNaN(compareFeedItems(items[0], items[1])), false);
+  assert.deepEqual(items.sort(compareFeedItems).map(({ id }) => id), [
+    "without-date-a",
+    "without-date-b",
+  ]);
+});
+
 test("renders an explicit calendar context after sixty minutes", () => {
   const now = new Date(2026, 6, 10, 14, 0, 0);
   const withPublishedAt = (publishedAt) => item({ publishedAt });

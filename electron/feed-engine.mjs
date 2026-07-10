@@ -1099,6 +1099,12 @@ function sourceNameFromUrl(url) {
   return hostname.split(".")[0]?.replace(/^./, (letter) => letter.toUpperCase()) || hostname;
 }
 
+function configurationErrorText(error) {
+  return error instanceof Error && error.message
+    ? error.message
+    : "Une erreur inattendue s’est produite.";
+}
+
 function failureRetryState(source, failedAt) {
   const consecutiveFailures = Math.max(0, Number(source.consecutiveFailures) || 0) + 1;
   const baseSeconds = Math.max(
@@ -1155,6 +1161,8 @@ export class FeedEngine {
     this.activeRefreshTasks = new Set();
     this.activeRefreshCount = 0;
     this.activeRefreshesByHost = new Map();
+    this.feedConfigurationSaveActive = false;
+    this.activeStandaloneFeedConfigurationMutations = 0;
     this.closed = false;
   }
 
@@ -1169,6 +1177,28 @@ export class FeedEngine {
     return this.#nowDate().toISOString();
   }
 
+  #assertFeedConfigurationMutationIdle() {
+    if (
+      this.feedConfigurationSaveActive ||
+      this.activeStandaloneFeedConfigurationMutations > 0
+    ) {
+      throw new Error("Une configuration de fil est déjà en cours.");
+    }
+  }
+
+  async #runStandaloneFeedConfigurationMutation(operation) {
+    this.#assertFeedConfigurationMutationIdle();
+    this.activeStandaloneFeedConfigurationMutations += 1;
+    try {
+      return await operation();
+    } finally {
+      this.activeStandaloneFeedConfigurationMutations = Math.max(
+        0,
+        this.activeStandaloneFeedConfigurationMutations - 1,
+      );
+    }
+  }
+
   getState() {
     return {
       ...this.database.getState(this.#nowIso()),
@@ -1181,21 +1211,25 @@ export class FeedEngine {
   }
 
   async createPanel(input, placement = null) {
+    this.#assertFeedConfigurationMutationIdle();
     this.database.createPanel(input, placement, this.#nowIso());
     return this.getState();
   }
 
   async renamePanel(panelId, name) {
+    this.#assertFeedConfigurationMutationIdle();
     this.database.renamePanel(panelId, name, this.#nowIso());
     return this.getState();
   }
 
   async setWebPanelUrl(panelId, url) {
+    this.#assertFeedConfigurationMutationIdle();
     this.database.setWebPanelUrl(panelId, url, this.#nowIso());
     return this.getState();
   }
 
   async setFeedPanelDefaultRefresh(panelId, refreshIntervalSeconds) {
+    this.#assertFeedConfigurationMutationIdle();
     this.database.setFeedPanelDefaultRefresh(
       panelId,
       normalizeRefreshInterval(refreshIntervalSeconds),
@@ -1204,12 +1238,106 @@ export class FeedEngine {
     return this.getState();
   }
 
+  async saveFeedPanelConfiguration(panelId, draft) {
+    // Source rows are shared across panels. Only one complete configuration
+    // transaction may run at once, otherwise a rollback in one panel could
+    // overwrite a successful edit in another panel.
+    this.#assertFeedConfigurationMutationIdle();
+    if (this.closed) throw new RefreshCancelledError("Le moteur de veille est fermé.");
+    this.feedConfigurationSaveActive = true;
+
+    try {
+      // The checkpoint never crosses the main-process boundary. It includes
+      // detached cache rows so connector and interval changes can be restored
+      // exactly even when the renderer has never seen those sources.
+      const checkpoint = this.database.captureFeedPanelConfiguration(panelId);
+      const keptSourceIds = new Set(draft.keptSourceIds);
+      const attachedSourceIds = new Set(checkpoint.sourceIds);
+      if ([...keptSourceIds].some((sourceId) => !attachedSourceIds.has(sourceId))) {
+        throw new Error("Une source conservée n’est plus associée à ce fil.");
+      }
+      const desiredSourceIds = new Set(draft.keptSourceIds);
+
+      try {
+        const existingConnectorIds = new Set(
+          checkpoint.sourceConfigurations
+            .filter(({ sourceId }) => keptSourceIds.has(sourceId))
+            .map(({ connectorId }) => connectorId)
+            .filter(Boolean),
+        );
+        for (const catalogId of new Set(draft.selectedCatalogIds)) {
+          if (existingConnectorIds.has(catalogId)) continue;
+          const result = await this.#addCatalogSource(panelId, catalogId, {
+            refreshIntervalSeconds: draft.defaultRefreshIntervalSeconds,
+          });
+          desiredSourceIds.add(result.sourceId);
+        }
+
+        const seenCustomSources = new Set();
+        for (const source of draft.customSources) {
+          const key = `${source.connectorKind}\u0000${source.url}`;
+          if (seenCustomSources.has(key)) continue;
+          seenCustomSources.add(key);
+          const result = await this.#addSource(panelId, {
+            ...source,
+            refreshIntervalSeconds: draft.defaultRefreshIntervalSeconds,
+          });
+          desiredSourceIds.add(result.sourceId);
+        }
+
+        // Do network-dependent work first. The remaining local mutations are
+        // still covered by the same private checkpoint.
+        if (draft.name !== checkpoint.name) {
+          this.database.renamePanel(panelId, draft.name, this.#nowIso());
+        }
+        if (
+          draft.defaultRefreshIntervalSeconds !==
+          checkpoint.defaultRefreshIntervalSeconds
+        ) {
+          this.database.setFeedPanelDefaultRefresh(
+            panelId,
+            draft.defaultRefreshIntervalSeconds,
+            this.#nowIso(),
+          );
+        }
+        for (const sourceId of checkpoint.sourceIds) {
+          if (!desiredSourceIds.has(sourceId)) {
+            this.database.detachSource(panelId, sourceId);
+          }
+        }
+        return this.getState();
+      } catch (caught) {
+        try {
+          this.database.restoreFeedPanelConfiguration(
+            panelId,
+            checkpoint,
+            this.#nowIso(),
+          );
+        } catch (rollbackError) {
+          throw new Error(
+            `Configuration interrompue et restauration incomplète : ${configurationErrorText(caught)} ` +
+              `(restauration : ${configurationErrorText(rollbackError)})`,
+            { cause: caught },
+          );
+        }
+        throw new Error(
+          `Aucune modification conservée : ${configurationErrorText(caught)}`,
+          { cause: caught },
+        );
+      }
+    } finally {
+      this.feedConfigurationSaveActive = false;
+    }
+  }
+
   async deletePanel(panelId) {
+    this.#assertFeedConfigurationMutationIdle();
     this.database.deletePanel(panelId, this.#nowIso());
     return this.getState();
   }
 
   async saveDashboardLayout(layout, expectedRevision) {
+    this.#assertFeedConfigurationMutationIdle();
     this.database.saveDashboardLayout(layout, expectedRevision, this.#nowIso());
     return this.getState();
   }
@@ -1233,6 +1361,7 @@ export class FeedEngine {
   }
 
   async importDashboardConfig(configuration) {
+    this.#assertFeedConfigurationMutationIdle();
     this.database.importDashboardConfig(configuration, this.#nowIso());
     return this.getState();
   }
@@ -1258,6 +1387,7 @@ export class FeedEngine {
   }
 
   async removeSource(panelId, sourceId) {
+    this.#assertFeedConfigurationMutationIdle();
     this.database.detachSource(panelId, sourceId);
     return this.getState();
   }
@@ -1774,6 +1904,11 @@ export class FeedEngine {
   }
 
   async addSource(panelId, input) {
+    return this.#runStandaloneFeedConfigurationMutation(() =>
+      this.#addSource(panelId, input));
+  }
+
+  async #addSource(panelId, input) {
     if (!this.database.hasPanel(panelId, "feed")) throw new Error("Panel de flux introuvable.");
     const request = normalizeSourceRequest(input);
     const normalizedInput = normalizeInputUrl(request.url);
@@ -1853,12 +1988,17 @@ export class FeedEngine {
   }
 
   async addCatalogSource(panelId, catalogId, options = {}) {
+    return this.#runStandaloneFeedConfigurationMutation(() =>
+      this.#addCatalogSource(panelId, catalogId, options));
+  }
+
+  async #addCatalogSource(panelId, catalogId, options = {}) {
     if (typeof catalogId !== "string" || !catalogId.trim()) {
       throw new TypeError("Source du catalogue invalide.");
     }
     const publication = KNOWN_PUBLICATIONS.find(({ id }) => id === catalogId.trim());
     if (!publication) throw new Error("Cette source n’existe pas dans le catalogue.");
-    return this.addSource(panelId, {
+    return this.#addSource(panelId, {
       url: publication.homepageUrl,
       connectorKind: publication.connectorKind,
       refreshIntervalSeconds: options?.refreshIntervalSeconds,

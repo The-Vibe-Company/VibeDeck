@@ -477,6 +477,127 @@ test("keeps every dashboard within three practical rows and columns", async () =
   }
 });
 
+test("atomically restores an exact feed configuration and shared source intervals", () => {
+  const database = createLocalFeedDatabase();
+  const now = "2026-07-10T12:00:00.000Z";
+  try {
+    const target = database.createPanel(
+      {
+        kind: "feed",
+        name: "Configuration initiale",
+        defaultRefreshIntervalSeconds: 300,
+      },
+      null,
+      now,
+    );
+    const sibling = database.createPanel(
+      { kind: "feed", name: "Panel voisin", defaultRefreshIntervalSeconds: 300 },
+      { targetPanelId: target.id, side: "right" },
+      now,
+    );
+    const putSource = (id, refreshIntervalSeconds) => database.putSource({
+      id,
+      name: id,
+      inputUrl: `https://${id}.test/feed.xml`,
+      feedUrl: `https://${id}.test/feed.xml`,
+      connectorId: null,
+      connectorKind: "rss",
+      refreshIntervalSeconds,
+      status: "healthy",
+      lastCheckedAt: now,
+      lastSuccessAt: now,
+      errorMessage: null,
+    }, now);
+    const sourceA = putSource("source-a", 300);
+    const sourceB = putSource("source-b", 600);
+    const sharedSource = putSource("source-shared", 300);
+    database.attachSource(target.id, sourceA);
+    database.attachSource(target.id, sourceB);
+    database.attachSource(sibling.id, sharedSource);
+
+    const checkpoint = database.captureFeedPanelConfiguration(target.id);
+    assert.deepEqual(checkpoint.sourceIds, [sourceA, sourceB]);
+    assert.deepEqual(
+      checkpoint.sourceConfigurations.map(({ sourceId }) => sourceId),
+      [sourceA, sourceB, sharedSource],
+    );
+
+    database.renamePanel(target.id, "Configuration partielle", now);
+    database.setFeedPanelDefaultRefresh(target.id, 30, now);
+    database.detachSource(target.id, sourceA);
+    database.attachSource(target.id, sharedSource);
+    database.setSourceRefreshInterval(sharedSource, 30, now);
+    database.setSourceConnectorId(sharedSource, "le-monde", now);
+    const partialState = database.getState(now);
+
+    database.database.exec(`
+      CREATE TRIGGER fail_feed_configuration_restore
+      BEFORE UPDATE OF refresh_interval_seconds ON sources
+      WHEN NEW.id = '${sourceB}'
+      BEGIN
+        SELECT RAISE(ABORT, 'restauration injectée');
+      END;
+    `);
+    assert.throws(
+      () => database.restoreFeedPanelConfiguration(target.id, checkpoint, now),
+      /restauration injectée/,
+    );
+    assert.deepEqual(database.getState(now), partialState);
+    database.database.exec("DROP TRIGGER fail_feed_configuration_restore");
+
+    database.restoreFeedPanelConfiguration(target.id, checkpoint, now);
+    const restored = database.getState(now);
+    const restoredPanel = restored.panels.find(({ id }) => id === target.id);
+    assert.equal(restoredPanel.name, "Configuration initiale");
+    assert.equal(restoredPanel.defaultRefreshIntervalSeconds, 300);
+    assert.deepEqual(restoredPanel.sourceIds, [sourceA, sourceB]);
+    assert.equal(
+      restored.sources.find(({ id }) => id === sharedSource).refreshIntervalSeconds,
+      300,
+    );
+    assert.equal(restored.sources.find(({ id }) => id === sharedSource).connectorId, null);
+    assert.deepEqual(
+      restored.panels.find(({ id }) => id === sibling.id).sourceIds,
+      [sharedSource],
+    );
+  } finally {
+    database.close();
+  }
+});
+
+test("fails closed before editing when a feed checkpoint would exceed its bound", () => {
+  const database = createLocalFeedDatabase();
+  const now = "2026-07-10T12:00:00.000Z";
+  try {
+    const panel = database.createPanel({ kind: "feed", name: "Borne" }, null, now);
+    const insert = database.database.prepare(`
+      INSERT INTO sources (
+        id, name, input_url, feed_url, connector_kind,
+        refresh_interval_seconds, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'rss', 300, 'idle', ?, ?)
+    `);
+    database.database.exec("BEGIN IMMEDIATE;");
+    try {
+      for (let index = 0; index <= 4_096; index += 1) {
+        const id = `checkpoint-overflow-${index}`;
+        const url = `https://overflow-${index}.test/feed.xml`;
+        insert.run(id, id, url, url, now, now);
+      }
+      database.database.exec("COMMIT;");
+    } catch (error) {
+      database.database.exec("ROLLBACK;");
+      throw error;
+    }
+    assert.throws(
+      () => database.captureFeedPanelConfiguration(panel.id),
+      /trop de sources/,
+    );
+    assert.equal(database.getState(now).panels[0].name, "Borne");
+  } finally {
+    database.close();
+  }
+});
+
 test("exposes the optimized source catalogue and reuses its connector", async () => {
   let fetchCount = 0;
   const engine = createFeedEngine({

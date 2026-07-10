@@ -4,6 +4,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 const MAX_PANEL_NAME_LENGTH = 80;
+const MAX_SOURCE_NAME_LENGTH = 120;
 export const MAX_ITEMS_PER_SOURCE = 2_000;
 export const MAX_HTTP_URL_LENGTH = 4_096;
 const MAX_LAYOUT_DEPTH = 32;
@@ -22,6 +23,7 @@ const MAX_CONFIGURATION_BYTES = 512 * 1_024;
 const MAX_CONFIGURATION_PANELS = 64;
 const MAX_CONFIGURATION_SOURCES = 256;
 const MAX_CONFIGURATION_WEB_PANELS = 6;
+const MAX_FEED_CONFIGURATION_CHECKPOINT_SOURCES = 4_096;
 const MIN_SPLIT_RATIO = 0.1;
 const MAX_SPLIT_RATIO = 0.9;
 const MIN_REFRESH_INTERVAL_SECONDS = 30;
@@ -44,6 +46,17 @@ function cleanPanelName(name) {
   return name.trim().slice(0, MAX_PANEL_NAME_LENGTH);
 }
 
+function cleanSourceName(name) {
+  if (typeof name !== "string" || !name.trim()) {
+    throw new TypeError("Le nom de la source ne peut pas être vide.");
+  }
+  const normalized = name.trim();
+  if (normalized.length > MAX_SOURCE_NAME_LENGTH) {
+    throw new RangeError("Le nom de la source est trop long.");
+  }
+  return normalized;
+}
+
 function cleanRefreshInterval(value, fallback = DEFAULT_REFRESH_INTERVAL_SECONDS) {
   const seconds = value ?? fallback;
   if (
@@ -54,6 +67,55 @@ function cleanRefreshInterval(value, fallback = DEFAULT_REFRESH_INTERVAL_SECONDS
     throw new RangeError("La fréquence doit être comprise entre 30 secondes et 60 minutes.");
   }
   return seconds;
+}
+
+function normalizeFeedPanelConfigurationCheckpoint(checkpoint) {
+  if (!checkpoint || typeof checkpoint !== "object" || Array.isArray(checkpoint)) {
+    throw new TypeError("Point de restauration du fil invalide.");
+  }
+  if (
+    !Array.isArray(checkpoint.sourceIds) ||
+    checkpoint.sourceIds.length > MAX_FEED_CONFIGURATION_CHECKPOINT_SOURCES ||
+    !Array.isArray(checkpoint.sourceConfigurations) ||
+    checkpoint.sourceConfigurations.length > MAX_FEED_CONFIGURATION_CHECKPOINT_SOURCES
+  ) {
+    throw new RangeError("Point de restauration du fil trop volumineux.");
+  }
+  const sourceIds = checkpoint.sourceIds.map((sourceId) =>
+    cleanIdentifier(sourceId, "Source"));
+  if (new Set(sourceIds).size !== sourceIds.length) {
+    throw new Error("Une source ne peut apparaître qu’une fois dans le fil restauré.");
+  }
+  const seenConfigurationSourceIds = new Set();
+  const sourceConfigurations = checkpoint.sourceConfigurations.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new TypeError("Configuration de source sauvegardée invalide.");
+    }
+    const sourceId = cleanIdentifier(entry.sourceId, "Source");
+    if (seenConfigurationSourceIds.has(sourceId)) {
+      throw new Error("Configuration de source sauvegardée en double.");
+    }
+    seenConfigurationSourceIds.add(sourceId);
+    return {
+      sourceId,
+      name: cleanSourceName(entry.name),
+      inputUrl: cleanHttpUrl(entry.inputUrl),
+      feedUrl: cleanHttpUrl(entry.feedUrl),
+      connectorId: cleanOptionalConnectorId(entry.connectorId),
+      connectorKind: cleanConnectorKind(entry.connectorKind),
+      refreshIntervalSeconds: cleanRefreshInterval(entry.refreshIntervalSeconds),
+      updatedAt: cleanTimestamp(entry.updatedAt, "Date de source sauvegardée"),
+    };
+  });
+  return {
+    name: cleanPanelName(checkpoint.name),
+    defaultRefreshIntervalSeconds: cleanRefreshInterval(
+      checkpoint.defaultRefreshIntervalSeconds,
+    ),
+    updatedAt: cleanTimestamp(checkpoint.updatedAt, "Date de panel sauvegardée"),
+    sourceIds,
+    sourceConfigurations,
+  };
 }
 
 function cleanHttpUrl(value) {
@@ -1882,6 +1944,129 @@ export class LocalFeedDatabase {
       `)
       .run(interval, now, panelId);
     if (result.changes === 0) throw new Error("Panel de flux introuvable.");
+  }
+
+  captureFeedPanelConfiguration(panelId) {
+    const panel = this.database
+      .prepare(`
+        SELECT name, default_refresh_interval_seconds, updated_at
+        FROM panels
+        WHERE id = ? AND kind = 'feed'
+      `)
+      .get(panelId);
+    if (!panel) throw new Error("Panel de flux introuvable.");
+    const sourceIds = this.database
+      .prepare(`
+        SELECT source_id
+        FROM panel_sources
+        WHERE panel_id = ?
+        ORDER BY position ASC
+      `)
+      .all(panelId)
+      .map(({ source_id: sourceId }) => sourceId);
+    const sourceConfigurations = this.database
+      .prepare(`
+        SELECT id AS source_id, name, input_url, feed_url, connector_id,
+          connector_kind, refresh_interval_seconds, updated_at
+        FROM sources
+        ORDER BY created_at ASC, id ASC
+      `)
+      .all()
+      .map((row) => ({
+        sourceId: row.source_id,
+        name: row.name,
+        inputUrl: row.input_url,
+        feedUrl: row.feed_url,
+        connectorId: row.connector_id ?? null,
+        connectorKind: row.connector_kind,
+        refreshIntervalSeconds: Number(row.refresh_interval_seconds),
+        updatedAt: row.updated_at,
+      }));
+    if (
+      sourceIds.length > MAX_FEED_CONFIGURATION_CHECKPOINT_SOURCES ||
+      sourceConfigurations.length > MAX_FEED_CONFIGURATION_CHECKPOINT_SOURCES
+    ) {
+      throw new RangeError("Le dashboard contient trop de sources pour être modifié sûrement.");
+    }
+    return {
+      name: panel.name,
+      defaultRefreshIntervalSeconds: Number(panel.default_refresh_interval_seconds),
+      updatedAt: panel.updated_at,
+      sourceIds,
+      sourceConfigurations,
+    };
+  }
+
+  restoreFeedPanelConfiguration(panelId, checkpoint, now = new Date().toISOString()) {
+    const normalized = normalizeFeedPanelConfigurationCheckpoint(checkpoint);
+    cleanTimestamp(now, "Date de restauration");
+    this.database.exec("BEGIN IMMEDIATE;");
+    try {
+      const panel = this.database
+        .prepare("SELECT kind FROM panels WHERE id = ?")
+        .get(panelId);
+      if (panel?.kind !== "feed") throw new Error("Panel de flux introuvable.");
+
+      const sourceExists = this.database.prepare("SELECT 1 FROM sources WHERE id = ?");
+      for (const sourceId of normalized.sourceIds) {
+        if (!sourceExists.get(sourceId)) throw new Error("Source restaurée introuvable.");
+      }
+      for (const { sourceId } of normalized.sourceConfigurations) {
+        if (!sourceExists.get(sourceId)) throw new Error("Source sauvegardée introuvable.");
+      }
+
+      this.database
+        .prepare(`
+          UPDATE panels
+          SET name = ?, default_refresh_interval_seconds = ?, updated_at = ?
+          WHERE id = ? AND kind = 'feed'
+        `)
+        .run(
+          normalized.name,
+          normalized.defaultRefreshIntervalSeconds,
+          normalized.updatedAt,
+          panelId,
+        );
+      this.database.prepare("DELETE FROM panel_sources WHERE panel_id = ?").run(panelId);
+      const attach = this.database.prepare(`
+        INSERT INTO panel_sources (panel_id, source_id, position)
+        VALUES (?, ?, ?)
+      `);
+      normalized.sourceIds.forEach((sourceId, position) => {
+        attach.run(panelId, sourceId, position);
+      });
+      const restoreSourceConfiguration = this.database.prepare(`
+        UPDATE sources
+        SET name = ?, input_url = ?, feed_url = ?, connector_id = ?,
+            connector_kind = ?, refresh_interval_seconds = ?, updated_at = ?
+        WHERE id = ?
+      `);
+      for (const {
+        sourceId,
+        name,
+        inputUrl,
+        feedUrl,
+        connectorId,
+        connectorKind,
+        refreshIntervalSeconds,
+        updatedAt,
+      } of normalized.sourceConfigurations) {
+        restoreSourceConfiguration.run(
+          name,
+          inputUrl,
+          feedUrl,
+          connectorId,
+          connectorKind,
+          refreshIntervalSeconds,
+          updatedAt,
+          sourceId,
+        );
+      }
+      this.database.exec("COMMIT;");
+    } catch (error) {
+      this.database.exec("ROLLBACK;");
+      throw error;
+    }
   }
 
   attachSource(panelId, sourceId) {

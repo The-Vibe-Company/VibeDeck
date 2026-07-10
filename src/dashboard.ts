@@ -85,19 +85,28 @@ export function swapPanels(
   firstPanelId: string,
   secondPanelId: string,
 ): LayoutNode | null {
-  if (!node || firstPanelId === secondPanelId) return node;
-  if (node.type === "panel") {
-    if (node.panelId === firstPanelId) return { ...node, panelId: secondPanelId };
-    if (node.panelId === secondPanelId) return { ...node, panelId: firstPanelId };
+  if (
+    !node ||
+    firstPanelId === secondPanelId ||
+    !containsPanel(node, firstPanelId) ||
+    !containsPanel(node, secondPanelId)
+  ) {
     return node;
   }
-  return {
-    ...node,
-    children: [
-      swapPanels(node.children[0], firstPanelId, secondPanelId)!,
-      swapPanels(node.children[1], firstPanelId, secondPanelId)!,
-    ],
+
+  const swapKnownPanels = (current: LayoutNode): LayoutNode => {
+    if (current.type === "panel") {
+      if (current.panelId === firstPanelId) return { ...current, panelId: secondPanelId };
+      if (current.panelId === secondPanelId) return { ...current, panelId: firstPanelId };
+      return current;
+    }
+    return {
+      ...current,
+      children: [swapKnownPanels(current.children[0]), swapKnownPanels(current.children[1])],
+    };
   };
+
+  return swapKnownPanels(node);
 }
 
 export function replacePanelId(

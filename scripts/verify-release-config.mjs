@@ -3,6 +3,8 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { findUnsafeWorkflowUses } from "./workflow-uses.mjs";
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const packageJson = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
 const build = packageJson.build ?? {};
@@ -22,6 +24,11 @@ const electronMain = readFileSync(path.join(root, "electron/main.mjs"), "utf8");
 const appProtocol = readFileSync(path.join(root, "electron/app-protocol.mjs"), "utf8");
 
 assert.match(packageJson.version, /^\d+\.\d+\.\d+$/, "Version applicative invalide");
+assert.equal(
+  packageJson.engines?.node,
+  ">=22.18.0",
+  "Node 22.18 ou plus récent est requis pour exécuter directement les tests TypeScript",
+);
 assert.equal(build.appId, "com.mediagen.veille", "Identifiant applicatif inattendu");
 assert.equal(build.asar, true, "Le code de diffusion doit être emballé dans ASAR");
 assert.equal(build.afterSign, "scripts/after-sign.mjs", "Hook de scellement macOS manquant");
@@ -32,13 +39,33 @@ assert.match(
 );
 assert.match(
   afterSignHook,
-  /rename\(appPath, stagedAppPath\)/,
+  /moveBundle\(appPath, stagedAppPath\)/,
   "Le build pilote macOS doit sortir temporairement le bundle des espaces File Provider",
 );
 assert.match(
   afterSignHook,
-  /rename\(stagedAppPath, appPath\)/,
+  /moveBundle\(stagedAppPath, appPath\)/,
   "Le build pilote macOS doit restaurer le bundle scellé dans le dossier de sortie",
+);
+assert.match(
+  afterSignHook,
+  /error\?\.code\s*!==\s*["']EXDEV["']/,
+  "Le déplacement du bundle macOS doit prendre en charge les volumes distincts",
+);
+assert.match(
+  afterSignHook,
+  /verbatimSymlinks:\s*true/,
+  "La copie inter-volume doit préserver les liens symboliques relatifs du bundle",
+);
+assert.match(
+  afterSignHook,
+  /!shouldPreserveSigningDirectory\(\{ appIsStaged, operationError, stagedAppPath \}\)/,
+  "Une copie de secours complète ne doit jamais être supprimée avec le dossier de staging",
+);
+assert.match(
+  afterSignHook,
+  /Chemins à vérifier[^\n]*\$\{appPath\}[^\n]*\$\{stagedAppPath\}/,
+  "Une restauration incomplète doit signaler les chemins de sortie et de staging",
 );
 assert.match(afterSignHook, /codesign/, "Le build pilote macOS doit être re-signé après les fuses");
 assert.match(
@@ -179,10 +206,16 @@ assert.equal(
   2,
   "Chaque paquet CI non signé doit être lancé après sa construction",
 );
-assert.doesNotMatch(
-  `${buildWorkflow}\n${releaseWorkflow}`,
-  /uses:\s+actions\/(?:checkout|setup-node|upload-artifact)@v\d+/,
-  "Les actions GitHub sensibles doivent être épinglées à un SHA complet",
+const unsafeWorkflowUses = [
+  ...findUnsafeWorkflowUses(buildWorkflow, "pilot-build.yml"),
+  ...findUnsafeWorkflowUses(releaseWorkflow, "pilot-release.yml"),
+];
+assert.equal(
+  unsafeWorkflowUses.length,
+  0,
+  `Chaque référence uses: doit être distante et épinglée à un SHA complet : ${unsafeWorkflowUses
+    .map(({ workflow, path: yamlPath, reference }) => `${workflow}:${yamlPath} (${reference})`)
+    .join(", ")}`,
 );
 assert.match(
   buildWorkflow,

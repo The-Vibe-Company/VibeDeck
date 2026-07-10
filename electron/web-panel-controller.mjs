@@ -1092,6 +1092,7 @@ export function createWebPanelController({
     record.errorCode = null;
     record.crashed = false;
     record.unresponsive = false;
+    record.loading = true;
     record.visible =
       record.requestedVisible && record.bounds.width > 0 && record.bounds.height > 0;
     record.view.setVisible(record.visible);

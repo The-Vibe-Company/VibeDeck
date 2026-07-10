@@ -20,6 +20,7 @@ import {
   createWebPanelController,
   WEB_PANEL_SESSION_STRATEGY,
 } from "./web-panel-controller.mjs";
+import { runWithFinalStateBroadcast } from "./final-state-operation.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REFRESH_TICK_MS = 15_000;
@@ -37,6 +38,8 @@ const WEB_DATA_SCOPES = new Set(["cache", "site-data", "all"]);
 // page cookies or duplicating the SQLite feed cache on disk.
 const FEED_NETWORK_PARTITION = "mediagen-feed-network";
 const MAX_ITEM_IDS_PER_CALL = 500;
+const MAX_FEED_CONFIGURATION_SOURCE_IDS = 4_096;
+const MAX_FEED_CONFIGURATION_NEW_SOURCES = 256;
 const DIAGNOSTICS_FORMAT = "mediagen-veille-diagnostics";
 const DIAGNOSTICS_VERSION = 1;
 
@@ -153,6 +156,70 @@ function cleanSourceAddOptions(value) {
     refreshIntervalSeconds: cleanRefreshInterval(value.refreshIntervalSeconds, {
       optional: true,
     }),
+  };
+}
+
+function cleanBoundedIds(value, label, maximum) {
+  if (!Array.isArray(value) || value.length > maximum) {
+    throw new RangeError(`${label} trop volumineuse.`);
+  }
+  return [...new Set(value.map(cleanId))];
+}
+
+function cleanFeedPanelConfigurationDraft(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Configuration du fil invalide.");
+  }
+  if (
+    !Array.isArray(value.customSources) ||
+    value.customSources.length > MAX_FEED_CONFIGURATION_NEW_SOURCES
+  ) {
+    throw new RangeError("Liste de sources personnalisées trop volumineuse.");
+  }
+
+  const seenCustomSources = new Set();
+  const customSources = [];
+  for (const candidate of value.customSources) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      throw new TypeError("Source personnalisée invalide.");
+    }
+    const cleaned = cleanSourceRequest({
+      url: candidate.url,
+      connectorKind: candidate.connectorKind,
+    });
+    const key = `${cleaned.connectorKind}\u0000${cleaned.url}`;
+    if (seenCustomSources.has(key)) continue;
+    seenCustomSources.add(key);
+    customSources.push({
+      url: cleaned.url,
+      connectorKind: cleaned.connectorKind,
+    });
+  }
+
+  const selectedCatalogIds = cleanBoundedIds(
+    value.selectedCatalogIds,
+    "Liste de connecteurs",
+    MAX_FEED_CONFIGURATION_NEW_SOURCES,
+  );
+  if (
+    selectedCatalogIds.length + customSources.length >
+    MAX_FEED_CONFIGURATION_NEW_SOURCES
+  ) {
+    throw new RangeError("La configuration ajoute trop de sources à la fois.");
+  }
+
+  return {
+    name: cleanName(value.name),
+    defaultRefreshIntervalSeconds: cleanRefreshInterval(
+      value.defaultRefreshIntervalSeconds,
+    ),
+    keptSourceIds: cleanBoundedIds(
+      value.keptSourceIds,
+      "Liste de sources conservées",
+      MAX_FEED_CONFIGURATION_SOURCE_IDS,
+    ),
+    selectedCatalogIds,
+    customSources,
   };
 }
 
@@ -444,6 +511,25 @@ function registerIpcHandlers() {
       broadcastState(state);
       return state;
     }),
+  );
+  registerHandle(
+    "aggregator:save-feed-panel-configuration",
+    (_event, panelId, draft) => runEngineOperation(() =>
+      // A scheduler pass may have broadcast an intermediate attachment while
+      // this operation awaited the network. Always publish the committed or
+      // restored database truth, including when save rejects after rollback.
+      runWithFinalStateBroadcast(
+        () => engine.saveFeedPanelConfiguration(
+          cleanId(panelId),
+          cleanFeedPanelConfigurationDraft(draft),
+        ),
+        {
+          getState: () => engine.getState(),
+          broadcast: (state) => broadcastState(state),
+          onBroadcastError: (error) =>
+            console.warn("Synchronisation finale du fil impossible :", error),
+        },
+      )),
   );
   registerHandle("aggregator:delete-panel", (_event, panelId) => runEngineOperation(async () => {
     const state = await engine.deletePanel(cleanId(panelId));

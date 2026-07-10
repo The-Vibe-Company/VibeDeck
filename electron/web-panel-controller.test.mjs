@@ -474,9 +474,15 @@ test("hides a crashed renderer and restores it only on an explicit reload", () =
   controller.sync([descriptor("news")]);
   assert.equal(view.visible, false, "a normal sync must not revive a crashed page");
   const reloading = controller.reload("news");
-  assert.equal(reloading.status, "ready");
+  assert.equal(reloading.status, "loading");
+  assert.equal(reloading.loading, true);
+  assert.equal(states.at(-1).status, "loading");
   assert.equal(view.visible, true);
   assert.equal(view.webContents.reloadCalls, 1);
+
+  view.webContents.emit("did-stop-loading");
+  assert.equal(states.at(-1).status, "ready");
+  assert.equal(states.at(-1).loading, false);
 });
 
 test("emits one state update for duplicate main-frame in-page navigations", () => {

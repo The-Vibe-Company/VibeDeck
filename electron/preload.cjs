@@ -14,6 +14,12 @@ contextBridge.exposeInMainWorld("mediagen", {
       panelId,
       refreshIntervalSeconds,
     ),
+  saveFeedPanelConfiguration: (panelId, draft) =>
+    ipcRenderer.invoke(
+      "aggregator:save-feed-panel-configuration",
+      panelId,
+      draft,
+    ),
   deletePanel: (panelId) => ipcRenderer.invoke("aggregator:delete-panel", panelId),
   saveDashboardLayout: (layout, expectedRevision) =>
     ipcRenderer.invoke(

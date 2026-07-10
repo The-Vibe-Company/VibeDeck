@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { access, mkdtemp, readdir, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -12,6 +12,10 @@ import { chromium } from "playwright-core";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const execFileAsync = promisify(execFile);
 const STARTUP_TIMEOUT_MS = 30_000;
+const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+const productName = packageJson.build?.productName;
+assert.equal(typeof productName, "string", "Nom de produit Electron introuvable.");
+assert.match(productName, /^[^/\\]+$/, "Nom de produit Electron invalide.");
 
 async function exists(candidate) {
   try {
@@ -26,7 +30,7 @@ async function discoverExecutable() {
   const requested = process.argv[2] ? path.resolve(process.argv[2]) : null;
   if (requested) {
     if (requested.endsWith(".app")) {
-      return path.join(requested, "Contents", "MacOS", "MediaGen Veille");
+      return path.join(requested, "Contents", "MacOS", productName);
     }
     return requested;
   }
@@ -40,10 +44,10 @@ async function discoverExecutable() {
         path.join(
           releaseDirectory,
           entry.name,
-          "MediaGen Veille.app",
+          `${productName}.app`,
           "Contents",
           "MacOS",
-          "MediaGen Veille",
+          productName,
         ),
       );
     }
@@ -52,7 +56,7 @@ async function discoverExecutable() {
       entry.name.startsWith("win") &&
       entry.name.endsWith("-unpacked")
     ) {
-      candidates.push(path.join(releaseDirectory, entry.name, "MediaGen Veille.exe"));
+      candidates.push(path.join(releaseDirectory, entry.name, `${productName}.exe`));
     }
   }
   const available = [];
@@ -210,7 +214,7 @@ try {
   }));
   assert.equal(proof.protocol, "mediagen-app:");
   assert.equal(proof.hasRoot, true);
-  assert.match(proof.title, /MediaGen/i);
+  assert.ok(proof.title.trim().length > 0, "Le document empaqueté doit avoir un titre.");
   assert.equal(Number.isInteger(proof.panelCount), true);
   assert.ok(
     await exists(path.join(profileDirectory, "veille.sqlite3")),

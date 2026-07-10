@@ -11,6 +11,8 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const initialArticleCount = 90;
 const secondaryArticleCount = 2;
 const baselineArticleCount = initialArticleCount + secondaryArticleCount;
+const MIN_PANEL_WIDTH = 256;
+const SUBPIXEL_EPSILON = 0.5;
 const newArticleTitle = "ARRIVÉE CONTRÔLÉE — invariant du viewport";
 const sharedArrivalTitle = "ARRIVÉE PARTAGÉE — tampon indépendant par panel";
 
@@ -506,7 +508,7 @@ try {
     leaves.map((leaf) => leaf.getBoundingClientRect().width),
   );
   assert.ok(
-    splitWidths.every((width) => width >= 255),
+    splitWidths.every((width) => width + SUBPIXEL_EPSILON >= MIN_PANEL_WIDTH),
     `Chaque panel doit conserver au moins 256 px utiles après redimensionnement : ${splitWidths.join(", ")}`,
   );
   const compactReadState = narrowLeaf.locator(".article-meta em").first();
@@ -747,6 +749,95 @@ try {
     "Le panel voisin doit révéler à la demande l’état global déjà ouvert.",
   );
 
+  const panelOrderBeforeDrag = await page.locator(".split-layout__leaf").evaluateAll((leaves) =>
+    leaves.map((leaf) => leaf.getAttribute("data-panel-id")),
+  );
+  const externalDragResult = await page.evaluate((targetPanelId) => {
+    const target = document.querySelector(
+      `.split-layout__leaf[data-panel-id="${targetPanelId}"]`,
+    );
+    if (!(target instanceof HTMLElement)) throw new Error("Panel cible introuvable.");
+    const dispatch = (transfer) => {
+      const over = new DragEvent("dragover", {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer: transfer,
+      });
+      const drop = new DragEvent("drop", {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer: transfer,
+      });
+      target.dispatchEvent(over);
+      target.dispatchEvent(drop);
+      return { overPrevented: over.defaultPrevented, dropPrevented: drop.defaultPrevented };
+    };
+    const plainTransfer = new DataTransfer();
+    plainTransfer.setData("text/plain", "https://external.test/article");
+    const forgedTransfer = new DataTransfer();
+    forgedTransfer.setData("application/x-mediagen-panel", "panel-inconnu");
+    return {
+      plain: dispatch(plainTransfer),
+      forgedWithoutActiveDrag: dispatch(forgedTransfer),
+    };
+  }, narrowPanelId);
+  assert.deepEqual(
+    externalDragResult,
+    {
+      plain: { overPrevented: false, dropPrevented: false },
+      forgedWithoutActiveDrag: { overPrevented: false, dropPrevented: false },
+    },
+    "Un glisser externe doit être ignoré sans MIME interne et drag actif concordants.",
+  );
+  assert.deepEqual(
+    await page.locator(".split-layout__leaf").evaluateAll((leaves) =>
+      leaves.map((leaf) => leaf.getAttribute("data-panel-id")),
+    ),
+    panelOrderBeforeDrag,
+    "Un texte externe ne doit jamais remplacer un identifiant de panel.",
+  );
+
+  await page.evaluate(async ({ sourcePanelId, targetPanelId }) => {
+    const source = document.querySelector(
+      `.split-layout__leaf[data-panel-id="${sourcePanelId}"] .panel-header`,
+    );
+    if (!(source instanceof HTMLElement)) throw new Error("En-tête source introuvable.");
+    const transfer = new DataTransfer();
+    source.dispatchEvent(new DragEvent("dragstart", {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: transfer,
+    }));
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const target = document.querySelector(
+      `.split-layout__leaf[data-panel-id="${targetPanelId}"]`,
+    );
+    if (!(target instanceof HTMLElement)) throw new Error("Panel cible introuvable.");
+    target.dispatchEvent(new DragEvent("dragover", {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: transfer,
+    }));
+    target.dispatchEvent(new DragEvent("drop", {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: transfer,
+    }));
+  }, { sourcePanelId: panelId, targetPanelId: narrowPanelId });
+  await page.waitForFunction(
+    (expectedFirstPanelId) =>
+      document.querySelector(".split-layout__leaf")?.getAttribute("data-panel-id") ===
+      expectedFirstPanelId,
+    narrowPanelId,
+  );
+  assert.deepEqual(
+    await page.locator(".split-layout__leaf").evaluateAll((leaves) =>
+      leaves.map((leaf) => leaf.getAttribute("data-panel-id")),
+    ),
+    [...panelOrderBeforeDrag].reverse(),
+    "Le MIME interne et le drag actif doivent continuer à échanger les deux panels.",
+  );
+
   console.log(`✓ baseline: ${baselineArticleCount} articles interclassés, roving tabindex actif`);
   console.log(`✓ viewport initial: scrollTop ${beforeArrival.scrollTop.toFixed(1)}px`);
   console.log("✓ arrivée tamponnée: DOM, focus, sélection, scroll et position inchangés");
@@ -757,6 +848,7 @@ try {
   console.log("✓ arrivées partagées: tampon et révélation restent indépendants par panel");
   console.log("✓ état d’actualisation diffusé pendant une réponse réseau lente");
   console.log("✓ panne manuelle explicite: toast honnête, diagnostic daté et cache conservé");
+  console.log("✓ glisser-déposer: texte externe ignoré, MIME interne conservé");
 } finally {
   if (electronApp) await electronApp.close().catch(() => undefined);
   await closeServer(server).catch(() => undefined);

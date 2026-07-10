@@ -111,6 +111,19 @@ export interface SourceRequest {
   refreshIntervalSeconds?: number;
 }
 
+export interface FeedConfigurationCustomSource {
+  url: string;
+  connectorKind: ConnectorPreference;
+}
+
+export interface FeedPanelConfigurationDraft {
+  name: string;
+  defaultRefreshIntervalSeconds: number;
+  keptSourceIds: string[];
+  selectedCatalogIds: string[];
+  customSources: FeedConfigurationCustomSource[];
+}
+
 export interface SourceAddOptions {
   refreshIntervalSeconds?: number;
 }
@@ -181,6 +194,10 @@ export interface MediaGenApi {
   setFeedPanelDefaultRefresh: (
     panelId: string,
     refreshIntervalSeconds: number,
+  ) => Promise<AppState>;
+  saveFeedPanelConfiguration: (
+    panelId: string,
+    draft: FeedPanelConfigurationDraft,
   ) => Promise<AppState>;
   removeSource: (panelId: string, sourceId: string) => Promise<AppState>;
   refreshSource: (sourceId: string) => Promise<AppState>;

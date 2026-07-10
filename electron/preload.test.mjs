@@ -58,6 +58,25 @@ test("forwards all catalog source arguments in the documented order", async () =
   ]);
 });
 
+test("saves a feed configuration through one main-owned IPC operation", async () => {
+  const { api, calls } = await loadPreloadApi();
+  const draft = {
+    name: "Économie",
+    defaultRefreshIntervalSeconds: 60,
+    keptSourceIds: ["source-1"],
+    selectedCatalogIds: ["le-monde"],
+    customSources: [{ url: "https://example.test/feed.xml", connectorKind: "rss" }],
+  };
+
+  await api.saveFeedPanelConfiguration("panel-1", draft);
+  assert.deepEqual(calls, [
+    ["aggregator:save-feed-panel-configuration", "panel-1", draft],
+  ]);
+  assert.equal(api.captureFeedPanelConfiguration, undefined);
+  assert.equal(api.restoreFeedPanelConfiguration, undefined);
+  assert.equal(api.releaseFeedPanelConfigurationCheckpoint, undefined);
+});
+
 test("clearWebData always requests a full profile clear without exposing a raw scope", async () => {
   const { api, calls } = await loadPreloadApi();
 

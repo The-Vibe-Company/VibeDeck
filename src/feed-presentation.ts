@@ -19,6 +19,11 @@ function stableIdOrder(first: FeedItem, second: FeedItem) {
   return first.id < second.id ? -1 : 1;
 }
 
+function newestTimestampFirst(first: number, second: number) {
+  if (first === second) return 0;
+  return first > second ? -1 : 1;
+}
+
 /**
  * Keep genuine post-baseline arrivals at the head of the monitoring stream.
  * Within the baseline, use the publication chronology so sources loaded a few
@@ -28,21 +33,24 @@ export function compareFeedItems(first: FeedItem, second: FeedItem) {
   if (first.isBaseline !== second.isBaseline) return first.isBaseline ? 1 : -1;
 
   if (!first.isBaseline) {
-    const detectionDifference =
-      firstTimestamp(second.observedAt, second.firstSeenAt) -
-      firstTimestamp(first.observedAt, first.firstSeenAt);
-    if (detectionDifference !== 0) return detectionDifference;
+    const detectionOrder = newestTimestampFirst(
+      firstTimestamp(first.observedAt, first.firstSeenAt),
+      firstTimestamp(second.observedAt, second.firstSeenAt),
+    );
+    if (detectionOrder !== 0) return detectionOrder;
   }
 
-  const chronologyDifference =
-    firstTimestamp(second.publishedAt, second.updatedAt, second.observedAt, second.firstSeenAt) -
-    firstTimestamp(first.publishedAt, first.updatedAt, first.observedAt, first.firstSeenAt);
-  if (chronologyDifference !== 0) return chronologyDifference;
+  const chronologyOrder = newestTimestampFirst(
+    firstTimestamp(first.publishedAt, first.updatedAt, first.observedAt, first.firstSeenAt),
+    firstTimestamp(second.publishedAt, second.updatedAt, second.observedAt, second.firstSeenAt),
+  );
+  if (chronologyOrder !== 0) return chronologyOrder;
 
-  const observationDifference =
-    firstTimestamp(second.observedAt, second.firstSeenAt) -
-    firstTimestamp(first.observedAt, first.firstSeenAt);
-  if (observationDifference !== 0) return observationDifference;
+  const observationOrder = newestTimestampFirst(
+    firstTimestamp(first.observedAt, first.firstSeenAt),
+    firstTimestamp(second.observedAt, second.firstSeenAt),
+  );
+  if (observationOrder !== 0) return observationOrder;
 
   return stableIdOrder(first, second);
 }

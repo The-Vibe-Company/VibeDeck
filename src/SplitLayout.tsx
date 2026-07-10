@@ -106,12 +106,10 @@ function findPanel(node: LayoutNode | null, panelId: string): LayoutNode | null 
 }
 
 function panelIdFromDrag(event: ReactDragEvent<HTMLElement>, fallback?: string | null) {
-  return (
-    fallback ||
-    event.dataTransfer.getData(PANEL_DRAG_MIME) ||
-    event.dataTransfer.getData("text/plain") ||
-    null
-  );
+  if (!fallback) return null;
+  if (!Array.from(event.dataTransfer.types).includes(PANEL_DRAG_MIME)) return null;
+  const transferredPanelId = event.dataTransfer.getData(PANEL_DRAG_MIME);
+  return transferredPanelId && transferredPanelId !== fallback ? null : fallback;
 }
 
 interface DragState {
@@ -468,7 +466,6 @@ export default function SplitLayout({
         event.stopPropagation();
         event.dataTransfer.effectAllowed = "move";
         event.dataTransfer.setData(PANEL_DRAG_MIME, panelId);
-        event.dataTransfer.setData("text/plain", panelId);
         setDragState({ sourcePanelId: panelId, targetPanelId: null });
         beginInteraction("panel-drag");
       },
@@ -503,11 +500,17 @@ export default function SplitLayout({
               )
             }
             onDropPanel={(event, targetPanelId) => {
+              const sourcePanelId = panelIdFromDrag(event, dragState?.sourcePanelId);
+              if (!sourcePanelId) return;
               event.preventDefault();
               event.stopPropagation();
-              const sourcePanelId = panelIdFromDrag(event, dragState?.sourcePanelId);
               try {
-                if (sourcePanelId && sourcePanelId !== targetPanelId) {
+                if (
+                  sourcePanelId &&
+                  sourcePanelId !== targetPanelId &&
+                  findPanel(layout, sourcePanelId) &&
+                  findPanel(layout, targetPanelId)
+                ) {
                   onSwapPanels(sourcePanelId, targetPanelId);
                 }
               } finally {
