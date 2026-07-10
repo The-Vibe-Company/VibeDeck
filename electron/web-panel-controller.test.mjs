@@ -140,6 +140,7 @@ function createHarness({ contentSize = [800, 600], sharedWebSession = null } = {
   const states = [];
   const externalCalls = [];
   const escapeCalls = [];
+  const searchCalls = [];
   const windowEvents = new Map();
 
   class FakeWebContentsView {
@@ -188,6 +189,7 @@ function createHarness({ contentSize = [800, 600], sharedWebSession = null } = {
     shell,
     onState: (state) => states.push(state),
     onEscape: (panelId) => escapeCalls.push(panelId),
+    onOpenSearch: (panelId) => searchCalls.push(panelId),
     WebContentsViewClass: FakeWebContentsView,
   });
 
@@ -197,6 +199,7 @@ function createHarness({ contentSize = [800, 600], sharedWebSession = null } = {
     externalCalls,
     escapeCalls,
     removedViews,
+    searchCalls,
     states,
     views,
     windowEvents,
@@ -365,7 +368,7 @@ test("destroys omitted views and destroyAll closes every remaining WebContents",
 });
 
 test("denies permissions, downloads and popups while opening safe popup links in place", () => {
-  const { controller, escapeCalls, views } = createHarness();
+  const { controller, escapeCalls, searchCalls, views } = createHarness();
   controller.sync([descriptor("locked-down")]);
   const view = views[0];
   const contents = view.webContents;
@@ -414,6 +417,17 @@ test("denies permissions, downloads and popups while opening safe popup links in
   contents.emit("before-input-event", {}, { type: "keyDown", key: "Escape" });
   contents.emit("before-input-event", {}, { type: "keyDown", key: "Escape", isAutoRepeat: true });
   assert.deepEqual(escapeCalls, ["locked-down"]);
+  let searchPrevented = false;
+  contents.emit("before-input-event", { preventDefault: () => { searchPrevented = true; } }, {
+    type: "keyDown", key: "k", meta: true,
+  });
+  contents.emit("before-input-event", {}, {
+    type: "keyDown", key: "k", control: true, isAutoRepeat: true,
+  });
+  assert.equal(searchPrevented, true);
+  assert.deepEqual(searchCalls, ["locked-down"]);
+  assert.equal(controller.focus("locked-down"), true);
+  assert.equal(contents.focusCalls, 1);
 });
 
 test("documents the persistent web session while clearing background workers on shutdown", async () => {

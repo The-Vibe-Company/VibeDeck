@@ -2290,6 +2290,57 @@ export class LocalFeedDatabase {
     };
   }
 
+  /**
+   * Search is stored in a disposable sidecar. These bounded reads are the only
+   * bridge from the authoritative cache into that derived store.
+   */
+  listSemanticSearchDocuments(sourceIds) {
+    if (!Array.isArray(sourceIds) || sourceIds.length === 0) return [];
+    const ids = [...new Set(sourceIds.map((sourceId) => cleanIdentifier(sourceId, "Source")))];
+    const placeholders = ids.map(() => "?").join(", ");
+    return this.database
+      .prepare(`
+        SELECT ranked.id, ranked.source_id, ranked.title, ranked.summary
+        FROM (
+          SELECT items.id, items.source_id, items.title, items.summary,
+            ROW_NUMBER() OVER (
+              PARTITION BY items.source_id
+              ORDER BY items.first_seen_at DESC,
+                COALESCE(items.published_at, items.updated_at, items.first_seen_at) DESC,
+                items.id ASC
+            ) AS source_rank
+          FROM items
+          WHERE items.source_id IN (${placeholders})
+        ) AS ranked
+        WHERE ranked.source_rank <= ?
+      `)
+      .all(...ids, MAX_ITEMS_PER_SOURCE)
+      .map((row) => ({
+        id: row.id,
+        sourceId: row.source_id,
+        title: row.title,
+        summary: row.summary,
+      }));
+  }
+
+  getSemanticSearchItems(itemIds) {
+    if (!Array.isArray(itemIds) || itemIds.length === 0) return [];
+    const ids = [...new Set(itemIds.map((itemId) => cleanIdentifier(itemId, "Article")))];
+    if (ids.length > 200) throw new RangeError("Trop de résultats de recherche.");
+    const placeholders = ids.map(() => "?").join(", ");
+    return this.database
+      .prepare(`
+        SELECT items.*
+        FROM items
+        WHERE items.id IN (${placeholders})
+          AND EXISTS (
+            SELECT 1 FROM panel_sources WHERE panel_sources.source_id = items.source_id
+          )
+      `)
+      .all(...ids)
+      .map(toItem);
+  }
+
   putEndpointCache(entry) {
     this.database
       .prepare(`

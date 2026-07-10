@@ -7,6 +7,7 @@ import {
   ExternalLink,
   Globe2,
   Home,
+  ListFilter,
   LoaderCircle,
   Maximize2,
   Minimize2,
@@ -65,6 +66,9 @@ import type {
   Source,
   SourceCatalogEntry,
   SourceRequest,
+  SemanticSearchScope,
+  SemanticSearchResult,
+  SemanticSearchStatus,
   WebPanel,
   WebPanelDescriptor,
   WebPanelRuntimeState,
@@ -139,11 +143,32 @@ type FeedPanelUi = {
   visibleItemIds: Set<string>;
   automaticInsertionIds: Set<string>;
   automaticInsertionMetrics: { scrollHeight: number; scrollTop: number } | null;
+  searchItemIds: Set<string> | null;
 };
 
 type LinkPreview = {
   url: string;
   title: string;
+};
+
+type ActiveSemanticSearch = {
+  query: string;
+  scope: SemanticSearchScope;
+  resultCount: number;
+  result: SemanticSearchResult;
+};
+
+type SemanticSearchRestoreState = {
+  focusedPanelId: string | null;
+  focusedControl: {
+    panelId: string;
+    id: string | null;
+    focusKey: string | null;
+    ariaLabel: string | null;
+  } | null;
+  focusedItemIdsByPanelId: Map<string, string | null>;
+  scrollAnchorByPanelId: Map<string, { itemId: string; viewportTop: number }>;
+  scrollTopByPanelId: Map<string, number>;
 };
 
 type PendingCustomSource = Required<Pick<SourceRequest, "url" | "connectorKind">>;
@@ -199,6 +224,7 @@ function panelItems(
   options: {
     sourceFilter?: string;
     visibleItemIds?: Set<string>;
+    searchItemIds?: Set<string> | null;
     visibilityFilter?: "all" | "unseen";
     focusedItemId?: string | null;
   } = {},
@@ -212,7 +238,9 @@ function panelItems(
       (item) =>
         sourceIds.has(item.sourceId) &&
         (effectiveFilter === "all" || item.sourceId === effectiveFilter) &&
-        (!options.visibleItemIds || options.visibleItemIds.has(item.id)) &&
+        (options.searchItemIds
+          ? options.searchItemIds.has(item.id)
+          : !options.visibleItemIds || options.visibleItemIds.has(item.id)) &&
         (options.visibilityFilter !== "unseen" ||
           item.seenAt === null ||
           item.id === options.focusedItemId),
@@ -228,6 +256,7 @@ function initialFeedUi(panel: FeedPanel, state: AppState): FeedPanelUi {
     visibleItemIds: new Set(panelItems(panel, state).map(({ id }) => id)),
     automaticInsertionIds: new Set(),
     automaticInsertionMetrics: null,
+    searchItemIds: null,
   };
 }
 
@@ -238,6 +267,35 @@ function focusDashboardPanelRoot(panelId: string) {
   if (!panel) return false;
   panel.focus({ preventScroll: true });
   return document.activeElement === panel;
+}
+
+function restoreSemanticSearchControl(restore: SemanticSearchRestoreState | null) {
+  const control = restore?.focusedControl;
+  if (control) {
+    const leaf = document.querySelector<HTMLElement>(
+      `.split-layout__leaf[data-panel-id="${CSS.escape(control.panelId)}"]`,
+    );
+    const focusable = leaf
+      ? [...leaf.querySelectorAll<HTMLElement>(PANEL_FOCUSABLE_SELECTOR)]
+      : [];
+    const target =
+      (control.id ? leaf?.querySelector<HTMLElement>(`#${CSS.escape(control.id)}`) : null) ??
+      (control.focusKey
+        ? focusable.find(
+            (candidate) => candidate.getAttribute("data-panel-focus-key") === control.focusKey,
+          )
+        : null) ??
+      (control.ariaLabel
+        ? focusable.find(
+            (candidate) => candidate.getAttribute("aria-label") === control.ariaLabel,
+          )
+        : null);
+    if (target) {
+      target.focus({ preventScroll: true });
+      if (document.activeElement === target) return true;
+    }
+  }
+  return restore?.focusedPanelId ? focusDashboardPanelRoot(restore.focusedPanelId) : false;
 }
 
 export default function App() {
@@ -253,6 +311,12 @@ export default function App() {
   const [interactionActive, setInteractionActive] = useState(false);
   const [fatalError, setFatalError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [semanticSearchStatus, setSemanticSearchStatus] = useState<SemanticSearchStatus>({
+    phase: "not-installed", progress: 0, message: null, bytes: 0,
+  });
+  const [semanticSearchOpen, setSemanticSearchOpen] = useState(false);
+  const [semanticSearchScope, setSemanticSearchScope] = useState<SemanticSearchScope>({ kind: "all" });
+  const [activeSemanticSearch, setActiveSemanticSearch] = useState<ActiveSemanticSearch | null>(null);
   const [clock, setClock] = useState(() => new Date());
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
 
@@ -273,10 +337,18 @@ export default function App() {
     identity: PanelFocusIdentity;
   } | null>(null);
   const pendingKeyboardPanelFocusRef = useRef<string | null>(null);
+  const focusedPanelIdRef = useRef<string | null>(null);
+  const semanticResultItemsRef = useRef<FeedItem[]>([]);
+  const semanticBaseItemIdsRef = useRef(new Set<string>());
+  const semanticSearchRestoreRef = useRef<SemanticSearchRestoreState | null>(null);
+  const activeSemanticSearchRef = useRef<ActiveSemanticSearch | null>(null);
+  const semanticSearchNativeOriginRef = useRef(false);
 
   layoutRef.current = layout;
   feedUiRef.current = feedUi;
   draftsRef.current = drafts;
+  focusedPanelIdRef.current = focusedPanelId;
+  activeSemanticSearchRef.current = activeSemanticSearch;
 
   useLayoutEffect(() => {
     const pending = pendingPanelFocusRef.current;
@@ -374,7 +446,14 @@ export default function App() {
         });
       }
     }
-    setState(nextState);
+    const resultItems = semanticResultItemsRef.current;
+    if (semanticBaseItemIdsRef.current.size > 0) {
+      for (const item of nextState.items) semanticBaseItemIdsRef.current.add(item.id);
+    }
+    setState(resultItems.length === 0 ? nextState : {
+      ...nextState,
+      items: [...nextState.items, ...resultItems.filter((item) => !nextState.items.some(({ id }) => id === item.id))],
+    });
     setFeedUi((current) => {
       const activeFeedIds = new Set(
         nextState.panels
@@ -388,7 +467,16 @@ export default function App() {
         if (panel.kind !== "feed") continue;
         const existing = current[panel.id];
         if (!existing || replaceFeedUi) {
-          next[panel.id] = initialFeedUi(panel, nextState);
+          const initial = initialFeedUi(panel, nextState);
+          const activeSearch = activeSemanticSearchRef.current;
+          next[panel.id] = activeSearch && (
+            activeSearch.scope.kind === "all" || activeSearch.scope.panelId === panel.id
+          )
+            ? {
+                ...initial,
+                searchItemIds: new Set(activeSearch.result.items.map(({ id }) => id)),
+              }
+            : initial;
           continue;
         }
         const visibleItemIds = new Set(existing.visibleItemIds);
@@ -470,12 +558,24 @@ export default function App() {
         return current;
       });
     });
+    const unsubscribeSemanticStatus = window.mediagen.onSemanticSearchStatusChanged((nextStatus) => {
+      if (live) setSemanticSearchStatus(nextStatus);
+    });
+    const unsubscribeGlobalSearch = window.mediagen.onOpenGlobalSearch((nativeOrigin) => {
+      if (!live) return;
+      openSemanticSearch({ kind: "all" }, nativeOrigin);
+    });
+    void window.mediagen.getSemanticSearchStatus().then((nextStatus) => {
+      if (live) setSemanticSearchStatus(nextStatus);
+    });
 
     return () => {
       live = false;
       unsubscribeState();
       unsubscribeWeb();
       unsubscribeWebEscape();
+      unsubscribeSemanticStatus();
+      unsubscribeGlobalSearch();
     };
   }, [applyServerState]);
 
@@ -506,6 +606,7 @@ export default function App() {
         const canDisplay =
           Boolean(surface) &&
           !modal &&
+          !semanticSearchOpen &&
           !interactionActive &&
           !linkPreview &&
           !failedPanelIds.has(panel.id);
@@ -538,7 +639,7 @@ export default function App() {
       });
     }
     window.mediagen.syncWebPanels(descriptors);
-  }, [failedWebPanelKey, interactionActive, linkPreview, modal, state]);
+  }, [failedWebPanelKey, interactionActive, linkPreview, modal, semanticSearchOpen, state]);
 
   useEffect(() => {
     let frame = requestAnimationFrame(syncWebPanels);
@@ -910,20 +1011,210 @@ export default function App() {
         visibleItemIds: current[panelId]?.visibleItemIds ?? new Set(),
         automaticInsertionIds: current[panelId]?.automaticInsertionIds ?? new Set(),
         automaticInsertionMetrics: current[panelId]?.automaticInsertionMetrics ?? null,
+        searchItemIds: current[panelId]?.searchItemIds ?? null,
         ...patch,
       },
     }));
   }
 
+  function clearSemanticSearchFilter() {
+    const resultIds = new Set(semanticResultItemsRef.current.map(({ id }) => id));
+    const baseIds = semanticBaseItemIdsRef.current;
+    const restore = semanticSearchRestoreRef.current;
+    semanticResultItemsRef.current = [];
+    semanticBaseItemIdsRef.current = new Set();
+    activeSemanticSearchRef.current = null;
+    setActiveSemanticSearch(null);
+    setState((current) => current ? {
+      ...current,
+      items: current.items.filter((item) => !resultIds.has(item.id) || baseIds.has(item.id)),
+    } : current);
+    setFeedUi((current) => Object.fromEntries(Object.entries(current).map(([panelId, ui]) => [
+      panelId, {
+        ...ui,
+        searchItemIds: null,
+        focusedItemId: restore?.focusedItemIdsByPanelId.get(panelId) ?? null,
+        automaticInsertionIds: new Set(),
+        automaticInsertionMetrics: null,
+      },
+    ])));
+    semanticSearchRestoreRef.current = null;
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        if (!restore) return;
+        for (const [panelId, scrollTop] of restore.scrollTopByPanelId) {
+          const list = document.querySelector<HTMLElement>(
+            `.split-layout__leaf[data-panel-id="${CSS.escape(panelId)}"] .article-list`,
+          );
+          const anchor = restore.scrollAnchorByPanelId.get(panelId);
+          const anchorRow = anchor
+            ? document.getElementById(`article-${panelId}-${anchor.itemId}`)
+            : null;
+          if (list && anchorRow instanceof HTMLElement && anchor) {
+            list.scrollTop = anchorRow.offsetTop - anchor.viewportTop;
+          } else if (list) list.scrollTop = scrollTop;
+        }
+        restoreSemanticSearchControl(restore);
+      });
+    });
+  }
+
+  useEffect(() => {
+    if (!activeSemanticSearch || !state) return;
+    const feedPanels = state.panels.filter((panel): panel is FeedPanel => panel.kind === "feed");
+    if (feedPanels.length === 0) {
+      clearSemanticSearchFilter();
+      return;
+    }
+    if (activeSemanticSearch.scope.kind !== "panel") return;
+    const scopedPanelId = activeSemanticSearch.scope.panelId;
+    const scopedPanel = state.panels.find(({ id }) => id === scopedPanelId);
+    if (scopedPanel?.kind === "feed") return;
+    clearSemanticSearchFilter();
+    showToast("Le fil recherché n’existe plus");
+  }, [activeSemanticSearch, showToast, state]);
+
+  function captureSemanticSearchOrigin() {
+    if (semanticSearchRestoreRef.current) return;
+    const scrollTopByPanelId = new Map<string, number>();
+    const scrollAnchorByPanelId = new Map<
+      string,
+      { itemId: string; viewportTop: number }
+    >();
+    document.querySelectorAll<HTMLElement>(".split-layout__leaf[data-panel-id]").forEach((leaf) => {
+      const panelId = leaf.getAttribute("data-panel-id");
+      const list = leaf.querySelector<HTMLElement>(".article-list");
+      if (!panelId || !list) return;
+      scrollTopByPanelId.set(panelId, list.scrollTop);
+      const listTop = list.getBoundingClientRect().top;
+      const anchorRow = [...list.querySelectorAll<HTMLElement>(".article-row")]
+        .find((row) => row.getBoundingClientRect().bottom > listTop);
+      const itemId = anchorRow?.id.startsWith(`article-${panelId}-`)
+        ? anchorRow.id.slice(`article-${panelId}-`.length)
+        : null;
+      if (anchorRow && itemId) {
+        scrollAnchorByPanelId.set(panelId, {
+          itemId,
+          viewportTop: anchorRow.getBoundingClientRect().top - listTop,
+        });
+      }
+    });
+    const focusedElement = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const focusedLeaf = focusedElement?.closest<HTMLElement>(
+      ".split-layout__leaf[data-panel-id]",
+    );
+    const focusedControlPanelId = focusedLeaf?.getAttribute("data-panel-id") ?? null;
+    semanticSearchRestoreRef.current = {
+      focusedPanelId: focusedPanelIdRef.current,
+      focusedControl: focusedElement && focusedControlPanelId
+        ? {
+            panelId: focusedControlPanelId,
+            id: focusedElement.id || null,
+            focusKey: focusedElement.getAttribute("data-panel-focus-key"),
+            ariaLabel: focusedElement.getAttribute("aria-label"),
+          }
+        : null,
+      focusedItemIdsByPanelId: new Map(
+        Object.entries(feedUiRef.current).map(([panelId, ui]) => [panelId, ui.focusedItemId]),
+      ),
+      scrollAnchorByPanelId,
+      scrollTopByPanelId,
+    };
+  }
+
+  function openSemanticSearch(scope: SemanticSearchScope, nativeOrigin = false) {
+    captureSemanticSearchOrigin();
+    semanticSearchNativeOriginRef.current = nativeOrigin;
+    setSemanticSearchScope(scope);
+    setSemanticSearchOpen(true);
+  }
+
+  function closeSemanticSearchPalette() {
+    setSemanticSearchOpen(false);
+    const restoreNative = semanticSearchNativeOriginRef.current;
+    semanticSearchNativeOriginRef.current = false;
+    window.mediagen.finishSemanticSearchFocus(restoreNative);
+    if (restoreNative) {
+      if (!activeSemanticSearch) semanticSearchRestoreRef.current = null;
+      return;
+    }
+    if (activeSemanticSearch) return;
+    const restore = semanticSearchRestoreRef.current;
+    semanticSearchRestoreRef.current = null;
+    window.requestAnimationFrame(() => {
+      restoreSemanticSearchControl(restore);
+    });
+  }
+
+  function applySemanticSearchFilter(
+    query: string,
+    scope: SemanticSearchScope,
+    result: SemanticSearchResult,
+  ) {
+    if (!activeSemanticSearch) {
+      semanticBaseItemIdsRef.current = new Set(state?.items.map(({ id }) => id) ?? []);
+    }
+    const baseIds = semanticBaseItemIdsRef.current;
+    const previousResultIds = new Set(semanticResultItemsRef.current.map(({ id }) => id));
+    semanticResultItemsRef.current = result.items;
+    setState((current) => current ? {
+      ...current,
+      items: (() => {
+        const retained = current.items.filter(
+          (item) => !previousResultIds.has(item.id) || baseIds.has(item.id),
+        );
+        const retainedIds = new Set(retained.map(({ id }) => id));
+        return [...retained, ...result.items.filter(({ id }) => !retainedIds.has(id))];
+      })(),
+    } : current);
+    const resultIds = new Set(result.items.map(({ id }) => id));
+    setFeedUi((current) => Object.fromEntries(Object.entries(current).map(([panelId, ui]) => [
+      panelId,
+      scope.kind === "all" || scope.panelId === panelId
+        ? { ...ui, searchItemIds: resultIds, focusedItemId: null }
+        : { ...ui, searchItemIds: null },
+    ])));
+    const appliedSearch = { query, scope, resultCount: result.items.length, result };
+    activeSemanticSearchRef.current = appliedSearch;
+    setActiveSemanticSearch(appliedSearch);
+    setSemanticSearchOpen(false);
+    semanticSearchNativeOriginRef.current = false;
+    window.mediagen.finishSemanticSearchFocus(false);
+    const destinationPanelId = scope.kind === "panel"
+      ? scope.panelId
+      : semanticSearchRestoreRef.current?.focusedPanelId ??
+        state?.panels.find((panel): panel is FeedPanel => panel.kind === "feed")?.id ?? null;
+    if (destinationPanelId) setFocusedPanelId(destinationPanelId);
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        if (destinationPanelId) focusDashboardPanelRoot(destinationPanelId);
+      });
+    });
+    if (result.truncated) showToast("Résultats limités à 200 articles");
+  }
+
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
-        if (isTypingTarget(event.target)) return;
-        if (!modal && linkPreview) setLinkPreview(null);
+        if (semanticSearchOpen) {
+          closeSemanticSearchPalette();
+        }
+        else if (isTypingTarget(event.target)) return;
+        else if (Object.values(feedUi).some(({ searchItemIds }) => searchItemIds !== null)) {
+          clearSemanticSearchFilter();
+        }
+        else if (!modal && linkPreview) setLinkPreview(null);
         else if (!modal && maximizedPanelId) setMaximizedPanelId(null);
         return;
       }
       if (modal) return;
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        openSemanticSearch({ kind: "all" });
+        return;
+      }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
         event.preventDefault();
         beginDraft();
@@ -981,6 +1272,7 @@ export default function App() {
         visibleItemIds: ui.visibleItemIds,
         visibilityFilter: ui.visibilityFilter,
         focusedItemId: ui.focusedItemId,
+        searchItemIds: ui.searchItemIds,
       });
 
       if (event.key.toLowerCase() === "r") {
@@ -1130,6 +1422,11 @@ export default function App() {
           onSeen={markItemsSeen}
           onRefresh={() => refreshFeedPanel(panel)}
           onConfigure={() => setModal({ kind: "configure-feed", panelId: panel.id })}
+          onSearch={() => {
+            openSemanticSearch({ kind: "panel", panelId: panel.id });
+          }}
+          searchQuery={activeSemanticSearch?.query ?? null}
+          onClearSearch={clearSemanticSearchFilter}
           {...common}
         />
       );
@@ -1149,12 +1446,46 @@ export default function App() {
     <div className={`app-shell${isMac ? " app-shell--mac" : ""}`}>
       <header
         className="global-bar"
-        aria-hidden={modal ? true : undefined}
-        inert={modal ? true : undefined}
+        aria-hidden={modal || semanticSearchOpen ? true : undefined}
+        inert={modal || semanticSearchOpen ? true : undefined}
       >
         <Brand />
         <time>{clock.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}</time>
         <div className="global-bar__spacer" />
+        {activeSemanticSearch && (
+          <>
+            <button
+              type="button"
+              className="search-filter-summary"
+              onClick={() => {
+                openSemanticSearch(activeSemanticSearch.scope);
+              }}
+              title="Modifier la recherche active"
+            >
+              <Search size={13} />
+              <span>{activeSemanticSearch.query}</span>
+              <small>
+                {activeSemanticSearch.scope.kind === "all"
+                  ? "Tous"
+                  : panelById.get(activeSemanticSearch.scope.panelId)?.name ?? "Fil"}
+              </small>
+              <em>{activeSemanticSearch.resultCount}</em>
+            </button>
+            <IconButton label="Retirer le filtre de recherche" onClick={clearSemanticSearchFilter}>
+              <X size={13} />
+            </IconButton>
+          </>
+        )}
+        <button
+          type="button"
+          className="quiet-button"
+          disabled={!state.panels.some((panel) => panel.kind === "feed")}
+          onClick={() => {
+            openSemanticSearch({ kind: "all" });
+          }}
+        >
+          <Search size={13} /> Rechercher
+        </button>
         {linkPreview && (
           <button type="button" className="restore-pill" onClick={() => setLinkPreview(null)}>
             Retour au fil <kbd>Échap</kbd>
@@ -1193,8 +1524,8 @@ export default function App() {
       <main
         className="dashboard-stage"
         aria-label="Dashboard de veille"
-        aria-hidden={modal ? true : undefined}
-        inert={modal ? true : undefined}
+        aria-hidden={modal || semanticSearchOpen ? true : undefined}
+        inert={modal || semanticSearchOpen ? true : undefined}
       >
         <div
           className="dashboard-workspace"
@@ -1295,6 +1626,36 @@ export default function App() {
             );
           }}
           onToast={showToast}
+          semanticStatus={semanticSearchStatus}
+          onRemoveSemanticData={async () => {
+            clearSemanticSearchFilter();
+            await window.mediagen.removeSemanticSearchData();
+          }}
+        />
+      )}
+
+      {semanticSearchOpen && (
+        <SearchPalette
+          status={semanticSearchStatus}
+          scope={semanticSearchScope}
+          initialQuery={activeSemanticSearch?.query ?? ""}
+          initialResult={
+            activeSemanticSearch &&
+            semanticSearchScopesEqual(activeSemanticSearch.scope, semanticSearchScope)
+              ? activeSemanticSearch.result
+              : null
+          }
+          panels={state.panels.filter((panel): panel is FeedPanel => panel.kind === "feed")}
+          sources={state.sources}
+          onScopeChange={setSemanticSearchScope}
+          onPrepare={() => void window.mediagen.prepareSemanticSearch().catch((error) => showToast(cleanError(error)))}
+          onCancelPreparation={() => void window.mediagen.cancelSemanticSearchPreparation()}
+          onClose={closeSemanticSearchPalette}
+          onOpenItem={(item) => {
+            closeSemanticSearchPalette();
+            void openItem(item);
+          }}
+          onApply={applySemanticSearchFilter}
         />
       )}
 
@@ -1304,6 +1665,426 @@ export default function App() {
         </div>
       )}
     </div>
+  );
+}
+
+function searchDraftKey(query: string, scope: SemanticSearchScope) {
+  return `${scope.kind === "all" ? "all" : `panel:${scope.panelId}`}\u0000${query.trim()}`;
+}
+
+function semanticSearchScopesEqual(
+  first: SemanticSearchScope,
+  second: SemanticSearchScope,
+) {
+  return first.kind === second.kind &&
+    (first.kind === "all" || (second.kind === "panel" && first.panelId === second.panelId));
+}
+
+function SearchPalette({
+  status,
+  scope,
+  initialQuery,
+  initialResult,
+  panels,
+  sources,
+  onScopeChange,
+  onPrepare,
+  onCancelPreparation,
+  onOpenItem,
+  onApply,
+  onClose,
+}: {
+  status: SemanticSearchStatus;
+  scope: SemanticSearchScope;
+  initialQuery: string;
+  initialResult: SemanticSearchResult | null;
+  panels: FeedPanel[];
+  sources: Source[];
+  onScopeChange: (scope: SemanticSearchScope) => void;
+  onPrepare: () => void;
+  onCancelPreparation: () => void;
+  onOpenItem: (item: FeedItem) => void;
+  onApply: (query: string, scope: SemanticSearchScope, result: SemanticSearchResult) => void;
+  onClose: () => void;
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const requestRevisionRef = useRef(0);
+  const hybridTimerRef = useRef<number | null>(null);
+  const hybridRequestRef = useRef<{
+    key: string;
+    promise: Promise<SemanticSearchResult>;
+  } | null>(null);
+  const hybridResultRef = useRef<{
+    key: string;
+    result: SemanticSearchResult;
+  } | null>(
+    initialResult?.mode === "hybrid"
+      ? { key: searchDraftKey(initialQuery, scope), result: initialResult }
+      : null,
+  );
+  const resultsRef = useRef<SemanticSearchResult | null>(initialResult);
+  const resultsKeyRef = useRef(initialResult ? searchDraftKey(initialQuery, scope) : null);
+  const skipInitialSearchRef = useRef(Boolean(initialResult && initialQuery.trim().length >= 2));
+  const [query, setQuery] = useState(initialQuery);
+  const [results, setResults] = useState<SemanticSearchResult | null>(initialResult);
+  const [activeItemId, setActiveItemId] = useState<string | null>(null);
+  const [lexicalPending, setLexicalPending] = useState(false);
+  const [hybridPending, setHybridPending] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [semanticError, setSemanticError] = useState<string | null>(null);
+  const searchable = status.phase === "ready" || status.phase === "updating";
+  const preparing = ["downloading", "indexing"].includes(status.phase);
+  const sourceById = useMemo(() => new Map(sources.map((source) => [source.id, source])), [sources]);
+  const draftKey = searchDraftKey(query, scope);
+  const draftKeyRef = useRef(draftKey);
+  draftKeyRef.current = draftKey;
+  resultsRef.current = results;
+
+  function acceptResult(key: string, result: SemanticSearchResult) {
+    if (draftKeyRef.current !== key) return;
+    resultsKeyRef.current = key;
+    resultsRef.current = result;
+    setResults(result);
+    setActiveItemId((current) =>
+      current && result.items.some(({ id }) => id === current) ? current : null,
+    );
+  }
+
+  function requestHybrid(key: string, candidateQuery: string, candidateScope: SemanticSearchScope) {
+    if (hybridResultRef.current?.key === key) {
+      return Promise.resolve(hybridResultRef.current.result);
+    }
+    if (hybridRequestRef.current?.key === key) return hybridRequestRef.current.promise;
+    const promise = window.mediagen
+      .searchFeedItems({ query: candidateQuery, scope: candidateScope, mode: "hybrid" })
+      .then((result) => {
+        hybridResultRef.current = { key, result };
+        return result;
+      })
+      .finally(() => {
+        if (hybridRequestRef.current?.key === key) hybridRequestRef.current = null;
+      });
+    hybridRequestRef.current = { key, promise };
+    return promise;
+  }
+
+  useLayoutEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (!dialog.open) dialog.showModal();
+    const frame = window.requestAnimationFrame(() => {
+      if (inputRef.current) {
+        inputRef.current.focus({ preventScroll: true });
+        inputRef.current.select();
+        return;
+      }
+      dialog
+        .querySelector<HTMLElement>(".search-palette__setup .primary-button, .search-palette__setup .quiet-button")
+        ?.focus({ preventScroll: true });
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (dialog.open) dialog.close();
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!searchable) return;
+    const frame = window.requestAnimationFrame(() => {
+      inputRef.current?.focus({ preventScroll: true });
+      inputRef.current?.select();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [searchable]);
+
+  useEffect(() => {
+    if (!searchable) return;
+    if (skipInitialSearchRef.current) {
+      skipInitialSearchRef.current = false;
+      return;
+    }
+    const normalizedQuery = query.trim();
+    const revision = requestRevisionRef.current + 1;
+    requestRevisionRef.current = revision;
+    setActiveItemId(null);
+    setSemanticError(null);
+    resultsKeyRef.current = null;
+    resultsRef.current = null;
+    setResults(null);
+    if (hybridTimerRef.current !== null) window.clearTimeout(hybridTimerRef.current);
+    if (normalizedQuery.length < 2) {
+      setLexicalPending(false);
+      setHybridPending(false);
+      return;
+    }
+
+    const key = searchDraftKey(normalizedQuery, scope);
+    setLexicalPending(true);
+    void window.mediagen
+      .searchFeedItems({ query: normalizedQuery, scope, mode: "lexical" })
+      .then((result) => {
+        if (requestRevisionRef.current !== revision) return;
+        acceptResult(key, result);
+      })
+      .catch((error) => {
+        if (requestRevisionRef.current === revision) setSemanticError(cleanError(error));
+      })
+      .finally(() => {
+        if (requestRevisionRef.current === revision) setLexicalPending(false);
+      });
+
+    hybridTimerRef.current = window.setTimeout(() => {
+      setHybridPending(true);
+      void requestHybrid(key, normalizedQuery, scope)
+        .then((result) => {
+          if (requestRevisionRef.current !== revision) return;
+          acceptResult(key, result);
+          setSemanticError(null);
+        })
+        .catch((error) => {
+          if (requestRevisionRef.current === revision) setSemanticError(cleanError(error));
+        })
+        .finally(() => {
+          if (requestRevisionRef.current === revision) setHybridPending(false);
+        });
+    }, 140);
+
+    return () => {
+      if (hybridTimerRef.current !== null) window.clearTimeout(hybridTimerRef.current);
+      hybridTimerRef.current = null;
+    };
+  }, [query, scope, searchable]);
+
+  useEffect(() => {
+    if (!activeItemId) return;
+    document
+      .getElementById(`semantic-search-result-${activeItemId}`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [activeItemId]);
+
+  async function applyDraft() {
+    const normalizedQuery = query.trim();
+    if (!searchable || applying || normalizedQuery.length < 2) return;
+    const key = searchDraftKey(normalizedQuery, scope);
+    const revision = requestRevisionRef.current;
+    setApplying(true);
+    if (hybridTimerRef.current !== null) {
+      window.clearTimeout(hybridTimerRef.current);
+      hybridTimerRef.current = null;
+    }
+    try {
+      const result = hybridResultRef.current?.key === key
+        ? hybridResultRef.current.result
+        : await requestHybrid(key, normalizedQuery, scope);
+      if (requestRevisionRef.current !== revision || draftKeyRef.current !== key) return;
+      acceptResult(key, result);
+      onApply(normalizedQuery, scope, result);
+    } catch (error) {
+      if (requestRevisionRef.current !== revision || draftKeyRef.current !== key) return;
+      const fallback = resultsKeyRef.current === key ? resultsRef.current : null;
+      if (fallback) onApply(normalizedQuery, scope, fallback);
+      else setSemanticError(cleanError(error));
+    } finally {
+      if (requestRevisionRef.current === revision) setApplying(false);
+    }
+  }
+
+  function moveActiveResult(direction: "next" | "previous" | "first" | "last") {
+    const items = resultsRef.current?.items ?? [];
+    if (items.length === 0) return;
+    const currentIndex = items.findIndex(({ id }) => id === activeItemId);
+    let nextIndex = 0;
+    if (direction === "last") nextIndex = items.length - 1;
+    else if (direction === "previous") {
+      if (currentIndex <= 0) {
+        setActiveItemId(null);
+        return;
+      }
+      nextIndex = currentIndex - 1;
+    }
+    else if (direction === "next") nextIndex = currentIndex < 0 ? 0 : Math.min(items.length - 1, currentIndex + 1);
+    setActiveItemId(items[nextIndex].id);
+  }
+
+  function onQueryKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      moveActiveResult(event.key === "ArrowDown" ? "next" : "previous");
+      return;
+    }
+    if (activeItemId && (event.key === "Home" || event.key === "End")) {
+      event.preventDefault();
+      moveActiveResult(event.key === "Home" ? "first" : "last");
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      const selected = resultsRef.current?.items.find(({ id }) => id === activeItemId);
+      if (selected) onOpenItem(selected);
+      else void applyDraft();
+    }
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await applyDraft();
+  }
+
+  return (
+    <dialog
+      ref={dialogRef}
+      className="search-palette"
+      aria-label="Recherche locale"
+      onCancel={(event) => {
+        event.preventDefault();
+        onClose();
+      }}
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      {panels.length === 0 ? (
+        <div className="search-palette__setup">
+          <header>
+            <Search size={17} />
+            <strong>Recherche locale</strong>
+            <IconButton label="Fermer la recherche" onClick={onClose}><X size={15} /></IconButton>
+          </header>
+          <div className="search-palette__empty">Aucun fil à rechercher.</div>
+        </div>
+      ) : !searchable ? (
+        <div className="search-palette__setup">
+          <header>
+            <Search size={17} />
+            <strong>Recherche locale</strong>
+            <IconButton label="Fermer la recherche" onClick={onClose}><X size={15} /></IconButton>
+          </header>
+          <div>
+            <p>Les titres et résumés restent sur cet ordinateur.</p>
+            {preparing ? (
+              <>
+                <progress value={status.progress} max={1} />
+                <span>{status.phase === "downloading" ? "Téléchargement du modèle" : "Indexation des fils"} · {Math.round(status.progress * 100)} %</span>
+                <button type="button" className="quiet-button" onClick={onCancelPreparation}>Annuler</button>
+              </>
+            ) : (
+              <button type="button" className="primary-button" onClick={onPrepare}>
+                {status.phase === "error" ? "Réessayer" : "Activer · environ 140 Mo"}
+              </button>
+            )}
+            {status.message && <p className="form-error" role="alert">{status.message}</p>}
+          </div>
+        </div>
+      ) : (
+        <>
+          <form className="search-palette__bar" onSubmit={(event) => void submit(event)}>
+            <Search size={17} aria-hidden="true" />
+            <label className="visually-hidden" htmlFor="semantic-search-query">Requête</label>
+            <input
+              ref={inputRef}
+              id="semantic-search-query"
+              value={query}
+              maxLength={240}
+              placeholder="Rechercher dans les fils…"
+              autoComplete="off"
+              spellCheck={false}
+              role="combobox"
+              aria-expanded={Boolean(results)}
+              aria-controls="semantic-search-results"
+              aria-activedescendant={activeItemId ? `semantic-search-result-${activeItemId}` : undefined}
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={onQueryKeyDown}
+            />
+            {(lexicalPending || hybridPending || applying || status.phase === "updating") && (
+              <LoaderCircle className="is-spinning search-palette__activity" size={14} aria-label="Recherche en cours" />
+            )}
+            <label className="visually-hidden" htmlFor="semantic-search-scope">Portée</label>
+            <select
+              id="semantic-search-scope"
+              value={scope.kind === "all" ? "all" : scope.panelId}
+              onChange={(event) => onScopeChange(
+                event.target.value === "all"
+                  ? { kind: "all" }
+                  : { kind: "panel", panelId: event.target.value },
+              )}
+            >
+              <option value="all">Tous les fils</option>
+              {panels.map((panel) => <option key={panel.id} value={panel.id}>{panel.name}</option>)}
+            </select>
+            <button
+              type="submit"
+              className="search-palette__apply"
+              disabled={applying || query.trim().length < 2}
+            >
+              <ListFilter size={14} /> Filtrer
+            </button>
+            <IconButton label="Fermer la recherche" onClick={onClose}><X size={15} /></IconButton>
+          </form>
+          <div className="search-palette__status" aria-live="polite">
+            <span>
+              {results
+                ? `${results.items.length} résultat${results.items.length > 1 ? "s" : ""}${results.truncated ? " · limité à 200" : ""}`
+                : ""}
+            </span>
+            {results?.mode === "lexical" && hybridPending && <em>Enrichissement sémantique</em>}
+          </div>
+          {semanticError && (
+            <p className="search-palette__error" role="status">
+              Recherche sémantique indisponible. Les correspondances exactes restent utilisables.
+            </p>
+          )}
+          <div
+            id="semantic-search-results"
+            className="search-palette__results"
+            role="listbox"
+            aria-label="Résultats de recherche"
+          >
+            {results && results.items.length === 0 ? (
+              <div className="search-palette__empty">Aucun article dans cette portée.</div>
+            ) : (
+              results?.items.map((item) => {
+                const source = sourceById.get(item.sourceId);
+                const panelNames = panels
+                  .filter((panel) => panel.sourceIds.includes(item.sourceId))
+                  .map((panel) => panel.name);
+                const selected = activeItemId === item.id;
+                return (
+                  <button
+                    type="button"
+                    id={`semantic-search-result-${item.id}`}
+                    className={`search-palette__result${selected ? " is-selected" : ""}`}
+                    key={item.id}
+                    role="option"
+                    tabIndex={-1}
+                    aria-selected={selected}
+                    onMouseMove={() => setActiveItemId(item.id)}
+                    onClick={() => onOpenItem(item)}
+                  >
+                    <time dateTime={item.publishedAt ?? item.updatedAt ?? item.firstSeenAt}>{formatItemTime(item)}</time>
+                    <span className="search-palette__result-copy">
+                      <span className="search-palette__result-meta">
+                        <strong>{source?.name ?? "Source"}</strong>
+                        {panelNames.length > 0 && <span>{panelNames.join(" · ")}</span>}
+                      </span>
+                      <b>{item.title}</b>
+                      {item.summary && <span>{item.summary}</span>}
+                    </span>
+                    <ArrowUpRight size={14} aria-hidden="true" />
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </>
+      )}
+    </dialog>
   );
 }
 
@@ -1592,6 +2373,9 @@ function FeedPanelView({
   onSeen,
   onRefresh,
   onConfigure,
+  onSearch,
+  searchQuery,
+  onClearSearch,
   ...frame
 }: {
   panel: FeedPanel;
@@ -1602,6 +2386,9 @@ function FeedPanelView({
   onSeen: (itemIds: string[]) => void;
   onRefresh: () => void | Promise<void>;
   onConfigure: () => void;
+  onSearch: () => void;
+  searchQuery: string | null;
+  onClearSearch: () => void;
 } & StandardPanelActions) {
   const articleListRef = useRef<HTMLDivElement>(null);
   const sources = panel.sourceIds
@@ -1620,6 +2407,7 @@ function FeedPanelView({
     visibleItemIds: ui.visibleItemIds,
     visibilityFilter: ui.visibilityFilter,
     focusedItemId: ui.focusedItemId,
+    searchItemIds: ui.searchItemIds,
   });
   const tabbableItemId = items.some(({ id }) => id === ui.focusedItemId)
     ? ui.focusedItemId
@@ -1633,7 +2421,7 @@ function FeedPanelView({
   useLayoutEffect(() => {
     const list = articleListRef.current;
     const previous = ui.automaticInsertionMetrics;
-    if (ui.automaticInsertionIds.size === 0) return;
+    if (ui.automaticInsertionIds.size === 0 || ui.searchItemIds) return;
     if (list && previous) {
       if (previous.scrollTop < 4) {
         list.scrollTop = 0;
@@ -1642,7 +2430,7 @@ function FeedPanelView({
       }
     }
     onUi({ automaticInsertionIds: new Set(), automaticInsertionMetrics: null });
-  }, [automaticInsertionKey, ui.automaticInsertionIds, ui.automaticInsertionMetrics]);
+  }, [automaticInsertionKey, ui.automaticInsertionIds, ui.automaticInsertionMetrics, ui.searchItemIds]);
 
   return (
     <PanelFrame
@@ -1655,6 +2443,9 @@ function FeedPanelView({
         <>
           <IconButton label="Actualiser ce panel" disabled={refreshing} onClick={() => void onRefresh()}>
             <RefreshCw className={refreshing ? "is-spinning" : ""} size={13} />
+          </IconButton>
+          <IconButton label="Rechercher dans ce fil" onClick={onSearch}>
+            <Search size={13} />
           </IconButton>
           <IconButton label="Configurer les sources" onClick={onConfigure}>
             <SlidersHorizontal size={13} />
@@ -1714,6 +2505,19 @@ function FeedPanelView({
           ))}
         </div>
         {sources.length > 0 && <FeedRefreshStatus sources={sources} />}
+        {ui.searchItemIds && searchQuery && (
+          <button
+            type="button"
+            className="feed-toolbar__search-state"
+            onClick={onClearSearch}
+            title="Retirer le filtre de recherche"
+          >
+            <Search size={12} />
+            <span>{searchQuery}</span>
+            <em>{items.length}</em>
+            <X size={12} aria-hidden="true" />
+          </button>
+        )}
       </div>
       {failedSources.length > 0 && (
         <div className="panel-notice" role="status" aria-label="Sources indisponibles">
@@ -1736,6 +2540,14 @@ function FeedPanelView({
             body="Ajoutez un connecteur existant ou collez l’URL d’un autre média."
             action="Configurer les sources"
             onAction={onConfigure}
+          />
+        ) : items.length === 0 && ui.searchItemIds && searchQuery ? (
+          <PanelEmpty
+            icon={<Search size={20} />}
+            title="Aucun résultat"
+            body={`Aucun article ne correspond à « ${searchQuery} » dans ce fil.`}
+            action="Modifier la recherche"
+            onAction={onSearch}
           />
         ) : items.length === 0 && ui.visibilityFilter === "unseen" ? (
           <PanelEmpty
@@ -2624,14 +3436,19 @@ function PilotToolsModal({
   onClose,
   onImported,
   onToast,
+  semanticStatus,
+  onRemoveSemanticData,
 }: {
   onClose: () => void;
   onImported: (state: AppState, backupCreated: boolean) => void;
   onToast: (message: string) => void;
+  semanticStatus: SemanticSearchStatus;
+  onRemoveSemanticData: () => Promise<void>;
 }) {
-  const [pending, setPending] = useState<"import" | "export" | "diagnostics" | "web" | null>(null);
+  const [pending, setPending] = useState<"import" | "export" | "diagnostics" | "web" | "search" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmWebReset, setConfirmWebReset] = useState(false);
+  const [confirmSearchReset, setConfirmSearchReset] = useState(false);
 
   async function run(
     kind: NonNullable<typeof pending>,
@@ -2732,6 +3549,35 @@ function PilotToolsModal({
           >
             {pending === "web" && <LoaderCircle className="is-spinning" size={13} />}
             {confirmWebReset ? "Confirmer" : "Réinitialiser"}
+          </button>
+        </div>
+        <div className="pilot-tools-danger">
+          <span>
+            <strong>Recherche locale</strong>
+            {confirmSearchReset
+              ? "Supprime le modèle et l’index dérivé, sans toucher aux articles. Confirmez pour continuer."
+              : semanticStatus.phase === "not-installed"
+                ? "Non installée."
+                : `${semanticStatus.phase === "ready" ? "Prête" : semanticStatus.phase} · ${Math.round(semanticStatus.bytes / 1_000_000)} Mo utilisés.`}
+          </span>
+          <button
+            type="button"
+            className="danger-button"
+            disabled={Boolean(pending) || semanticStatus.phase === "not-installed"}
+            onClick={() => {
+              if (!confirmSearchReset) {
+                setConfirmSearchReset(true);
+                return;
+              }
+              void run("search", async () => {
+                await onRemoveSemanticData();
+                setConfirmSearchReset(false);
+                onToast("Recherche locale supprimée");
+              });
+            }}
+          >
+            {pending === "search" && <LoaderCircle className="is-spinning" size={13} />}
+            {confirmSearchReset ? "Confirmer" : "Supprimer"}
           </button>
         </div>
         {error && <p className="form-error" role="alert">{error}</p>}
