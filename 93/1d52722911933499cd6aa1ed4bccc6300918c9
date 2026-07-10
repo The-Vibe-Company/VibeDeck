@@ -1,0 +1,19 @@
+AGENTS.md
+  s_f9084fb88e9606::t_a574c22506e756 1-189
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "931d52722911933499cd6aa1ed4bccc6300918c9",
+  "prompts": {},
+  "sessions": {
+    "s_f9084fb88e9606": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f47fa-be23-7291-a9d5-e144c69f515c",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
