@@ -1,0 +1,21 @@
+scripts/verify-release-config.mjs
+  s_fbb2ee7d3a9edb::t_593c327244855f 296-300
+package.json
+  s_fbb2ee7d3a9edb::t_593c327244855f 32-35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "d6bcf018331433f9fa4dc2664d1bfc1bd6cb370f",
+  "prompts": {},
+  "sessions": {
+    "s_fbb2ee7d3a9edb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4d5c-22ce-7013-a3f0-0d9a040eae83",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
