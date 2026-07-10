@@ -13,6 +13,8 @@ const electronRuntime = require("electron");
 export const MAX_WEB_PANEL_DESCRIPTORS = 16;
 const MAX_URL_LENGTH = 4_096;
 const MAX_TEXT_LENGTH = 512;
+const ZOOM_SHORTCUT_LEVEL_STEP = 0.5;
+const ZOOM_SHORTCUT_LEVEL_LIMIT = 5;
 const MAX_COORDINATE = 10_000_000;
 export const WEB_PANEL_SESSION_STRATEGY = Object.freeze({
   partition: "persist:vibedeck-web-panels",
@@ -865,6 +867,36 @@ export function createWebPanelController({
           emit(record);
         }
         onOpenSearch(record.panelId);
+      }
+      // Les rôles de zoom du menu par défaut sont retirés (main.mjs) au profit
+      // du réglage de texte des fils ; ces vues natives sont hors de portée du
+      // renderer, on garde donc un zoom par vue pour leurs pages embarquées.
+      // input.code pour le zéro : sur AZERTY la touche 0 non shiftée donne "à" ;
+      // "Insert" exclu car Numpad0 sans NumLock = Ctrl+Insert (copie).
+      if (input?.type === "keyDown" && (input.meta || input.control) && !input.alt) {
+        const resetZoom =
+          input.key !== "Insert" &&
+          (input.key === "0" || input.code === "Digit0" || input.code === "Numpad0");
+        const zoomDirection = input.key === "+" || input.key === "=" ? 1
+          : input.key === "-" || input.key === "_" ? -1
+          : null;
+        if (
+          (resetZoom || zoomDirection !== null) &&
+          typeof contents.getZoomLevel === "function" &&
+          typeof contents.setZoomLevel === "function"
+        ) {
+          event.preventDefault?.();
+          const level = resetZoom
+            ? 0
+            : Math.max(
+                -ZOOM_SHORTCUT_LEVEL_LIMIT,
+                Math.min(
+                  ZOOM_SHORTCUT_LEVEL_LIMIT,
+                  contents.getZoomLevel() + zoomDirection * ZOOM_SHORTCUT_LEVEL_STEP,
+                ),
+              );
+          contents.setZoomLevel(level);
+        }
       }
     });
     listen(record, "content-bounds-updated", (event) => event.preventDefault?.());

@@ -261,6 +261,75 @@ try {
     "La baseline doit être interclassée par publication et non regroupée par source.",
   );
 
+  // Échelle de texte des fils : défaut global lisible, override par panel,
+  // contrôles A±, raccourcis et bornes.
+  const defaultTextScale = () => page.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue("--feed-text-scale").trim());
+  const panelTextScaleOverride = () => page.locator(".dashboard-panel--fil").first()
+    .evaluate((panel) => panel.style.getPropertyValue("--feed-text-scale").trim());
+  const firstTitleFontSize = () => page.locator(".article-copy > strong").first()
+    .evaluate((title) => getComputedStyle(title).fontSize);
+  assert.equal(await defaultTextScale(), "1");
+  assert.equal(await panelTextScaleOverride(), "", "Un fil neuf suit la taille par défaut.");
+  assert.equal(await firstTitleFontSize(), "14px", "Le titre par défaut doit faire 14px.");
+  const growTextButton = page.getByRole("button", { name: "Agrandir le texte des fils" });
+  await growTextButton.click();
+  assert.equal(await defaultTextScale(), "1.1");
+  assert.equal(await firstTitleFontSize(), "15.4px", "A+ global doit agrandir les titres.");
+  assert.equal(
+    await page.evaluate(() => window.localStorage.getItem("vibedeck.feedTextScale")),
+    "1.1",
+    "La taille par défaut doit être persistée.",
+  );
+  // Raccourci clavier avec un fil ciblé : il surcharge ce fil, pas le défaut.
+  await page.locator(".article-row").first().focus();
+  await page.keyboard.press("ControlOrMeta+=");
+  assert.equal(await panelTextScaleOverride(), "1.2", "Cmd/Ctrl = doit surcharger le fil ciblé.");
+  assert.equal(await defaultTextScale(), "1.1", "La taille par défaut ne doit pas bouger.");
+  assert.equal(await firstTitleFontSize(), "16.8px", "Le fil surchargé doit suivre son échelle.");
+  const overridePersisted = await page.evaluate(() =>
+    JSON.parse(window.localStorage.getItem("vibedeck.feedTextScale.overrides") ?? "{}"));
+  assert.deepEqual(Object.values(overridePersisted), [1.2], "L’override par fil doit être persisté.");
+  const panelScaleReset = page.getByRole("button", { name: /revenir à la taille par défaut/ });
+  assert.equal(await panelScaleReset.count(), 1, "Le fil surchargé doit afficher sa pastille de reset.");
+  await page.keyboard.press("ControlOrMeta+0");
+  assert.equal(await panelTextScaleOverride(), "", "Cmd/Ctrl 0 doit rendre le fil au défaut.");
+  assert.equal(await firstTitleFontSize(), "15.4px", "Le fil doit suivre à nouveau le défaut.");
+  // A− dans l’en-tête du fil : surcharge à la souris.
+  await page.getByRole("button", { name: "Réduire le texte de ce fil" }).click();
+  assert.equal(await panelTextScaleOverride(), "1", "A− du fil doit partir de l’échelle effective.");
+  await page.getByRole("button", { name: /revenir à la taille par défaut/ }).click();
+  assert.equal(await panelTextScaleOverride(), "", "La pastille doit retirer l’override.");
+  // Bornes du défaut global.
+  for (let step = 0; step < 10; step += 1) {
+    if (await growTextButton.getAttribute("aria-disabled") === "true") break;
+    await growTextButton.click();
+  }
+  assert.equal(await defaultTextScale(), "1.6", "Le défaut doit plafonner à 160 %.");
+  assert.equal(
+    await growTextButton.getAttribute("aria-disabled"),
+    "true",
+    "A+ doit s’annoncer désactivé au plafond sans perdre le focus clavier.",
+  );
+  await page.getByRole("button", { name: "Réinitialiser la taille du texte des fils" }).click();
+  assert.equal(await defaultTextScale(), "1", "Le bouton pourcentage doit revenir à 100 %.");
+  const zoomMenuRoles = await electronApp.evaluate(({ Menu }) => {
+    const collect = (menu) => menu.items.flatMap((item) => [
+      item.role ?? "",
+      ...(item.submenu ? collect(item.submenu) : []),
+    ]);
+    const applicationMenu = Menu.getApplicationMenu();
+    return applicationMenu
+      ? collect(applicationMenu).filter((role) =>
+          ["zoomin", "zoomout", "resetzoom"].includes(role.toLowerCase()))
+      : [];
+  });
+  assert.deepEqual(
+    zoomMenuRoles,
+    [],
+    "Les rôles de zoom fenêtre doivent être retirés du menu pour libérer Cmd/Ctrl +/−/0.",
+  );
+
   assert.equal(
     await page.locator('.article-row[tabindex="0"]').count(),
     1,
@@ -790,7 +859,7 @@ try {
     { articleId: sharedReaderSourceId, targetPanelId: narrowPanelId },
   );
 
-  await narrowLeaf.getByLabel("Agrandir").click();
+  await narrowLeaf.getByLabel("Agrandir", { exact: true }).click();
   await page.waitForFunction(
     (targetPanelId) =>
       document.querySelector(".split-layout")?.getAttribute("data-maximized-panel-id") ===
@@ -1178,6 +1247,7 @@ try {
   await globalBar.hover();
 
   console.log(`✓ baseline: ${baselineArticleCount} articles interclassés, roving tabindex actif`);
+  console.log("✓ échelle de texte: défaut global 14px, override par fil (clavier, en-tête, pastille), plafond annoncé, menu sans rôles zoom");
   console.log(`✓ viewport initial: scrollTop ${beforeArrival.scrollTop.toFixed(1)}px`);
   console.log(`✓ arrivée automatique: même article à ${revealed.selectedTop.toFixed(1)}px, compensation ${revealed.newRowHeight.toFixed(1)}px`);
   console.log("✓ arrivée en tête: scrollTop reste à zéro");
