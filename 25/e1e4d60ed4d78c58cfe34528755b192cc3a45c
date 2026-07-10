@@ -1,0 +1,27 @@
+scripts/test-pilot-ui.mjs
+  s_887c16cf4a1e0a::t_3bcc27488fd34a 304-305,311-314,319
+  s_887c16cf4a1e0a::t_be2d3f9413c468 301-303,317
+src/App.tsx
+  s_887c16cf4a1e0a::t_e54405c18d6bbb 1767,1776-1779
+  s_887c16cf4a1e0a::t_536f69e300b8d7 998,1006-1008
+  s_887c16cf4a1e0a::t_fde257baed725a 1024
+  s_887c16cf4a1e0a::t_67908075c3b615 1772-1774
+.gitignore
+  s_887c16cf4a1e0a::t_efebd429b52b45 24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "25e1e4d60ed4d78c58cfe34528755b192cc3a45c",
+  "prompts": {},
+  "sessions": {
+    "s_887c16cf4a1e0a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8a8e3cad-aef8-4d6b-b562-cb8117dd575c",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
