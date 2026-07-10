@@ -13,6 +13,7 @@ import {
   APP_PROTOCOL_SCHEME,
   createAppProtocolHandler,
 } from "./app-protocol.mjs";
+import { resolveRendererEntryUrl } from "./development-config.mjs";
 import {
   clearWebPanelSessionData,
   collectEnterpriseNetworkDiagnostics,
@@ -21,6 +22,7 @@ import {
   WEB_PANEL_SESSION_STRATEGY,
 } from "./web-panel-controller.mjs";
 import { runWithFinalStateBroadcast } from "./final-state-operation.mjs";
+import { closePersistenceAfterPending } from "./shutdown.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REFRESH_TICK_MS = 15_000;
@@ -42,6 +44,7 @@ const MAX_FEED_CONFIGURATION_SOURCE_IDS = 4_096;
 const MAX_FEED_CONFIGURATION_NEW_SOURCES = 256;
 const DIAGNOSTICS_FORMAT = "mediagen-veille-diagnostics";
 const DIAGNOSTICS_VERSION = 1;
+const CONDUCTOR_SHUTDOWN_GRACE_MS = 120;
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -65,9 +68,17 @@ let pilotSessionId = null;
 let lastPilotHeartbeatActive = null;
 let isQuitting = false;
 let shutdownComplete = false;
+let conductorShutdownRequested = false;
 const activeOperations = new Set();
 const webPanelControllers = new Map();
 const resettingWebPanelControllers = new WeakSet();
+
+if (!app.isPackaged) {
+  process.on("SIGHUP", () => {
+    conductorShutdownRequested = true;
+    if (!isQuitting) app.quit();
+  });
+}
 
 function cleanName(value) {
   if (typeof value !== "string") throw new TypeError("Le nom est invalide.");
@@ -822,12 +833,11 @@ function createWindow() {
   });
   webPanelControllers.set(window, webPanelController);
 
-  const devUrl = !app.isPackaged ? process.env.VITE_DEV_SERVER_URL : null;
-  if (devUrl === "http://127.0.0.1:5173") {
-    void window.loadURL(devUrl);
-  } else {
-    void window.loadURL(APP_ENTRY_URL);
-  }
+  void window.loadURL(resolveRendererEntryUrl({
+    isPackaged: app.isPackaged,
+    developmentUrl: process.env.VITE_DEV_SERVER_URL,
+    packagedUrl: APP_ENTRY_URL,
+  }));
 
   window.once("ready-to-show", () => {
     if (!window.isDestroyed()) window.show();
@@ -970,28 +980,41 @@ app.on("before-quit", (event) => {
   heartbeatPilotUsage({ force: true });
   if (pilotHeartbeatTimer) clearInterval(pilotHeartbeatTimer);
   pilotHeartbeatTimer = null;
+  const pendingPersistence = [...activeOperations];
   const webCleanup = destroyAllWebPanelControllers();
   if (refreshTimer) clearInterval(refreshTimer);
   refreshTimer = null;
   refreshScheduler?.stop();
   engine?.cancelPending();
-  const pending = [...activeOperations];
-  pending.push(webCleanup);
   const pendingRefresh = refreshScheduler?.pending();
-  if (pendingRefresh) pending.push(pendingRefresh);
-  void Promise.allSettled(pending).then(() => {
-    try {
-      endPilotUsageSession();
-      engine?.close();
-    } catch (error) {
-      console.error("Fermeture de la base locale incomplète :", error);
-    } finally {
-      engine = null;
-      feedNetworkSession = null;
-      refreshScheduler = null;
-      shutdownComplete = true;
-      app.quit();
+  if (pendingRefresh) pendingPersistence.push(pendingRefresh);
+  if (!conductorShutdownRequested) pendingPersistence.push(webCleanup);
+
+  void closePersistenceAfterPending({
+    pending: pendingPersistence,
+    deadlineMs: conductorShutdownRequested ? CONDUCTOR_SHUTDOWN_GRACE_MS : null,
+    closePersistence: () => {
+      try {
+        endPilotUsageSession();
+        engine?.close();
+      } catch (error) {
+        console.error("Fermeture de la base locale incomplète :", error);
+      } finally {
+        engine = null;
+        feedNetworkSession = null;
+        refreshScheduler = null;
+      }
+    },
+  }).then(({ pendingSettled }) => {
+    if (!pendingSettled) {
+      console.warn("Fermeture Conductor forcée après annulation des opérations en cours.");
     }
+    shutdownComplete = true;
+    app.quit();
+  }).catch((error) => {
+    console.error("Arrêt de MediaGen Veille incomplet :", error);
+    shutdownComplete = true;
+    app.quit();
   });
 });
 
