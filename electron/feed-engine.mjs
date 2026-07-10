@@ -336,7 +336,7 @@ function proxyRouteKind(value) {
   return hasProxy ? "proxy" : "direct";
 }
 
-function isNonPublicIpAddress(address) {
+export function isNonPublicIpAddress(address) {
   const family = isIP(address);
   if (family === 4) return NON_PUBLIC_IPV4.check(address, "ipv4");
   if (family === 6) {
@@ -1372,6 +1372,14 @@ export class FeedEngine {
 
   getPilotDiagnostics() {
     return this.database.getPilotDiagnostics(this.#nowIso());
+  }
+
+  getSemanticSearchDocuments(sourceIds) {
+    return this.database.listSemanticSearchDocuments(sourceIds);
+  }
+
+  getSemanticSearchItems(itemIds) {
+    return this.database.getSemanticSearchItems(itemIds);
   }
 
   beginPilotSession() {

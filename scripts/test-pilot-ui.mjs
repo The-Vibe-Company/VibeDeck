@@ -170,6 +170,7 @@ try {
       ELECTRON_DISABLE_SECURITY_WARNINGS: "true",
       MEDIAGEN_ALLOW_PRIVATE_NETWORK: "true",
       MEDIAGEN_DB_PATH: databasePath,
+      MEDIAGEN_FAKE_SEMANTIC_SEARCH: "true",
       VITE_DEV_SERVER_URL: "",
     },
     timeout: 30_000,
@@ -548,7 +549,142 @@ try {
     "L’état de lecture doit rester explicite dans le panel le plus étroit.",
   );
 
+  const searchOrigin = panelLeaf.locator(".article-row").nth(12);
+  const searchOriginId = await searchOrigin.getAttribute("id");
+  assert.ok(searchOriginId, "L’article d’origine de la recherche doit être identifiable.");
+  await searchOrigin.evaluate((row) => {
+    const list = row.closest(".article-list");
+    if (!(list instanceof HTMLElement) || !(row instanceof HTMLElement)) {
+      throw new Error("Origine de recherche invalide.");
+    }
+    list.scrollTop = row.offsetTop - 60;
+    row.focus({ preventScroll: true });
+  });
+  const searchOriginScrollTop = await panelLeaf.locator(".article-list").evaluate(
+    (list) => list.scrollTop,
+  );
+
+  await page.keyboard.press("ControlOrMeta+K");
+  const searchPalette = page.locator("dialog.search-palette");
+  await searchPalette.waitFor({ state: "visible" });
+  const searchInput = searchPalette.getByLabel("Requête");
+  assert.equal(
+    await searchInput.evaluate((input) => document.activeElement === input),
+    true,
+    "Cmd/Ctrl + K doit donner le vrai focus DOM au champ de recherche.",
+  );
+  await searchInput.fill("référence 42");
+  await searchPalette.locator(".search-palette__result").first().waitFor({ state: "visible" });
+  assert.equal(
+    await searchInput.evaluate((input) => document.activeElement === input),
+    true,
+    "L’arrivée des résultats ne doit pas retirer le focus du champ.",
+  );
+  const sharedResultMeta = await searchPalette
+    .locator(".search-palette__result-meta")
+    .first()
+    .textContent();
+  assert.match(sharedResultMeta ?? "", /Preuve viewport/);
+  assert.match(sharedResultMeta ?? "", /Panel étroit témoin/);
+  await page.screenshot({ path: path.join(projectRoot, ".context", "search-palette.png") });
+
+  await page.keyboard.press("Enter");
+  await searchPalette.waitFor({ state: "detached" });
+  await page.locator(".search-filter-summary").waitFor({ state: "visible" });
+  assert.equal(
+    await page.locator(".feed-toolbar__search-state").count(),
+    2,
+    "Chaque Fil concerné doit signaler le filtre actif.",
+  );
+  assert.equal(
+    await panelLeaf.locator(".article-row").count(),
+    1,
+    "Entrée depuis le champ doit appliquer le filtre au Fil principal.",
+  );
+  assert.equal(
+    await narrowLeaf.locator(".article-row").count(),
+    1,
+    "Le même filtre doit s’appliquer au Fil partageant la source.",
+  );
+
+  await page.locator(".search-filter-summary").click();
+  await searchPalette.waitFor({ state: "visible" });
+  await page.keyboard.press("Escape");
+  await searchPalette.waitFor({ state: "detached" });
+  assert.equal(
+    await page.locator(".search-filter-summary").isVisible(),
+    true,
+    "Le premier Échap doit fermer la palette sans retirer le filtre actif.",
+  );
+  await page.keyboard.press("Escape");
+  await page.locator(".search-filter-summary").waitFor({ state: "detached" });
+  await page.waitForFunction(
+    (articleId) => document.activeElement?.id === articleId,
+    searchOriginId,
+  );
+  assertWithin(
+    await panelLeaf.locator(".article-list").evaluate((list) => list.scrollTop),
+    searchOriginScrollTop,
+    0.5,
+    "scrollTop restauré après retrait du filtre",
+  );
+
+  await page.keyboard.press("ControlOrMeta+K");
+  await searchPalette.waitFor({ state: "visible" });
+  await searchPalette.getByLabel("Requête").fill("référence 42");
+  await searchPalette.locator(".search-palette__result").first().hover();
+  await searchPalette.getByRole("button", { name: "Filtrer" }).click();
+  await searchPalette.waitFor({ state: "detached" });
+  await page.locator(".search-filter-summary").waitFor({ state: "visible" });
+  assert.equal(
+    await page.locator(".link-reader").count(),
+    0,
+    "Le bouton Filtrer doit appliquer la recherche même après le survol d’un résultat.",
+  );
+  await page.keyboard.press("Escape");
+  await page.locator(".search-filter-summary").waitFor({ state: "detached" });
+
+  await page.keyboard.press("ControlOrMeta+K");
+  await searchPalette.waitFor({ state: "visible" });
+  await searchPalette.getByLabel("Requête").fill("référence 42");
+  await searchPalette.locator(".search-palette__result").first().waitFor({ state: "visible" });
+  await page.keyboard.press("ArrowDown");
+  assert.match(
+    (await searchPalette.getByLabel("Requête").getAttribute("aria-activedescendant")) ?? "",
+    /^semantic-search-result-/,
+    "ArrowDown doit activer un résultat sans déplacer le focus hors du champ.",
+  );
+  await page.keyboard.press("ArrowUp");
+  assert.equal(
+    await searchPalette.getByLabel("Requête").getAttribute("aria-activedescendant"),
+    null,
+    "ArrowUp depuis le premier résultat doit revenir à l’état de saisie.",
+  );
+  await page.keyboard.press("Enter");
+  await searchPalette.waitFor({ state: "detached" });
+  await page.locator(".search-filter-summary").waitFor({ state: "visible" });
+  await page.keyboard.press("Escape");
+  await page.locator(".search-filter-summary").waitFor({ state: "detached" });
+
+  await page.keyboard.press("ControlOrMeta+K");
+  await searchPalette.waitFor({ state: "visible" });
+  await searchPalette.getByLabel("Requête").fill("référence 42");
+  await searchPalette.locator(".search-palette__result").first().waitFor({ state: "visible" });
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await searchPalette.waitFor({ state: "detached" });
+  await page.locator(".link-reader").waitFor({ state: "visible" });
+  await page.keyboard.press("Escape");
+  await page.locator(".link-reader").waitFor({ state: "detached" });
+  console.log("✓ recherche live: focus direct, source partagée, filtre explicite et navigation clavier");
+
   await panelLeaf.locator(".dashboard-panel").focus();
+  await page.waitForFunction(
+    (targetPanelId) => document
+      .querySelector(`.split-layout__leaf[data-panel-id="${targetPanelId}"] .dashboard-panel`)
+      ?.classList.contains("dashboard-panel--focused"),
+    panelId,
+  );
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("ArrowRight");
   await page.waitForFunction(
