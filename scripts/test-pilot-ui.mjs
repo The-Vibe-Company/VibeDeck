@@ -298,17 +298,25 @@ try {
   );
   await allFilter.evaluate((button) => button.blur());
   await page.locator(".global-bar").hover();
-  await page.locator(".dashboard-panel").hover();
+  // Hover a row distinct from the prior keyboard anchor (nth(1)) so the assertion
+  // truly isolates hover-preselect: only onPointerMove can move the selection to nth(3).
+  const hoveredRow = page.locator(".article-row").nth(3);
+  const hoveredRowId = await hoveredRow.getAttribute("id");
+  await hoveredRow.hover();
   assert.equal(
     await page.locator(".dashboard-panel").evaluate((panel) => document.activeElement === panel),
     true,
     "Le survol doit rendre le panel prêt pour les raccourcis sans voler ensuite les contrôles.",
   );
+  await page.waitForFunction(
+    (articleId) => document.querySelector(".article-row--focused")?.id === articleId,
+    hoveredRowId,
+  );
   await page.keyboard.press("ArrowDown");
   assert.equal(
-    await page.locator(".article-row").nth(2).evaluate((row) => document.activeElement === row),
+    await page.locator(".article-row").nth(4).evaluate((row) => document.activeElement === row),
     true,
-    "Après survol, les flèches doivent reprendre la navigation dans les articles.",
+    "Après survol, les flèches doivent partir de la ligne survolée et avancer d’un cran.",
   );
 
   await page.keyboard.press("ControlOrMeta+N");

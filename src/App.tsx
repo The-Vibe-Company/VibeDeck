@@ -995,6 +995,7 @@ export default function App() {
         event.key === "ArrowUp"
       ) {
         event.preventDefault();
+        const focusedIndex = items.findIndex(({ id }) => id === ui.focusedItemId);
         const activeArticleId =
           event.target instanceof HTMLElement
             ? event.target.closest<HTMLElement>(".article-row")?.id ?? null
@@ -1002,9 +1003,9 @@ export default function App() {
         const activeArticleIndex = activeArticleId
           ? items.findIndex(({ id }) => activeArticleId === `article-${panel.id}-${id}`)
           : -1;
-        const currentIndex = activeArticleIndex >= 0
-          ? activeArticleIndex
-          : items.findIndex(({ id }) => id === ui.focusedItemId);
+        const currentIndex = focusedIndex >= 0
+          ? focusedIndex
+          : activeArticleIndex;
         const direction =
           event.key.toLowerCase() === "j" || event.key === "ArrowDown" ? 1 : -1;
         const nextIndex = Math.max(
@@ -1020,15 +1021,7 @@ export default function App() {
         }
         return;
       }
-      const focusedArticleId = ui.focusedItemId
-        ? `article-${panel.id}-${ui.focusedItemId}`
-        : null;
-      if (
-        event.key === "Enter" &&
-        focusedArticleId &&
-        event.target instanceof HTMLElement &&
-        event.target.id === focusedArticleId
-      ) {
+      if (event.key === "Enter" && ui.focusedItemId) {
         const item = items.find(({ id }) => id === ui.focusedItemId);
         if (item) {
           event.preventDefault();
@@ -1771,12 +1764,19 @@ function FeedPanelView({
                   }${
                     focused ? " article-row--focused" : ""
                   }`}
-                  title="Lire l’article dans l’application"
+                  title="Cliquer pour lire l’article sélectionné"
                   onFocus={() => onUi({ focusedItemId: item.id })}
                   onBlur={() => {
                     if (!seen && !opened) onSeen([item.id]);
                   }}
+                  onPointerMove={() => {
+                    if (ui.focusedItemId !== item.id) onUi({ focusedItemId: item.id });
+                  }}
                   onClick={() => {
+                    if (ui.focusedItemId !== item.id) {
+                      onUi({ focusedItemId: item.id });
+                      return;
+                    }
                     if (ui.visibilityFilter === "unseen") {
                       onUi({ focusedItemId: null });
                     }
