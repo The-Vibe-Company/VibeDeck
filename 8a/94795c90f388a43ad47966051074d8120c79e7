@@ -1,0 +1,32 @@
+electron/article-reader-preload.test.mjs
+  s_31ffceedbf654a::t_1fa00e257ec397 11-12,59-66,71-72,75-88,90-92,100-115,136,140-153,156-157,162-169,172-175,179-257,260-275,279,290-294,298,307-308
+electron/article-reader-preload.cjs
+  s_31ffceedbf654a::t_43a5dc5d3d55d0 8-15,63-193,210-235,239-288,292-296
+scripts/test-pilot-ui.mjs
+  s_31ffceedbf654a::t_b703c933a1f612 390,394-395,398
+src/App.tsx
+  s_31ffceedbf654a::t_84924bd4019a77 1013-1018
+  s_31ffceedbf654a::t_7fb3c57c90d127 55
+  s_31ffceedbf654a::t_b03d01e238ddac 992
+  s_31ffceedbf654a::t_915bdd11b7e775 1004
+README.md
+  s_31ffceedbf654a::t_5b3d542c9dd69f 54,56
+src/smooth-scroll.ts
+  s_31ffceedbf654a::t_6edcf805b88777 1-122
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8a94795c90f388a43ad47966051074d8120c79e7",
+  "prompts": {},
+  "sessions": {
+    "s_31ffceedbf654a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec6fed37-8641-432e-a470-fd001ad752b4",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
