@@ -1,0 +1,65 @@
+name: pilot-build
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Verify pilot viewport and focus invariants
+        run: npm run test:pilot-ui
+      - run: npm run verify:release
+      - name: Package application directory
+        run: npm run dist:dir
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Verify packaged Electron fuses
+        run: npm run verify:packaged-fuses
+      - name: Smoke packaged application
+        run: npm run test:packaged
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mediagen-${{ runner.os }}-directory
+          path: release/
+          if-no-files-found: error
+
+  windows-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run verify:release
+      - run: npm run dist:win
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Verify packaged Electron fuses
+        run: npm run verify:packaged-fuses
+      - name: Smoke packaged application
+        run: npm run test:packaged
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mediagen-Windows-installer-unsigned
+          path: release/*.exe
+          if-no-files-found: error
