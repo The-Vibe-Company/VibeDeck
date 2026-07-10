@@ -1,0 +1,43 @@
+src/App.tsx
+  s_0b26c897e4c793::t_16130dc71d784f 404,408-413
+  s_0b26c897e4c793::t_707a24dc8aca7a 141,230,260,278,356-376,405-407,414,912,1635,1645
+  s_0b26c897e4c793::t_b79afbb1d34cb4 1716,1813-1847
+  s_0b26c897e4c793::t_6759ffc5ab9888 1636-1642,1644
+  s_0b26c897e4c793::t_dde05a0c7039e9 52,140,229,395-397,399-402,911,1631,1633,1643
+  s_0b26c897e4c793::t_6ec3e81cdfce9d 1848-1850
+src/feed-presentation.ts
+  s_0b26c897e4c793::t_dde05a0c7039e9 1,110-167
+AGENTS.md
+  s_0b26c897e4c793::t_dde05a0c7039e9 91
+README.md
+  s_0b26c897e4c793::t_16130dc71d784f 15
+electron/feed-presentation.test.mjs
+  s_0b26c897e4c793::t_583fa3a5e53b94 8,33-53,163-189
+  s_0b26c897e4c793::t_57358337453ba2 190
+scripts/test-pilot-ui.mjs
+  s_0b26c897e4c793::t_f717e75960faf5 390-393
+  s_0b26c897e4c793::t_b4fa5604d39d25 707-708
+  s_0b26c897e4c793::t_d4cbfdaf81280b 765-766
+  s_0b26c897e4c793::t_75f1fbfcb0cd56 395-396,399
+  s_0b26c897e4c793::t_cac8efcd65c62d 482
+  s_0b26c897e4c793::t_e59491661e91c4 17,19,407-428,495,527,702,709-727,732-738,749-764,767,901
+  s_0b26c897e4c793::t_2a61ab938b8913 365
+  s_0b26c897e4c793::t_9f0cae84529a4d 394,397-398,517-526
+  s_0b26c897e4c793::t_583fa3a5e53b94 376-378,380,744-748,773,792,900,905
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "916f44cd2206318874d14625d5d3c2f03fc8c22f",
+  "prompts": {},
+  "sessions": {
+    "s_0b26c897e4c793": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4bf3-d13f-7512-8ccb-9c184f461750",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
