@@ -1,0 +1,31 @@
+src/App.tsx
+  s_887c16cf4a1e0a::t_313750ae7d3353 1762-1766
+  s_887c16cf4a1e0a::t_60bce1fedee3ef 1790-1791,1797-1799
+  s_887c16cf4a1e0a::t_f412ce0a624dd3 1605-1606,1608-1611
+  s_887c16cf4a1e0a::t_5c276af5ddfd28 74-77
+  s_887c16cf4a1e0a::t_b9ff719c69b9c5 1604,1607
+  s_887c16cf4a1e0a::t_8cb13094853d47 1792-1794,1796,1800
+  s_887c16cf4a1e0a::t_c6b567be98931a 1795
+scripts/test-pilot-ui.mjs
+  s_887c16cf4a1e0a::t_47fe57e9bf0fb5 910-946
+  s_887c16cf4a1e0a::t_0d3ef02f65366d 16-17
+  s_887c16cf4a1e0a::t_04b29712834b19 323
+  s_887c16cf4a1e0a::t_43f5d8fb69bfda 324
+  s_887c16cf4a1e0a::t_3a23113ceb4ac0 958
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c043366c70f914ce59e1be4bad83c2916a65fa03",
+  "prompts": {},
+  "sessions": {
+    "s_887c16cf4a1e0a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8a8e3cad-aef8-4d6b-b562-cb8117dd575c",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
