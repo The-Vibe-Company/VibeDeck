@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.3.0...v0.3.1) (2026-07-10)
+
+
+### Bug Fixes
+
+* **release:** autoriser la validation des brouillons ([#12](https://github.com/The-Vibe-Company/VibeDeck/issues/12)) ([8c31883](https://github.com/The-Vibe-Company/VibeDeck/commit/8c318834ffa3d404ec5a9bceeb2c341dcfcf0524))
+
 ## [0.3.0](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.2.0...v0.3.0) (2026-07-10)
 
 
