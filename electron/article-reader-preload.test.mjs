@@ -8,8 +8,8 @@ const PRELOAD_SOURCE = readFileSync(
   "utf8",
 );
 
-function createHarness() {
-  const keydownListeners = [];
+function createHarness({ reducedMotion = false, matchMedia = true } = {}) {
+  const listeners = new Map();
 
   class FakeHTMLElement {
     constructor({
@@ -56,20 +56,62 @@ function createHarness() {
     scrollingElement: root,
     elementFromPoint: () => leaf,
   };
+
+  // Virtual clock driving rAF callbacks and timers in 16 ms steps.
+  let now = 0;
+  let rafId = 0;
+  const rafQueue = new Map();
+  let timerId = 0;
+  const timers = new Map();
+
   const window = {
     innerHeight: 700,
     innerWidth: 1_000,
     addEventListener(type, listener) {
-      if (type === "keydown") keydownListeners.push(listener);
+      if (!listeners.has(type)) listeners.set(type, []);
+      listeners.get(type).push(listener);
     },
     getComputedStyle: (element) => ({ overflowY: element.overflowY }),
+    requestAnimationFrame(callback) {
+      rafQueue.set(++rafId, callback);
+      return rafId;
+    },
+    cancelAnimationFrame(id) {
+      rafQueue.delete(id);
+    },
+    setTimeout(fn, delay) {
+      timers.set(++timerId, { fn, at: now + delay });
+      return timerId;
+    },
+    clearTimeout(id) {
+      timers.delete(id);
+    },
   };
+  if (matchMedia) {
+    window.matchMedia = () => ({ matches: reducedMotion });
+  }
 
   vm.runInNewContext(PRELOAD_SOURCE, {
     document,
     HTMLElement: FakeHTMLElement,
     window,
   });
+
+  function tick(ms) {
+    const end = now + ms;
+    while (now < end) {
+      now = Math.min(now + 16, end);
+      for (const [id, timer] of [...timers]) {
+        if (timer.at <= now) {
+          timers.delete(id);
+          timer.fn();
+        }
+      }
+      const frames = [...rafQueue.values()];
+      rafQueue.clear();
+      for (const callback of frames) callback(now);
+    }
+  }
 
   function press(key, overrides = {}) {
     let prevented = false;
@@ -91,15 +133,122 @@ function createHarness() {
       },
       ...overrides,
     };
-    for (const listener of keydownListeners) listener(event);
+    for (const listener of listeners.get("keydown") ?? []) listener(event);
     return { event, prevented, stopped };
   }
 
-  return { FakeHTMLElement, body, document, leaf, press, root };
+  function release(key) {
+    const event = { key };
+    for (const listener of listeners.get("keyup") ?? []) listener(event);
+  }
+
+  function dispatch(type) {
+    for (const listener of listeners.get(type) ?? []) listener({ type });
+  }
+
+  function pendingFrames() {
+    return rafQueue.size;
+  }
+
+  return { FakeHTMLElement, body, document, leaf, press, release, dispatch, tick, pendingFrames, root };
 }
 
-test("arrow keys move the article by most of one viewport", () => {
-  const { press, root } = createHarness();
+test("an arrow tap glides by most of one viewport", () => {
+  const { press, release, tick, root } = createHarness();
+
+  const down = press("ArrowDown");
+  assert.equal(down.prevented, true);
+  assert.equal(down.stopped, true);
+  assert.equal(root.scrollTop, 0);
+
+  tick(16);
+  assert.ok(root.scrollTop > 0 && root.scrollTop < 504, "moves progressively, not in one jump");
+
+  tick(80);
+  release("ArrowDown");
+  tick(2_000);
+  assert.equal(root.scrollTop, 504);
+
+  press("ArrowUp");
+  tick(80);
+  release("ArrowUp");
+  tick(2_000);
+  assert.equal(root.scrollTop, 0);
+});
+
+test("quick repeated taps accumulate their destinations", () => {
+  const { press, release, tick, root } = createHarness();
+
+  press("ArrowDown");
+  tick(32);
+  release("ArrowDown");
+  press("ArrowDown");
+  release("ArrowDown");
+  tick(2_000);
+  assert.equal(root.scrollTop, 1_008);
+});
+
+test("holding an arrow switches to a continuous constant-speed scroll", () => {
+  const { press, release, tick, root } = createHarness();
+
+  press("ArrowDown");
+  tick(256);
+  const atHoldStart = root.scrollTop;
+
+  tick(320);
+  const travelled = root.scrollTop - atHoldStart;
+  // 1.5 viewports/s on a 700 px viewport = 1.05 px/ms → 336 px over 320 ms.
+  assert.ok(Math.abs(travelled - 336) < 2, `expected ≈336 px, got ${travelled}`);
+
+  release("ArrowDown");
+  const atRelease = root.scrollTop;
+  tick(500);
+  assert.equal(root.scrollTop, atRelease, "stops dead on keyup");
+});
+
+test("pressing the opposite arrow during a hold reverses direction", () => {
+  const { press, release, tick, root } = createHarness();
+
+  press("ArrowDown");
+  tick(500);
+  const beforeReverse = root.scrollTop;
+  assert.ok(beforeReverse > 0);
+
+  press("ArrowUp");
+  tick(200);
+  assert.ok(root.scrollTop < beforeReverse, "scrolls back up while ArrowUp drives");
+
+  release("ArrowUp");
+  release("ArrowDown");
+  const atRelease = root.scrollTop;
+  tick(500);
+  assert.equal(root.scrollTop, atRelease);
+});
+
+test("losing focus stops any scroll in flight", () => {
+  const { press, dispatch, tick, root } = createHarness();
+
+  press("ArrowDown");
+  tick(400);
+  dispatch("blur");
+  const atBlur = root.scrollTop;
+  tick(1_000);
+  assert.equal(root.scrollTop, atBlur);
+});
+
+test("the wheel cancels a running animation", () => {
+  const { press, dispatch, tick, root } = createHarness();
+
+  press("ArrowDown");
+  tick(48);
+  dispatch("wheel");
+  const atWheel = root.scrollTop;
+  tick(1_000);
+  assert.equal(root.scrollTop, atWheel);
+});
+
+test("reduced motion keeps the original instant paged jumps", () => {
+  const { press, tick, root } = createHarness({ reducedMotion: true });
 
   const down = press("ArrowDown");
   assert.equal(down.prevented, true);
@@ -107,20 +256,27 @@ test("arrow keys move the article by most of one viewport", () => {
   assert.deepEqual(root.scrollCalls, [{ top: 504, left: 0, behavior: "auto" }]);
   assert.equal(root.scrollTop, 504);
 
-  assert.equal(press("ArrowUp").prevented, true);
+  assert.equal(press("ArrowDown", { repeat: true }).prevented, true);
+  assert.equal(root.scrollCalls.at(-1).top, 196);
+
+  press("ArrowUp");
   assert.equal(root.scrollCalls.at(-1).top, -504);
-  assert.equal(root.scrollTop, 0);
+  tick(1_000);
+  assert.equal(root.scrollTop, 196);
 });
 
-test("holding an arrow stays fast with smaller controllable increments", () => {
-  const { press, root } = createHarness();
+test("a page without matchMedia still gets the animated scroll", () => {
+  const { press, release, tick, root } = createHarness({ matchMedia: false });
 
-  assert.equal(press("ArrowDown", { repeat: true }).prevented, true);
-  assert.equal(root.scrollCalls[0].top, 196);
+  press("ArrowDown");
+  tick(80);
+  release("ArrowDown");
+  tick(2_000);
+  assert.equal(root.scrollTop, 504);
 });
 
 test("a nested scroller at its boundary hands scrolling back to the article", () => {
-  const { FakeHTMLElement, document, leaf, press, root } = createHarness();
+  const { FakeHTMLElement, document, leaf, press, release, tick, root } = createHarness();
   const nested = new FakeHTMLElement({
     parent: document.body,
     overflowY: "auto",
@@ -131,12 +287,15 @@ test("a nested scroller at its boundary hands scrolling back to the article", ()
   leaf.parentElement = nested;
 
   assert.equal(press("ArrowDown").prevented, true);
-  assert.equal(nested.scrollCalls.length, 0);
-  assert.equal(root.scrollCalls[0].top, 504);
+  tick(80);
+  release("ArrowDown");
+  tick(2_000);
+  assert.equal(nested.scrollTop, 500, "nested scroller at its limit stays put");
+  assert.equal(root.scrollTop, 504);
 });
 
 test("editable controls, including controls in a shadow root, keep native arrows", () => {
-  const { FakeHTMLElement, document, press, root } = createHarness();
+  const { FakeHTMLElement, document, press, pendingFrames, root } = createHarness();
   const host = new FakeHTMLElement();
   const input = new FakeHTMLElement({ editable: true });
   host.shadowRoot = { activeElement: input };
@@ -145,5 +304,6 @@ test("editable controls, including controls in a shadow root, keep native arrows
   const down = press("ArrowDown");
   assert.equal(down.prevented, false);
   assert.equal(down.stopped, false);
-  assert.equal(root.scrollCalls.length, 0);
+  assert.equal(root.scrollTop, 0);
+  assert.equal(pendingFrames(), 0);
 });

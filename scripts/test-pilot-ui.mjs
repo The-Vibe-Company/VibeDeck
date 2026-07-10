@@ -387,15 +387,15 @@ try {
     1,
     "compensation du scroll",
   );
-  const expectedAfterJ = await page.evaluate(
+  const expectedAfterArrowDown = await page.evaluate(
     (articleId) => document.getElementById(articleId)?.nextElementSibling?.id ?? null,
     reference.id,
   );
-  assert.ok(expectedAfterJ, "L’article suivant après insertion doit exister.");
-  await page.keyboard.press("j");
+  assert.ok(expectedAfterArrowDown, "L’article suivant après insertion doit exister.");
+  await page.keyboard.press("ArrowDown");
   await page.waitForFunction(
     (articleId) => document.activeElement?.id === articleId,
-    expectedAfterJ,
+    expectedAfterArrowDown,
   );
 
   assert.match(
