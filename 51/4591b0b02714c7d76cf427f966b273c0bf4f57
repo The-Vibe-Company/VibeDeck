@@ -1,0 +1,23 @@
+src/smooth-scroll.ts
+  s_31ffceedbf654a::t_1921f2508b46e6 107
+  s_31ffceedbf654a::t_d04405a8811ec9 12
+  s_31ffceedbf654a::t_eefff8c8b9d098 132-137,139-144,146
+electron/smooth-scroll.test.mjs
+  s_31ffceedbf654a::t_6c638d4b9cdb0a 140-155
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "514591b0b02714c7d76cf427f966b273c0bf4f57",
+  "prompts": {},
+  "sessions": {
+    "s_31ffceedbf654a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec6fed37-8641-432e-a470-fd001ad752b4",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
