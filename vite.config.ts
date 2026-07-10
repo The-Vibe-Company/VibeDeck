@@ -1,31 +1,43 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import {
+  createDevelopmentServerUrl,
+  parseDevelopmentPort,
+} from "./electron/development-config.mjs";
 
-export default defineConfig(({ command }) => ({
-  base: "./",
-  plugins: [
-    react(),
-    ...(command === "serve"
-      ? [
-          {
-            name: "mediagen-local-dev-csp",
-            transformIndexHtml(html: string) {
-              return html.replace(
-                "connect-src 'self'",
-                "connect-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173",
-              );
+export default defineConfig(({ command }) => {
+  const developmentPort = command === "serve"
+    ? parseDevelopmentPort(process.env.MEDIAGEN_DEV_SERVER_PORT, { fallback: 5173 })
+    : 5173;
+  const developmentUrl = createDevelopmentServerUrl(developmentPort);
+  const developmentWebSocketUrl = developmentUrl.replace("http://", "ws://");
+
+  return {
+    base: "./",
+    plugins: [
+      react(),
+      ...(command === "serve"
+        ? [
+            {
+              name: "mediagen-local-dev-csp",
+              transformIndexHtml(html: string) {
+                return html.replace(
+                  "connect-src 'self'",
+                  `connect-src 'self' ${developmentUrl} ${developmentWebSocketUrl}`,
+                );
+              },
             },
-          },
-        ]
-      : []),
-  ],
-  server: {
-    host: "127.0.0.1",
-    port: 5173,
-    strictPort: true,
-  },
-  build: {
-    outDir: "dist",
-    sourcemap: false,
-  },
-}));
+          ]
+        : []),
+    ],
+    server: {
+      host: "127.0.0.1",
+      port: developmentPort,
+      strictPort: true,
+    },
+    build: {
+      outDir: "dist",
+      sourcemap: false,
+    },
+  };
+});
