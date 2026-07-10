@@ -12,7 +12,7 @@ Application locale de veille pour journalistes. À la création, chaque panel re
 - pack de démarrage « Veille concurrents » avec Le Monde, Le Figaro et Le Parisien ;
 - premier import traité comme une baseline déjà vue, sans fausse alerte ;
 - baseline interclassée par date éditoriale entre les médias, tandis que toute arrivée réellement nouvelle reste au-dessus sans être reclassée rétroactivement ;
-- arrivées suivantes retenues derrière « N arrivées · Afficher », sans déplacer le viewport ni la sélection, avec un tampon indépendant dans chaque panel qui partage la source ;
+- arrivées suivantes insérées automatiquement sans déplacer le viewport ni la sélection, avec un tampon technique indépendant dans chaque panel qui partage la source ;
 - états persistants et distincts `Nouveau`, `Vu` et `Ouvert`, avec filtre `Non vus` ;
 - fraîcheur calculée sur la source la moins récente et erreurs datées sans masquer le cache ;
 - choix explicite Auto, RSS, Atom ou Sitemap pour chaque URL personnalisée ;

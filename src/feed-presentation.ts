@@ -1,4 +1,4 @@
-import type { FeedItem } from "./types";
+import type { FeedItem, Source } from "./types";
 
 function timestamp(value: string | null | undefined) {
   if (!value) return Number.NEGATIVE_INFINITY;
@@ -106,4 +106,62 @@ export function formatCheckedAt(value: string | null, now = new Date()) {
   if (minutes < 1) return "maintenant";
   if (minutes < 60) return `il y a ${minutes} min`;
   return absoluteDateTime(date, now);
+}
+
+export type NextRefreshPresentation = {
+  full: string;
+  compact: string;
+};
+
+type ScheduledRefresh = {
+  at: number;
+  kind: "refresh" | "retry";
+};
+
+function nextScheduledRefresh(source: Source, now: number): ScheduledRefresh {
+  const retryAt = timestamp(source.nextRetryAt);
+  if (Number.isFinite(retryAt) && retryAt > now) {
+    return { at: retryAt, kind: "retry" };
+  }
+
+  const lastCheckedAt = timestamp(source.lastCheckedAt);
+  if (!Number.isFinite(lastCheckedAt)) return { at: now, kind: "refresh" };
+  const intervalSeconds = Math.max(30, Number(source.refreshIntervalSeconds) || 30);
+  return { at: lastCheckedAt + intervalSeconds * 1_000, kind: "refresh" };
+}
+
+function formatCountdown(milliseconds: number) {
+  const totalSeconds = Math.ceil(Math.max(0, milliseconds) / 1_000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return {
+    full: minutes > 0 ? `${minutes} min ${seconds} s` : `${seconds} s`,
+    compact: `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`,
+  };
+}
+
+/** Mirrors the main-process scheduler so each feed can show its nearest refresh. */
+export function formatNextRefresh(sources: Source[], now = new Date()): NextRefreshPresentation | null {
+  if (sources.length === 0) return null;
+  if (sources.some(({ status }) => status === "refreshing")) {
+    return { full: "actualisation…", compact: "actualisation…" };
+  }
+
+  const nowValue = now.valueOf();
+  const next = sources
+    .map((source) => nextScheduledRefresh(source, nowValue))
+    .sort((first, second) => first.at - second.at)[0];
+  if (!next || next.at <= nowValue) return { full: "imminente", compact: "immin." };
+
+  const countdown = formatCountdown(next.at - nowValue);
+  if (next.kind === "retry") {
+    return {
+      full: `réessai dans ${countdown.full}`,
+      compact: `réessai ${countdown.compact}`,
+    };
+  }
+  return {
+    full: `mise à jour dans ${countdown.full}`,
+    compact: `màj ${countdown.compact}`,
+  };
 }

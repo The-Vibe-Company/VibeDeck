@@ -49,6 +49,7 @@ import {
   compareFeedItems,
   formatCheckedAt,
   formatItemTime,
+  formatNextRefresh,
 } from "./feed-presentation";
 import { saveFeedPanelConfiguration } from "./feed-settings";
 import type {
@@ -136,6 +137,8 @@ type FeedPanelUi = {
   visibilityFilter: "all" | "unseen";
   focusedItemId: string | null;
   visibleItemIds: Set<string>;
+  automaticInsertionIds: Set<string>;
+  automaticInsertionMetrics: { scrollHeight: number; scrollTop: number } | null;
 };
 
 type LinkPreview = {
@@ -223,6 +226,8 @@ function initialFeedUi(panel: FeedPanel, state: AppState): FeedPanelUi {
     visibilityFilter: "all",
     focusedItemId: null,
     visibleItemIds: new Set(panelItems(panel, state).map(({ id }) => id)),
+    automaticInsertionIds: new Set(),
+    automaticInsertionMetrics: null,
   };
 }
 
@@ -252,6 +257,7 @@ export default function App() {
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
 
   const layoutRef = useRef<LayoutNode | null>(null);
+  const feedUiRef = useRef<Record<string, FeedPanelUi>>({});
   const draftsRef = useRef<Record<string, DraftPanel>>({});
   const revisionRef = useRef(0);
   const hydratedRef = useRef(false);
@@ -269,6 +275,7 @@ export default function App() {
   const pendingKeyboardPanelFocusRef = useRef<string | null>(null);
 
   layoutRef.current = layout;
+  feedUiRef.current = feedUi;
   draftsRef.current = drafts;
 
   useLayoutEffect(() => {
@@ -346,6 +353,27 @@ export default function App() {
     forceLayout = false,
     replaceFeedUi = false,
   ) => {
+    const automaticInsertionMetrics = new Map<
+      string,
+      { scrollHeight: number; scrollTop: number }
+    >();
+    for (const panel of nextState.panels) {
+      if (panel.kind !== "feed") continue;
+      const existing = feedUiRef.current[panel.id];
+      const hasIncomingItem = existing && panelItems(panel, nextState).some(
+        (item) => !item.isBaseline && !existing.visibleItemIds.has(item.id),
+      );
+      if (!hasIncomingItem) continue;
+      const list = document.querySelector<HTMLElement>(
+        `.split-layout__leaf[data-panel-id="${CSS.escape(panel.id)}"] .article-list`,
+      );
+      if (list) {
+        automaticInsertionMetrics.set(panel.id, {
+          scrollHeight: list.scrollHeight,
+          scrollTop: list.scrollTop,
+        });
+      }
+    }
     setState(nextState);
     setFeedUi((current) => {
       const activeFeedIds = new Set(
@@ -364,13 +392,26 @@ export default function App() {
           continue;
         }
         const visibleItemIds = new Set(existing.visibleItemIds);
-        // A source baseline can finish on a later refresh. Baseline rows belong
-        // in the initial panel view, while post-baseline delivery remains local
-        // to each panel even when another panel acknowledges the same article.
+        const automaticInsertionIds = new Set<string>();
+        // The delivery buffer stays local to each panel, but every incoming row
+        // is promoted in the same renderer update that receives it.
         for (const item of panelItems(panel, nextState)) {
-          if (item.isBaseline) visibleItemIds.add(item.id);
+          if (!visibleItemIds.has(item.id) && !item.isBaseline) {
+            automaticInsertionIds.add(item.id);
+          }
+          visibleItemIds.add(item.id);
         }
-        next[panel.id] = { ...existing, visibleItemIds };
+        const hasAutomaticInsertions = automaticInsertionIds.size > 0;
+        next[panel.id] = {
+          ...existing,
+          visibleItemIds,
+          automaticInsertionIds: hasAutomaticInsertions
+            ? automaticInsertionIds
+            : existing.automaticInsertionIds,
+          automaticInsertionMetrics: hasAutomaticInsertions
+            ? automaticInsertionMetrics.get(panel.id) ?? null
+            : existing.automaticInsertionMetrics,
+        };
       }
       return next;
     });
@@ -830,7 +871,6 @@ export default function App() {
         sources.map((source) => window.mediagen.refreshSource(source.id)),
       );
       const nextState = await window.mediagen.getState();
-      applyServerState(nextState);
       const failedCount = nextState.sources.filter(
         (source) => panel.sourceIds.includes(source.id) && source.status === "error",
       ).length;
@@ -868,6 +908,8 @@ export default function App() {
         visibilityFilter: current[panelId]?.visibilityFilter ?? "all",
         focusedItemId: current[panelId]?.focusedItemId ?? null,
         visibleItemIds: current[panelId]?.visibleItemIds ?? new Set(),
+        automaticInsertionIds: current[panelId]?.automaticInsertionIds ?? new Set(),
+        automaticInsertionMetrics: current[panelId]?.automaticInsertionMetrics ?? null,
         ...patch,
       },
     }));
@@ -1570,12 +1612,6 @@ function FeedPanelView({
       ? ui.sourceFilter
       : "all";
   const allItems = panelItems(panel, state);
-  const pendingItems = allItems.filter(
-    (item) => !ui.visibleItemIds.has(item.id) && !item.isBaseline,
-  );
-  const pendingItemsForFilter = pendingItems.filter(
-    (item) => activeSourceFilter === "all" || item.sourceId === activeSourceFilter,
-  );
   const visibleItems = panelItems(panel, state, {
     visibleItemIds: ui.visibleItemIds,
   });
@@ -1592,31 +1628,21 @@ function FeedPanelView({
   const unseenCount = visibleItems.filter(({ seenAt }) => seenAt === null).length;
   const failedSources = sources.filter(({ status }) => status === "error");
   const refreshing = sources.some(({ status }) => status === "refreshing");
-  const freshSourceCount = sources.filter(sourceIsFresh).length;
-  const leastRecentSuccess = sources.some(({ lastSuccessAt }) => !lastSuccessAt)
-    ? null
-    : sources
-        .map(({ lastSuccessAt }) => lastSuccessAt)
-        .filter((value): value is string => Boolean(value))
-        .sort()
-        .at(0) ?? null;
+  const automaticInsertionKey = [...ui.automaticInsertionIds].sort().join("\u0000");
 
-  function revealPendingItems() {
+  useLayoutEffect(() => {
     const list = articleListRef.current;
-    const previousHeight = list?.scrollHeight ?? 0;
-    const previousTop = list?.scrollTop ?? 0;
-    const wasAtTop = previousTop < 4;
-    onUi({
-      visibleItemIds: new Set([
-        ...ui.visibleItemIds,
-        ...pendingItemsForFilter.map(({ id }) => id),
-      ]),
-    });
-    window.requestAnimationFrame(() => {
-      if (!list || wasAtTop) return;
-      list.scrollTop = previousTop + Math.max(0, list.scrollHeight - previousHeight);
-    });
-  }
+    const previous = ui.automaticInsertionMetrics;
+    if (ui.automaticInsertionIds.size === 0) return;
+    if (list && previous) {
+      if (previous.scrollTop < 4) {
+        list.scrollTop = 0;
+      } else {
+        list.scrollTop = previous.scrollTop + Math.max(0, list.scrollHeight - previous.scrollHeight);
+      }
+    }
+    onUi({ automaticInsertionIds: new Set(), automaticInsertionMetrics: null });
+  }, [automaticInsertionKey, ui.automaticInsertionIds, ui.automaticInsertionMetrics]);
 
   return (
     <PanelFrame
@@ -1687,22 +1713,7 @@ function FeedPanelView({
             </button>
           ))}
         </div>
-        {sources.length > 0 && (
-          <span
-            className={`feed-toolbar__freshness${
-              freshSourceCount < sources.length ? " is-stale" : ""
-            }`}
-            title={`Source la moins récente : ${formatCheckedAt(leastRecentSuccess)}`}
-            aria-label={`${freshSourceCount} sources à jour sur ${sources.length}. Source la moins récente : ${formatCheckedAt(leastRecentSuccess)}`}
-          >
-            <span className="feed-toolbar__freshness-full">
-              {freshSourceCount}/{sources.length} sources à jour · plus ancienne {formatCheckedAt(leastRecentSuccess)}
-            </span>
-            <span className="feed-toolbar__freshness-compact" aria-hidden="true">
-              {freshSourceCount}/{sources.length} · {formatCheckedAt(leastRecentSuccess)}
-            </span>
-          </span>
-        )}
+        {sources.length > 0 && <FeedRefreshStatus sources={sources} />}
       </div>
       {failedSources.length > 0 && (
         <div className="panel-notice" role="status" aria-label="Sources indisponibles">
@@ -1718,16 +1729,6 @@ function FeedPanelView({
         </div>
       )}
       <div className="feed-body">
-        {pendingItemsForFilter.length > 0 && (
-          <button
-            type="button"
-            className="feed-arrivals"
-            onClick={revealPendingItems}
-            aria-live="polite"
-          >
-            {pendingItemsForFilter.length} arrivée{pendingItemsForFilter.length > 1 ? "s" : ""} · Afficher
-          </button>
-        )}
         {sources.length === 0 ? (
           <PanelEmpty
             icon={<Rss size={20} />}
@@ -1806,6 +1807,44 @@ function FeedPanelView({
         )}
       </div>
     </PanelFrame>
+  );
+}
+
+function FeedRefreshStatus({ sources }: { sources: Source[] }) {
+  const [now, setNow] = useState(() => new Date());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const freshSourceCount = sources.filter(sourceIsFresh).length;
+  const leastRecentSuccess = sources.some(({ lastSuccessAt }) => !lastSuccessAt)
+    ? null
+    : sources
+        .map(({ lastSuccessAt }) => lastSuccessAt)
+        .filter((value): value is string => Boolean(value))
+        .sort()
+        .at(0) ?? null;
+  const nextRefresh = formatNextRefresh(sources, now);
+  const leastRecentLabel = formatCheckedAt(leastRecentSuccess, now);
+  const countdown = nextRefresh?.full ?? `plus ancienne ${leastRecentLabel}`;
+
+  return (
+    <span
+      className={`feed-toolbar__freshness${
+        freshSourceCount < sources.length ? " is-stale" : ""
+      }`}
+      title={`Source la moins récente : ${leastRecentLabel}. ${nextRefresh?.full ?? ""}`}
+      aria-label={`${freshSourceCount} sources à jour sur ${sources.length}. Source la moins récente : ${leastRecentLabel}. ${nextRefresh?.full ?? ""}`}
+    >
+      <span className="feed-toolbar__freshness-full">
+        {freshSourceCount}/{sources.length} sources à jour · {countdown}
+      </span>
+      <span className="feed-toolbar__freshness-compact" aria-hidden="true">
+        {freshSourceCount}/{sources.length} · {nextRefresh?.compact ?? leastRecentLabel}
+      </span>
+    </span>
   );
 }
 

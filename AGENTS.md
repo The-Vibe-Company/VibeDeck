@@ -88,7 +88,7 @@ Les futurs types de panels doivent étendre le modèle existant sans spécialise
 - L’amber est un signal, pas une décoration : focus, sélection, arrivée ou action principale uniquement.
 - Ne pas multiplier badges, bordures, cartes imbriquées, textes d’aide ou couleurs concurrentes.
 - Chaque branche du layout doit conserver une taille réelle minimale de `256 × 176 px`, y compris après import et dans un arbre imbriqué.
-- Une arrivée ne déplace jamais le viewport, la sélection ou le focus. Elle reste dans le tampon propre au panel jusqu’à l’action « Afficher ».
+- Une arrivée est promue automatiquement depuis le tampon propre au panel, sans déplacer le viewport, la sélection ou le focus.
 - `Nouveau`, `Vu` et `Ouvert` sont trois états distincts et persistants.
 - Le focus visuel et `document.activeElement` doivent toujours raconter la même chose.
 - Le survol donne le focus au panel sans voler le clavier à un champ, un bouton actif ou une page web.

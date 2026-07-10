@@ -14,7 +14,9 @@ const baselineArticleCount = initialArticleCount + secondaryArticleCount;
 const MIN_PANEL_WIDTH = 256;
 const SUBPIXEL_EPSILON = 0.5;
 const newArticleTitle = "ARRIVÉE CONTRÔLÉE — invariant du viewport";
+const topArrivalTitle = "ARRIVÉE EN TÊTE — scroll nul";
 const sharedArrivalTitle = "ARRIVÉE PARTAGÉE — tampon indépendant par panel";
+const sharedSecondArrivalTitle = "ARRIVÉE PARTAGÉE — deuxième insertion";
 
 function escapeXml(value) {
   return String(value).replace(/[&<>'"]/g, (character) => ({
@@ -360,18 +362,7 @@ try {
     },
     ...articles,
   ];
-  await page.evaluate((id) => window.mediagen.refreshSource(id), sourceId);
-  await page.locator(".feed-arrivals").waitFor({ state: "visible" });
-
-  const buffered = await readMetrics(page, reference.id);
-  assert.equal(primaryRequestCount, 2, "Le rafraîchissement doit relire le flux contrôlé.");
-  assert.equal(buffered.newInDom, false, "L’arrivée ne doit pas entrer dans le DOM avant confirmation.");
-  assert.equal(buffered.activeId, reference.id, "L’arrivée ne doit pas voler le focus DOM.");
-  assert.equal(buffered.focusedId, reference.id, "L’arrivée ne doit pas changer la sélection clavier.");
-  assertWithin(buffered.scrollTop, beforeArrival.scrollTop, 0.5, "scrollTop avant confirmation");
-  assertWithin(buffered.selectedTop, beforeArrival.selectedTop, 1, "position avant confirmation");
-
-  await page.locator(".feed-arrivals").click();
+  await page.keyboard.press("r");
   await page.waitForFunction(
     (title) => [...document.querySelectorAll(".article-row")]
       .some((row) => row.textContent?.includes(title)),
@@ -382,8 +373,11 @@ try {
   ));
 
   const revealed = await readMetrics(page, reference.id);
-  assert.equal(revealed.newInDom, true, "L’arrivée doit être rendue après confirmation.");
+  assert.equal(primaryRequestCount, 2, "Le rafraîchissement doit relire le flux contrôlé.");
+  assert.equal(await page.locator(".feed-arrivals").count(), 0, "Aucun bouton d’arrivée ne doit rester affiché.");
+  assert.equal(revealed.newInDom, true, "L’arrivée doit être rendue automatiquement.");
   assert.equal(revealed.newRowIndex, 0, "L’arrivée doit être insérée en tête du fil.");
+  assert.equal(revealed.activeId, reference.id, "L’arrivée ne doit pas voler le focus DOM.");
   assert.equal(revealed.focusedId, reference.id, "La sélection clavier doit rester sur le même article.");
   assertWithin(revealed.selectedTop, beforeArrival.selectedTop, 1, "position après insertion");
   assert.ok(revealed.scrollTop > beforeArrival.scrollTop, "Le scroll doit compenser la ligne insérée.");
@@ -393,11 +387,43 @@ try {
     1,
     "compensation du scroll",
   );
+  const expectedAfterJ = await page.evaluate(
+    (articleId) => document.getElementById(articleId)?.nextElementSibling?.id ?? null,
+    reference.id,
+  );
+  assert.ok(expectedAfterJ, "L’article suivant après insertion doit exister.");
+  await page.keyboard.press("j");
+  await page.waitForFunction(
+    (articleId) => document.activeElement?.id === articleId,
+    expectedAfterJ,
+  );
 
   assert.match(
     (await page.locator(".article-row").first().locator("time").textContent()) ?? "",
     /^\d{2}\/\d{2}(?:\/\d{2})? \d{2}:\d{2}$/,
     "Une date ancienne doit rester explicite dans le fil.",
+  );
+
+  await page.evaluate(() => {
+    const list = document.querySelector(".article-list");
+    if (!(list instanceof HTMLElement)) throw new Error("Le fil principal est introuvable.");
+    list.scrollTop = 0;
+  });
+  articles = [
+    {
+      id: "top-arrival",
+      title: topArrivalTitle,
+      summary: "Cette arrivée doit rester visible au sommet du fil.",
+      publishedAt: new Date(),
+    },
+    ...articles,
+  ];
+  await page.evaluate((id) => window.mediagen.refreshSource(id), sourceId);
+  await page.locator(".article-row").filter({ hasText: topArrivalTitle }).waitFor({ state: "visible" });
+  assert.equal(
+    await page.locator(".article-list").evaluate((list) => list.scrollTop),
+    0,
+    "Une arrivée reçue en haut du fil doit conserver scrollTop à zéro.",
   );
 
   const readerSourceRow = page.locator(".article-row").first();
@@ -453,7 +479,7 @@ try {
   );
   assert.equal(
     primaryRequestCount,
-    2,
+    3,
     "Réutiliser un connecteur existant dans un autre panel ne doit pas le retélécharger.",
   );
   const narrowWindow = await electronApp.browserWindow(page);
@@ -466,15 +492,7 @@ try {
       document.querySelectorAll(
         `.split-layout__leaf[data-panel-id="${targetPanelId}"] .article-row`,
       ).length === count,
-    { targetPanelId: narrowPanelId, count: initialArticleCount },
-  );
-  await narrowLeaf.locator(".feed-arrivals").click();
-  await page.waitForFunction(
-    ({ targetPanelId, count }) =>
-      document.querySelectorAll(
-        `.split-layout__leaf[data-panel-id="${targetPanelId}"] .article-row`,
-      ).length === count,
-    { targetPanelId: narrowPanelId, count: initialArticleCount + 1 },
+    { targetPanelId: narrowPanelId, count: initialArticleCount + 2 },
   );
   await page.waitForFunction(
     (targetPanelId) => {
@@ -495,6 +513,17 @@ try {
     await panelLeaf.locator(".feed-toolbar__freshness").isVisible(),
     true,
     "La fraîcheur doit rester visible dans un dashboard splitté.",
+  );
+  const compactRefreshCountdown = panelLeaf.locator(".feed-toolbar__freshness-compact");
+  const refreshCountdownBefore = await compactRefreshCountdown.textContent();
+  await page.waitForFunction(
+    ({ targetPanelId, previous }) => {
+      const current = document.querySelector(
+        `.split-layout__leaf[data-panel-id="${targetPanelId}"] .feed-toolbar__freshness-compact`,
+      )?.textContent;
+      return Boolean(current && current !== previous);
+    },
+    { targetPanelId: panelId, previous: refreshCountdownBefore },
   );
 
   const divider = page.getByRole("separator", { name: "Redimensionner les panels" }).first();
@@ -670,34 +699,78 @@ try {
   );
   assert.equal(
     await panelLeaf.locator(".article-row").count(),
-    baselineArticleCount + 1,
+    baselineArticleCount + 2,
     "Une panne de rafraîchissement ne doit retirer aucun article en cache.",
   );
 
   primaryShouldFail = false;
+  await page.evaluate((id) => window.mediagen.refreshSource(id), sourceId);
+  await errorNotice.waitFor({ state: "detached" });
+  const sharedViewportBefore = await page.evaluate(({ firstPanelId, secondPanelId }) => {
+    const measure = (panelId) => {
+      const leaf = document.querySelector(`.split-layout__leaf[data-panel-id="${panelId}"]`);
+      const list = leaf?.querySelector(".article-list");
+      const rows = [...(leaf?.querySelectorAll(".article-row") ?? [])];
+      const reference = rows[20];
+      if (!(list instanceof HTMLElement) || !(reference instanceof HTMLElement)) {
+        throw new Error("Le panel partagé ne contient pas assez d’articles.");
+      }
+      list.scrollTop = reference.offsetTop - Math.round(list.clientHeight * 0.3);
+      return {
+        panelId,
+        referenceId: reference.id,
+        scrollTop: list.scrollTop,
+        referenceTop: reference.getBoundingClientRect().top,
+      };
+    };
+    return [measure(firstPanelId), measure(secondPanelId)];
+  }, { firstPanelId: panelId, secondPanelId: narrowPanelId });
   articles = [
     {
       id: "shared-panel-arrival",
       title: sharedArrivalTitle,
-      summary: "Cette arrivée doit rester tamponnée séparément dans chaque panel.",
+      summary: "Cette arrivée doit préserver chaque viewport partagé.",
+      publishedAt: new Date(),
+    },
+    {
+      id: "shared-panel-arrival-second",
+      title: sharedSecondArrivalTitle,
+      summary: "Une deuxième arrivée simultanée pour la compensation.",
       publishedAt: new Date(),
     },
     ...articles,
   ];
   await page.evaluate((id) => window.mediagen.refreshSource(id), sourceId);
-  await panelLeaf.locator(".feed-arrivals").waitFor({ state: "visible" });
-  await narrowLeaf.locator(".feed-arrivals").waitFor({ state: "visible" });
+  const sharedRows = panelLeaf.locator(".article-row").filter({ hasText: sharedArrivalTitle });
+  const sharedSiblingRow = narrowLeaf.locator(".article-row").filter({ hasText: sharedArrivalTitle });
+  await sharedRows.waitFor({ state: "visible" });
+  await sharedSiblingRow.waitFor({ state: "visible" });
+  assert.equal(await page.locator(".feed-arrivals").count(), 0, "Aucune arrivée ne doit attendre une action utilisateur.");
+  const sharedViewportAfter = await page.evaluate((before) => before.map(({ panelId, referenceId }) => {
+    const leaf = document.querySelector(`.split-layout__leaf[data-panel-id="${panelId}"]`);
+    const list = leaf?.querySelector(".article-list");
+    const reference = document.getElementById(referenceId);
+    if (!(list instanceof HTMLElement) || !(reference instanceof HTMLElement)) {
+      throw new Error("La référence de viewport partagé est introuvable.");
+    }
+    return {
+      panelId,
+      scrollTop: list.scrollTop,
+      referenceTop: reference.getBoundingClientRect().top,
+    };
+  }), sharedViewportBefore);
+  for (const before of sharedViewportBefore) {
+    const after = sharedViewportAfter.find(({ panelId: candidate }) => candidate === before.panelId);
+    assert.ok(after, "Chaque panel partagé doit conserver sa mesure de viewport.");
+    assertWithin(after.referenceTop, before.referenceTop, 1, `position partagée ${before.panelId}`);
+    assert.ok(after.scrollTop > before.scrollTop, `Le panel ${before.panelId} doit compenser ses arrivées simultanées.`);
+  }
 
   await narrowLeaf.getByLabel("Configurer les sources").click();
   const feedConfigDialog = page.getByRole("dialog", { name: "Configuration du fil" });
   await feedConfigDialog.getByRole("button", { name: "Enregistrer" }).click();
   await feedConfigDialog.waitFor({ state: "detached" });
-  await narrowLeaf.locator(".feed-arrivals").waitFor({ state: "visible" });
-  assert.equal(
-    await narrowLeaf.locator(".article-row").filter({ hasText: sharedArrivalTitle }).count(),
-    0,
-    "Enregistrer la configuration ne doit pas vider le tampon d’arrivées du panel.",
-  );
+  await sharedSiblingRow.waitFor({ state: "visible" });
 
   const temporaryPanelId = await page.evaluate(async (targetPanelId) => {
     const before = await window.mediagen.getState();
@@ -716,16 +789,8 @@ try {
   const closeDialog = page.getByRole("alertdialog", { name: /Fermer « Panel temporaire »/ });
   await closeDialog.getByRole("button", { name: "Fermer le panel" }).click();
   await temporaryLeaf.waitFor({ state: "detached" });
-  await narrowLeaf.locator(".feed-arrivals").waitFor({ state: "visible" });
-  assert.equal(
-    await narrowLeaf.locator(".article-row").filter({ hasText: sharedArrivalTitle }).count(),
-    0,
-    "Fermer un panel voisin ne doit pas révéler une arrivée tamponnée.",
-  );
+  await sharedSiblingRow.waitFor({ state: "visible" });
 
-  await panelLeaf.locator(".feed-arrivals").click();
-  await panelLeaf.locator(".article-row").filter({ hasText: sharedArrivalTitle })
-    .waitFor({ state: "visible" });
   const sharedItemId = await page.evaluate(async (title) => {
     const state = await window.mediagen.getState();
     const item = state.items.find((candidate) => candidate.title === title);
@@ -734,14 +799,6 @@ try {
     return item.id;
   }, sharedArrivalTitle);
   assert.ok(sharedItemId, "L’arrivée partagée doit posséder un identifiant.");
-  await narrowLeaf.locator(".feed-arrivals").waitFor({ state: "visible" });
-  assert.equal(
-    await narrowLeaf.locator(".article-row").filter({ hasText: sharedArrivalTitle }).count(),
-    0,
-    "L’accusé de lecture d’un panel ne doit pas révéler l’arrivée dans son voisin.",
-  );
-  await narrowLeaf.locator(".feed-arrivals").click();
-  const sharedSiblingRow = narrowLeaf.locator(".article-row").filter({ hasText: sharedArrivalTitle });
   await sharedSiblingRow.waitFor({ state: "visible" });
   assert.match(
     (await sharedSiblingRow.locator(".article-meta em").textContent()) ?? "",
@@ -840,12 +897,12 @@ try {
 
   console.log(`✓ baseline: ${baselineArticleCount} articles interclassés, roving tabindex actif`);
   console.log(`✓ viewport initial: scrollTop ${beforeArrival.scrollTop.toFixed(1)}px`);
-  console.log("✓ arrivée tamponnée: DOM, focus, sélection, scroll et position inchangés");
-  console.log(`✓ arrivée révélée: même article à ${revealed.selectedTop.toFixed(1)}px, compensation ${revealed.newRowHeight.toFixed(1)}px`);
+  console.log(`✓ arrivée automatique: même article à ${revealed.selectedTop.toFixed(1)}px, compensation ${revealed.newRowHeight.toFixed(1)}px`);
+  console.log("✓ arrivée en tête: scrollTop reste à zéro");
   console.log("✓ date ancienne explicite et fraîcheur compacte visible sous 520px");
   console.log("✓ lecteur natif: Échap rend le focus au fil et les flèches reprennent immédiatement");
   console.log("✓ contrôles protégés, double-flèche entre panels et Alt+flèche pour les réordonner");
-  console.log("✓ arrivées partagées: tampon et révélation restent indépendants par panel");
+  console.log("✓ arrivées partagées: insertion automatique et viewport restent indépendants par panel");
   console.log("✓ état d’actualisation diffusé pendant une réponse réseau lente");
   console.log("✓ panne manuelle explicite: toast honnête, diagnostic daté et cache conservé");
   console.log("✓ glisser-déposer: texte externe ignoré, MIME interne conservé");
