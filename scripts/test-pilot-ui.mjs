@@ -13,6 +13,8 @@ const secondaryArticleCount = 2;
 const baselineArticleCount = initialArticleCount + secondaryArticleCount;
 const MIN_PANEL_WIDTH = 256;
 const SUBPIXEL_EPSILON = 0.5;
+// Doit rester aligné sur HOVER_SEEN_DELAY_MS dans src/App.tsx.
+const HOVER_SEEN_DELAY_MS = 1000;
 const newArticleTitle = "ARRIVÉE CONTRÔLÉE — invariant du viewport";
 const topArrivalTitle = "ARRIVÉE EN TÊTE — scroll nul";
 const sharedArrivalTitle = "ARRIVÉE PARTAGÉE — tampon indépendant par panel";
@@ -299,18 +301,28 @@ try {
   );
   await allFilter.evaluate((button) => button.blur());
   await page.locator(".global-bar").hover();
-  await page.locator(".dashboard-panel").hover();
+  // Hover a row distinct from the prior keyboard anchor (nth(1)) so the assertion
+  // truly isolates hover-preselect: only onPointerMove can move the selection to nth(3).
+  const hoveredRow = page.locator(".article-row").nth(3);
+  const hoveredRowId = await hoveredRow.getAttribute("id");
+  await hoveredRow.hover();
   assert.equal(
     await page.locator(".dashboard-panel").evaluate((panel) => document.activeElement === panel),
     true,
     "Le survol doit rendre le panel prêt pour les raccourcis sans voler ensuite les contrôles.",
   );
+  await page.waitForFunction(
+    (articleId) => document.querySelector(".article-row--focused")?.id === articleId,
+    hoveredRowId,
+  );
   await page.keyboard.press("ArrowDown");
   assert.equal(
-    await page.locator(".article-row").nth(2).evaluate((row) => document.activeElement === row),
+    await page.locator(".article-row").nth(4).evaluate((row) => document.activeElement === row),
     true,
-    "Après survol, les flèches doivent reprendre la navigation dans les articles.",
+    "Après survol, les flèches doivent partir de la ligne survolée et avancer d’un cran.",
   );
+  // Relâcher le survol du fil pour ne pas laisser de minuteur « vu » armé.
+  await page.locator(".global-bar").hover();
 
   await page.keyboard.press("ControlOrMeta+N");
   const draftLeaf = page.locator('.split-layout__leaf[data-panel-id^="draft:"]');
@@ -1069,6 +1081,43 @@ try {
     "Le MIME interne et le drag actif doivent continuer à échanger les deux panels.",
   );
 
+  // Marquage « vu » par survol : seule une immobilité prolongée sur une ligne compte.
+  const dwellTitle = "ARRIVÉE DWELL — survol prolongé marque « vu »";
+  articles = [
+    {
+      id: "dwell-arrival",
+      title: dwellTitle,
+      summary: "Doit passer « vue » uniquement après un survol maintenu.",
+      publishedAt: new Date(),
+    },
+    ...articles,
+  ];
+  await page.evaluate((id) => window.mediagen.refreshSource(id), sourceId);
+  const dwellRow = page.locator(".article-row").filter({ hasText: dwellTitle }).first();
+  await dwellRow.waitFor({ state: "visible" });
+  const dwellId = await dwellRow.getAttribute("id");
+  assert.equal(
+    await dwellRow.evaluate((row) => row.classList.contains("article-row--seen")),
+    false,
+    "Une arrivée fraîche doit être non vue avant tout survol.",
+  );
+  // Survol bref puis sortie du fil avant le délai : le marquage est annulé.
+  await dwellRow.hover();
+  await page.locator(".global-bar").hover();
+  await page.waitForTimeout(HOVER_SEEN_DELAY_MS + 300);
+  assert.equal(
+    await dwellRow.evaluate((row) => row.classList.contains("article-row--seen")),
+    false,
+    "Quitter le fil avant le délai de dwell doit annuler le marquage « vu ».",
+  );
+  // Survol immobile maintenu au-delà du délai : la ligne devient « vue ».
+  await dwellRow.hover();
+  await page.waitForFunction(
+    (articleId) => document.getElementById(articleId)?.classList.contains("article-row--seen") === true,
+    dwellId,
+  );
+  await page.locator(".global-bar").hover();
+
   console.log(`✓ baseline: ${baselineArticleCount} articles interclassés, roving tabindex actif`);
   console.log(`✓ viewport initial: scrollTop ${beforeArrival.scrollTop.toFixed(1)}px`);
   console.log(`✓ arrivée automatique: même article à ${revealed.selectedTop.toFixed(1)}px, compensation ${revealed.newRowHeight.toFixed(1)}px`);
@@ -1080,6 +1129,7 @@ try {
   console.log("✓ état d’actualisation diffusé pendant une réponse réseau lente");
   console.log("✓ panne manuelle explicite: toast honnête, diagnostic daté et cache conservé");
   console.log("✓ glisser-déposer: texte externe ignoré, MIME interne conservé");
+  console.log("✓ survol immobile: la ligne passe « vue » après le délai, un survol bref l’annule");
 } finally {
   if (electronApp) await electronApp.close().catch(() => undefined);
   await closeServer(server).catch(() => undefined);

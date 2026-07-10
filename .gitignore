@@ -21,3 +21,4 @@ build/icon.iconset/
 *.p12
 *.log
 .DS_Store
+/plans/ship-pr/
