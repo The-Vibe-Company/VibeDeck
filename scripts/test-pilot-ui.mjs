@@ -207,6 +207,154 @@ try {
   await browserWindow.evaluate((window) => window.setSize(1280, 820));
   await browserWindow.dispose();
 
+  async function publishUpdateState(status, overrides = {}) {
+    await electronApp.evaluate(({ BrowserWindow }, nextState) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      if (!window) throw new Error("La fenêtre pilote est introuvable.");
+      window.webContents.send("updates:state-changed", nextState);
+    }, {
+      status,
+      currentVersion: "0.3.0",
+      availableVersion: null,
+      progressPercent: null,
+      checkedAt: "2026-07-10T08:00:00.000Z",
+      message: null,
+      ...overrides,
+    });
+  }
+
+  const updateCta = page.getByRole("button", { name: "Mise à jour 0.4.0 prête", exact: true });
+  await publishUpdateState("checking");
+  assert.equal(await updateCta.count(), 0, "La détection ne doit pas interrompre la veille.");
+
+  await publishUpdateState("downloading", {
+    availableVersion: "0.4.0",
+    progressPercent: 42,
+  });
+  assert.equal(await updateCta.count(), 0, "Le téléchargement reste silencieux.");
+
+  await page.getByRole("button", { name: "Outils" }).click();
+  const toolsDialog = page.getByRole("dialog", { name: "Outils du poste" });
+  await toolsDialog.getByRole("progressbar", { name: "Téléchargement de la version 0.4.0" }).waitFor();
+  await toolsDialog.locator("footer").getByRole("button", { name: "Fermer" }).click();
+  await toolsDialog.waitFor({ state: "detached" });
+
+  await publishUpdateState("ready", { availableVersion: "0.4.0" });
+  await updateCta.waitFor();
+  await updateCta.focus();
+  await page.keyboard.press("Enter");
+  const updateDialog = page.getByRole("alertdialog", { name: "Installer VibeDeck 0.4.0 ?" });
+  await updateDialog.waitFor();
+  const laterButton = updateDialog.getByRole("button", { name: "Plus tard" });
+  await laterButton.evaluate(
+    (button) => new Promise((resolve) => {
+      const waitForFocus = () => {
+        if (document.activeElement === button) resolve(undefined);
+        else window.requestAnimationFrame(waitForFocus);
+      };
+      waitForFocus();
+    }),
+  );
+  assert.equal(
+    await laterButton.evaluate((button) => document.activeElement === button),
+    true,
+    "Le report doit recevoir le focus initial.",
+  );
+  await page.keyboard.press("Escape");
+  await updateDialog.waitFor({ state: "detached" });
+  await updateCta.evaluate(
+    (button) => new Promise((resolve) => {
+      const waitForFocus = () => {
+        if (document.activeElement === button) resolve(undefined);
+        else window.requestAnimationFrame(waitForFocus);
+      };
+      waitForFocus();
+    }),
+  );
+  assert.equal(
+    await updateCta.evaluate((button) => document.activeElement === button),
+    true,
+    "La fermeture doit restaurer le focus du CTA.",
+  );
+
+  await updateCta.click();
+  await updateDialog.getByRole("button", { name: "Plus tard" }).click();
+  await updateDialog.waitFor({ state: "detached" });
+  await updateCta.waitFor({ state: "detached" });
+  assert.equal(await updateCta.count(), 0, "Le report masque seulement le CTA de cette version.");
+  const deferredTools = page.getByRole("button", { name: "Outils — mise à jour 0.4.0 prête" });
+  await deferredTools.evaluate(
+    (button) => new Promise((resolve) => {
+      const waitForFocus = () => {
+        if (document.activeElement === button) resolve(undefined);
+        else window.requestAnimationFrame(waitForFocus);
+      };
+      waitForFocus();
+    }),
+  );
+  await deferredTools.click();
+  await toolsDialog.getByRole("button", { name: "Installer" }).waitFor();
+
+  await publishUpdateState("error", { message: "Serveur de mise à jour indisponible." });
+  await toolsDialog.getByText("Serveur de mise à jour indisponible.").waitFor();
+  await publishUpdateState("up-to-date");
+  await toolsDialog.getByText("Cette version est à jour.").waitFor();
+  await publishUpdateState("ready", { availableVersion: "0.4.1" });
+  const installFromTools = toolsDialog.getByRole("button", { name: "Installer" });
+  await installFromTools.waitFor();
+  await installFromTools.click();
+  const nextUpdateDialog = page.getByRole("alertdialog", { name: "Installer VibeDeck 0.4.1 ?" });
+  await nextUpdateDialog.waitFor();
+  await toolsDialog.waitFor({ state: "detached" });
+  await nextUpdateDialog.getByRole("button", { name: "Plus tard" }).evaluate(
+    (button) => new Promise((resolve) => {
+      const waitForFocus = () => {
+        if (document.activeElement === button) resolve(undefined);
+        else window.requestAnimationFrame(waitForFocus);
+      };
+      waitForFocus();
+    }),
+  );
+  await page.keyboard.press("Escape");
+  await nextUpdateDialog.waitFor({ state: "detached" });
+  await toolsDialog.waitFor({ state: "visible" });
+  await installFromTools.evaluate(
+    (button) => new Promise((resolve) => {
+      const waitForFocus = () => {
+        if (document.activeElement === button) resolve(undefined);
+        else window.requestAnimationFrame(waitForFocus);
+      };
+      waitForFocus();
+    }),
+  );
+  assert.equal(
+    await installFromTools.evaluate((button) => document.activeElement === button),
+    true,
+    "La confirmation ouverte depuis Outils doit restaurer son focus.",
+  );
+  await toolsDialog.locator("footer").getByRole("button", { name: "Fermer" }).click();
+  await toolsDialog.waitFor({ state: "detached" });
+
+  const nextUpdateCta = page.getByRole("button", { name: "Mise à jour 0.4.1 prête", exact: true });
+  await nextUpdateCta.waitFor();
+  const updateWidthWindow = await electronApp.browserWindow(page);
+  await updateWidthWindow.evaluate((window) => window.setSize(860, 600));
+  await updateWidthWindow.dispose();
+  assert.equal(
+    await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    true,
+    "Le CTA de mise à jour ne doit pas créer de débordement à la largeur minimale.",
+  );
+  const restoredWindow = await electronApp.browserWindow(page);
+  await restoredWindow.evaluate((window) => window.setSize(1280, 820));
+  await restoredWindow.dispose();
+  await nextUpdateCta.click();
+  const failedInstallDialog = page.getByRole("alertdialog", { name: "Installer VibeDeck 0.4.1 ?" });
+  await failedInstallDialog.getByRole("button", { name: "Redémarrer et installer" }).click();
+  await failedInstallDialog.getByRole("alert").waitFor();
+  await failedInstallDialog.getByRole("button", { name: "Plus tard" }).click();
+  await failedInstallDialog.waitFor({ state: "detached" });
+
   const panelId = await page.evaluate(async () => {
     const before = await window.vibedeck.getState();
     const existingIds = new Set(before.panels.map(({ id }) => id));
