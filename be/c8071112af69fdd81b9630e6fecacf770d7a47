@@ -1,0 +1,32 @@
+src/smooth-scroll.ts
+  s_31ffceedbf654a::t_e1e309d52f0c04 44,59-74
+  s_31ffceedbf654a::t_86b0a3cdac7df4 135,143-149,151,155
+  s_31ffceedbf654a::t_8c0221536972f9 88-91
+electron/article-reader-preload.cjs
+  s_31ffceedbf654a::t_c13c5f91412901 188-193
+  s_31ffceedbf654a::t_8768c8a255c6b3 328-330
+  s_31ffceedbf654a::t_667bc81d3d5deb 274
+  s_31ffceedbf654a::t_fe50f8cef09a10 112-119
+  s_31ffceedbf654a::t_0937c34074b1bb 304
+electron/smooth-scroll.test.mjs
+  s_31ffceedbf654a::t_9fa5fa4de7450f 121-139
+electron/article-reader-preload.test.mjs
+  s_31ffceedbf654a::t_29249f247ec324 295-308
+  s_31ffceedbf654a::t_408948b71c98ff 43-47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "bec8071112af69fdd81b9630e6fecacf770d7a47",
+  "prompts": {},
+  "sessions": {
+    "s_31ffceedbf654a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec6fed37-8641-432e-a470-fd001ad752b4",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
