@@ -383,6 +383,11 @@ assert.match(
 );
 assert.match(
   releaseWorkflow,
+  /validate:\s*\n\s*runs-on: ubuntu-latest\s*\n\s*permissions:\s*\n(?:\s*#[^\n]*\n)*\s*contents: write/,
+  "Le job de validation doit pouvoir consulter la release brouillon",
+);
+assert.match(
+  releaseWorkflow,
   /git merge-base --is-ancestor "\$sha" origin\/main/,
   "Le tag signé doit impérativement pointer sur l’historique de main",
 );
