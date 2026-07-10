@@ -9,7 +9,13 @@
   // constant-velocity scroll until keyup.
   const HOLD_DELAY_MS = 250;
   const HOLD_VIEWPORTS_PER_SECOND = 1.5;
+  // Faster than the feed's follower (80 ms in src/smooth-scroll.ts): a tap
+  // travels most of a viewport, so it needs a snappier glide.
   const TAP_TAU_MS = 60;
+  // Visual overlap kept between two paged jumps.
+  const OVERLAP_RATIO = 0.28;
+  const OVERLAP_MIN_PX = 120;
+  const REPEAT_STEP_MIN_PX = 140;
   // Frames can be frozen by backgroundThrottling; cap dt so a thawed frame
   // does not produce a giant jump.
   const MAX_FRAME_MS = 64;
@@ -80,7 +86,7 @@
 
   function pageDistance(scroller) {
     const viewport = viewportOf(scroller);
-    const overlap = Math.max(120, Math.round(viewport * 0.28));
+    const overlap = Math.max(OVERLAP_MIN_PX, Math.round(viewport * OVERLAP_RATIO));
     return Math.max(1, viewport - overlap);
   }
 
@@ -91,10 +97,21 @@
   // Float accumulator: per-frame increments below one pixel would stall if we
   // round-tripped through scrollTop.
   let pos = 0;
+  let lastWritten = 0;
   let tapDest = 0;
   let lastTime = null;
   let frame = 0;
   let holdTimer = 0;
+
+  function syncPos() {
+    pos = scroller.scrollTop;
+    lastWritten = pos;
+  }
+
+  function writePos(value) {
+    scroller.scrollTop = value;
+    lastWritten = scroller.scrollTop;
+  }
 
   function currentDirection() {
     if (drivingKey && pressed[drivingKey]) return drivingKey === "ArrowDown" ? 1 : -1;
@@ -134,6 +151,12 @@
       stopAnimation();
       return;
     }
+    // Someone else moved the page (scroll anchoring on late-loading content,
+    // page scripts): adopt the new position instead of overwriting it.
+    if (Math.abs(scroller.scrollTop - lastWritten) > 1) {
+      pos = scroller.scrollTop;
+      lastWritten = pos;
+    }
     const dt = Math.min(lastTime === null ? 16 : now - lastTime, MAX_FRAME_MS);
     lastTime = now;
 
@@ -147,14 +170,14 @@
       const speed = (HOLD_VIEWPORTS_PER_SECOND * viewportOf(scroller)) / 1000;
       const maximum = maxScrollTop(scroller);
       pos = Math.max(0, Math.min(maximum, pos + direction * speed * dt));
-      scroller.scrollTop = pos;
+      writePos(pos);
       const atBoundary = direction > 0 ? pos >= maximum : pos <= 0;
       if (atBoundary) {
         // A nested scroller at its limit hands scrolling back to the article.
         const replacement = scrollTarget(direction);
         if (replacement && replacement !== scroller) {
           scroller = replacement;
-          pos = scroller.scrollTop;
+          syncPos();
         }
       }
       frame = window.requestAnimationFrame(step);
@@ -166,13 +189,13 @@
     const alpha = 1 - Math.exp(-dt / TAP_TAU_MS);
     pos += (destination - pos) * alpha;
     if (Math.abs(destination - pos) < 0.5) {
-      scroller.scrollTop = destination;
+      writePos(destination);
       pos = destination;
       mode = "idle";
       stopAnimation();
       return;
     }
-    scroller.scrollTop = pos;
+    writePos(pos);
     frame = window.requestAnimationFrame(step);
   }
 
@@ -187,8 +210,16 @@
     if (!scroller) return;
     clearHoldTimer();
     mode = "hold";
-    pos = scroller.scrollTop;
+    syncPos();
     startAnimation();
+  }
+
+  function armHoldTimer(key) {
+    clearHoldTimer();
+    holdTimer = window.setTimeout(() => {
+      holdTimer = 0;
+      if (pressed[key]) enterHold();
+    }, HOLD_DELAY_MS);
   }
 
   window.addEventListener(
@@ -213,7 +244,7 @@
         if (!target) return;
         const viewport = viewportOf(target);
         const distance = event.repeat
-          ? Math.max(140, Math.round(viewport * 0.28))
+          ? Math.max(REPEAT_STEP_MIN_PX, Math.round(viewport * OVERLAP_RATIO))
           : pageDistance(target);
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -241,13 +272,13 @@
 
       if (active !== scroller) {
         scroller = active;
-        pos = scroller.scrollTop;
+        syncPos();
         tapDest = pos;
       }
 
       if (mode !== "hold") {
         if (mode === "idle") {
-          pos = scroller.scrollTop;
+          syncPos();
           tapDest = pos;
         }
         tapDest = Math.max(
@@ -258,12 +289,7 @@
         startAnimation();
       }
 
-      clearHoldTimer();
-      const key = event.key;
-      holdTimer = window.setTimeout(() => {
-        holdTimer = 0;
-        if (pressed[key]) enterHold();
-      }, HOLD_DELAY_MS);
+      armHoldTimer(event.key);
     },
     { capture: true },
   );
@@ -285,13 +311,20 @@
           mode = "idle";
           stopAnimation();
         }
+      } else if (mode !== "hold" && drivingKey) {
+        // The surviving key's hold timer was stolen by the released key's
+        // keydown (single timer slot); re-arm it or the still-held arrow
+        // would never reach hold.
+        armHoldTimer(drivingKey);
       }
     },
     { capture: true },
   );
 
   window.addEventListener("blur", resetAll);
-  // The wheel always wins over a running animation.
+  // Any direct user interaction wins over a running animation. mousedown
+  // covers scrollbar drags, which dispatch no wheel/touch/pointer events.
   window.addEventListener("wheel", resetAll, { passive: true });
   window.addEventListener("touchstart", resetAll, { passive: true });
+  window.addEventListener("mousedown", resetAll, { passive: true });
 })();

@@ -225,6 +225,94 @@ test("pressing the opposite arrow during a hold reverses direction", () => {
   assert.equal(root.scrollTop, atRelease);
 });
 
+test("releasing the driving key keeps the hold going for the other held arrow", () => {
+  const { press, release, tick, root } = createHarness();
+
+  press("ArrowDown");
+  tick(600);
+  press("ArrowUp");
+  tick(200);
+  const beforeRelease = root.scrollTop;
+  release("ArrowUp");
+  tick(200);
+  assert.ok(
+    root.scrollTop > beforeRelease,
+    "scroll resumes downward under the surviving key",
+  );
+});
+
+test("a brief opposite tap does not strand a still-held arrow before hold", () => {
+  const { press, release, tick, root } = createHarness();
+
+  press("ArrowDown");
+  tick(96);
+  press("ArrowUp");
+  tick(32);
+  release("ArrowUp");
+  tick(400);
+  const midHold = root.scrollTop;
+  tick(160);
+  assert.ok(
+    root.scrollTop > midHold + 100,
+    "the still-held ArrowDown reaches hold and keeps scrolling",
+  );
+});
+
+test("an OS key repeat arriving before the timer promotes the hold early", () => {
+  const { press, tick, root } = createHarness();
+
+  press("ArrowDown");
+  tick(48);
+  press("ArrowDown", { repeat: true });
+  const atHoldStart = root.scrollTop;
+  tick(160);
+  const travelled = root.scrollTop - atHoldStart;
+  assert.ok(Math.abs(travelled - 168) < 2, `expected ≈168 px, got ${travelled}`);
+});
+
+test("a hold crossing a nested scroller's limit hands off to the article", () => {
+  const { FakeHTMLElement, document, leaf, press, tick, root } = createHarness();
+  const nested = new FakeHTMLElement({
+    parent: document.body,
+    overflowY: "auto",
+    scrollHeight: 900,
+    clientHeight: 400,
+    scrollTop: 300,
+  });
+  leaf.parentElement = nested;
+
+  press("ArrowDown");
+  tick(2_000);
+  assert.equal(nested.scrollTop, 500, "nested scroller stops at its limit");
+  assert.ok(root.scrollTop > 0, "the article takes over after the handoff");
+});
+
+test("an external scroll adjustment during a hold is adopted, not overwritten", () => {
+  const { press, tick, root } = createHarness();
+
+  press("ArrowDown");
+  tick(400);
+  root.scrollTop -= 150;
+  const adjusted = root.scrollTop;
+  tick(48);
+  const travelled = root.scrollTop - adjusted;
+  assert.ok(
+    travelled > 0 && travelled < 150,
+    `keeps scrolling from the adjusted position, moved ${travelled}px`,
+  );
+});
+
+test("a mouse press (scrollbar drag) cancels the scroll", () => {
+  const { press, dispatch, tick, root } = createHarness();
+
+  press("ArrowDown");
+  tick(400);
+  dispatch("mousedown");
+  const atPress = root.scrollTop;
+  tick(500);
+  assert.equal(root.scrollTop, atPress);
+});
+
 test("losing focus stops any scroll in flight", () => {
   const { press, dispatch, tick, root } = createHarness();
 

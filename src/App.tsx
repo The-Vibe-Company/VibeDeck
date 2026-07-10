@@ -52,7 +52,7 @@ import {
   formatNextRefresh,
 } from "./feed-presentation";
 import { saveFeedPanelConfiguration } from "./feed-settings";
-import { smoothScrollIntoView } from "./smooth-scroll";
+import { cancelSmoothScroll, smoothScrollIntoView } from "./smooth-scroll";
 import type {
   AppState,
   ConnectorKind,
@@ -1635,6 +1635,10 @@ function FeedPanelView({
     if (ui.automaticInsertionIds.size === 0) return;
     if (list && previous) {
       if (previous.scrollTop < 4) {
+        // Keeping arrivals visible at the top outranks a keyboard glide in
+        // flight — without the cancel, the animation would pull the list
+        // back down toward the focused row.
+        cancelSmoothScroll(list);
         list.scrollTop = 0;
       } else {
         list.scrollTop = previous.scrollTop + Math.max(0, list.scrollHeight - previous.scrollHeight);

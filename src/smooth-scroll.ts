@@ -16,22 +16,27 @@ type ScrollAnimation = {
 
 const animations = new WeakMap<HTMLElement, ScrollAnimation>();
 
+// Slower than the reader's tap glide (60 ms): the feed follows a selection
+// that moves one row at a time, so the follower needs more damping.
 const TAU_MS = 80;
 // Frames can be frozen when the window is hidden; cap dt so a thawed frame
 // does not produce a giant jump.
 const MAX_FRAME_MS = 64;
 
-export function prefersReducedMotion(): boolean {
+function prefersReducedMotion(): boolean {
   return (
     typeof window.matchMedia === "function" &&
     window.matchMedia("(prefers-reduced-motion: reduce)").matches
   );
 }
 
-// Destination matching scrollIntoView({ block: "nearest" }), computed from
-// live geometry so it stays correct when items are prepended mid-animation.
-// `from` is the position the animation is converging on, not the current
-// scrollTop — otherwise a held key under-scrolls.
+// Destination matching scrollIntoView({ block: "nearest" }) plus one row of
+// context (scroll-margin semantics), computed from live geometry so it stays
+// correct when items are prepended mid-animation. The margin also absorbs the
+// follower's steady-state lag: without it, a held key keeps the focused row
+// clipped just past the viewport edge for the whole scroll. `from` is the
+// position the animation is converging on, not the current scrollTop —
+// otherwise a held key under-scrolls.
 function nearestDestination(
   container: HTMLElement,
   target: HTMLElement,
@@ -41,11 +46,15 @@ function nearestDestination(
   const targetRect = target.getBoundingClientRect();
   const elementTop = container.scrollTop + (targetRect.top - containerRect.top);
   const elementBottom = elementTop + targetRect.height;
+  const margin = Math.max(
+    0,
+    Math.min(targetRect.height, (container.clientHeight - targetRect.height) / 2),
+  );
   let destination = from;
-  if (elementTop < destination) {
-    destination = elementTop;
-  } else if (elementBottom > destination + container.clientHeight) {
-    destination = elementBottom - container.clientHeight;
+  if (elementTop - margin < destination) {
+    destination = elementTop - margin;
+  } else if (elementBottom + margin > destination + container.clientHeight) {
+    destination = elementBottom + margin - container.clientHeight;
   }
   return Math.max(0, Math.min(destination, container.scrollHeight - container.clientHeight));
 }
@@ -82,12 +91,16 @@ export function smoothScrollIntoView(container: HTMLElement, target: HTMLElement
       container.removeEventListener("wheel", cancel);
       container.removeEventListener("touchstart", cancel);
       container.removeEventListener("pointerdown", cancel);
+      container.removeEventListener("mousedown", cancel);
     },
   };
   // The user regains control instantly: any pointer interaction cancels.
+  // mousedown is needed on top of pointerdown because native scrollbars
+  // dispatch mouse events but no pointer events.
   container.addEventListener("wheel", cancel, { passive: true });
   container.addEventListener("touchstart", cancel, { passive: true });
   container.addEventListener("pointerdown", cancel, { passive: true });
+  container.addEventListener("mousedown", cancel, { passive: true });
   animations.set(container, animation);
 
   const step = (now: number) => {
