@@ -11,7 +11,9 @@ async function loadPreloadApi() {
       calls.push([channel, ...args]);
       return Promise.resolve({ channel, args });
     },
-    send() {},
+    send(channel, ...args) {
+      calls.push([channel, ...args]);
+    },
     on() {},
     removeListener() {},
   };
@@ -85,4 +87,25 @@ test("clearWebData always requests a full profile clear without exposing a raw s
   assert.equal(calls[0][0], "web-session:clear-data");
   assert.equal(calls[0][1].scope, "all");
   assert.deepEqual(Object.keys(calls[0][1]), ["scope"]);
+});
+
+test("exposes only the narrow semantic-search IPC API", async () => {
+  const { api, calls } = await loadPreloadApi();
+  const request = { query: "inflation", scope: { kind: "all" }, mode: "hybrid" };
+
+  await api.getSemanticSearchStatus();
+  await api.prepareSemanticSearch();
+  await api.cancelSemanticSearchPreparation();
+  await api.searchFeedItems(request);
+  await api.removeSemanticSearchData();
+  api.finishSemanticSearchFocus(true);
+
+  assert.deepEqual(calls, [
+    ["semantic-search:get-status"],
+    ["semantic-search:prepare"],
+    ["semantic-search:cancel-preparation"],
+    ["semantic-search:search", request],
+    ["semantic-search:remove-data"],
+    ["semantic-search:finish-focus", true],
+  ]);
 });
