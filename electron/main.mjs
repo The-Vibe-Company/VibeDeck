@@ -1055,7 +1055,16 @@ function createWindow() {
   }));
 
   window.once("ready-to-show", () => {
-    if (!window.isDestroyed() && !isHeadlessTestWindow) window.show();
+    if (window.isDestroyed()) return;
+    if (!isHeadlessTestWindow) {
+      window.show();
+    } else if (process.platform !== "darwin") {
+      // Hors macOS, une fenêtre jamais affichée ne produit plus de frames et
+      // les événements souris CDP (alignés sur le compositeur) restent en
+      // file. showInactive rend la fenêtre visible sans jamais prendre le
+      // focus clavier de l'application au premier plan.
+      window.showInactive();
+    }
   });
   for (const eventName of ["show", "hide", "focus", "blur", "minimize", "restore"]) {
     window.on(eventName, () => heartbeatPilotUsage());
