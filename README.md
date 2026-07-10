@@ -23,7 +23,8 @@ Application locale de veille pour journalistes. À la création, chaque panel re
 - reconnaissance directe du Monde, du Figaro et du Parisien ;
 - découverte automatique du RSS déclaré par les autres sites ;
 - enrichissement des dates du Parisien avec son News Sitemap ;
-- filtres par source, état de lecture et navigation au clavier ;
+- recherche locale hybride dans tous les fils, avec résultats FTS5 immédiats puis enrichissement E5 hors ligne, filtre explicite et navigation complète au clavier ;
+- filtres par source, recherche et état de lecture, composables sans réordonner la chronologie ;
 - lecteur web intégré au clic sur un article, avec option d’ouverture externe ;
 - actualisation automatique, cache hors ligne et déduplication ;
 - backoff automatique des sources en échec, avec actualisation manuelle toujours disponible ;
@@ -51,13 +52,15 @@ npm run dev
 Raccourcis principaux :
 
 - `Cmd/Ctrl + N` : créer un panel ;
+- `Cmd/Ctrl + K` : ouvrir la recherche globale et placer le focus dans la requête ;
+- dans la recherche, `↑` / `↓` sélectionnent un résultat ; `Entrée` filtre les fils depuis le champ ou ouvre le résultat sélectionné ;
 - `↑` / `↓` : parcourir le fil sous la souris, avec un défilement fluide et continu quand la touche reste enfoncée ;
 - `Entrée` : ouvrir l’article ;
 - dans le lecteur, `↑` / `↓` : un appui avance d’une page animée (≈ 28 % de recouvrement visuel), maintenir la touche déclenche un défilement rapide continu ;
 - double-appui rapide sur `←` / `→` : passer au panel précédent ou suivant ;
 - `Alt + ←` / `Alt + →` : déplacer le panel à la position précédente ou suivante, sans glisser-déposer ;
 - `R` : actualiser le fil actif ;
-- `Échap` : restaurer un panel agrandi ou fermer une fenêtre de réglages.
+- `Échap` : fermer la recherche sans modifier le filtre actif, puis retirer ce filtre depuis le dashboard ; restaurer aussi un panel agrandi ou fermer une fenêtre de réglages.
 
 Le simple déplacement de la souris au-dessus d’un panel lui donne le focus clavier, sauf lorsqu’un champ, un bouton ou une page web possède déjà le clavier ; dans ce cas, un clic explicite évite d’interrompre la saisie. Après la fermeture du lecteur intégré avec `Échap`, la navigation dans le fil reprend directement.
 
@@ -82,7 +85,7 @@ Les commandes `dist:mac:signed` et `dist:win:signed` imposent la présence des c
 
 ## Architecture
 
-Le rendu React ne contacte jamais directement les journaux. Le processus principal Electron télécharge et normalise les flux, puis conserve dashboard, panneaux, sources, articles et métadonnées HTTP dans une base SQLite locale. Une même source est mutualisée entre plusieurs panneaux et un échec réseau ne supprime jamais les articles déjà reçus.
+Le rendu React ne contacte jamais directement les journaux. Le processus principal Electron télécharge et normalise les flux, puis conserve dashboard, panneaux, sources, articles et métadonnées HTTP dans une base SQLite locale. Une même source est mutualisée entre plusieurs panneaux et un échec réseau ne supprime jamais les articles déjà reçus. La recherche utilise un index dérivé et supprimable dans `semantic-search/` ; le modèle E5 et cet index ne modifient jamais `veille.sqlite3` et ne font pas partie des exports.
 
 La durée d’usage du pilote est comptabilisée localement par intervalles d’une minute et lors des changements de focus ou de visibilité. Chaque intervalle actif est ventilé à la milliseconde entre les journées civiles du fuseau local du poste, y compris au passage de minuit et lors des changements d’heure. Les 400 journées les plus récentes restent détaillées ; les plus anciennes sont fusionnées dans un cumul qui préserve le total exact. Seules des durées et des quantités agrégées sont exportées dans le diagnostic : aucun identifiant de panel ou d’article n’est exporté, afin qu’une URL publique candidate ne permette pas de réidentifier ce qui a été ouvert.
 

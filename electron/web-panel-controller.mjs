@@ -542,6 +542,7 @@ export function createWebPanelController({
   shell,
   onState = () => {},
   onEscape = () => {},
+  onOpenSearch = () => {},
   WebContentsViewClass = electronRuntime?.WebContentsView,
 } = {}) {
   if (!window || typeof window !== "object") {
@@ -557,6 +558,9 @@ export function createWebPanelController({
   }
   if (typeof onEscape !== "function") {
     throw new TypeError("onEscape doit être une fonction.");
+  }
+  if (typeof onOpenSearch !== "function") {
+    throw new TypeError("onOpenSearch doit être une fonction.");
   }
   if (typeof WebContentsViewClass !== "function") {
     throw new TypeError("WebContentsView n’est pas disponible dans ce processus.");
@@ -716,9 +720,18 @@ export function createWebPanelController({
     listen(record, "will-navigate", preventUnsafeNavigation);
     listen(record, "will-redirect", preventUnsafeNavigation);
     listen(record, "will-attach-webview", (event) => event.preventDefault?.());
-    listen(record, "before-input-event", (_event, input) => {
+    listen(record, "before-input-event", (event, input) => {
       if (input?.type === "keyDown" && input.key === "Escape" && !input.isAutoRepeat) {
         onEscape(record.panelId);
+      }
+      if (
+        input?.type === "keyDown" &&
+        input.key?.toLowerCase() === "k" &&
+        (input.meta || input.control) &&
+        !input.isAutoRepeat
+      ) {
+        event.preventDefault?.();
+        onOpenSearch(record.panelId);
       }
     });
     listen(record, "content-bounds-updated", (event) => event.preventDefault?.());
@@ -1149,6 +1162,13 @@ export function createWebPanelController({
     return emit(record);
   }
 
+  function focus(panelId) {
+    const record = requireRecord(panelId);
+    if (!record.visible || typeof record.contents.focus !== "function") return false;
+    record.contents.focus();
+    return true;
+  }
+
   function destroy(panelId) {
     const id = cleanPanelId(panelId);
     const destroyed = destroyRecord(records.get(id));
@@ -1195,6 +1215,7 @@ export function createWebPanelController({
     home,
     openExternal,
     setMuted,
+    focus,
     destroy,
     destroyAll,
     getDescriptors,

@@ -172,6 +172,30 @@ export interface LocalImportResult extends LocalFileActionResult {
   backupFilePath: string | null;
 }
 
+export type SemanticSearchPhase =
+  | "not-installed"
+  | "downloading"
+  | "indexing"
+  | "ready"
+  | "updating"
+  | "error";
+
+export interface SemanticSearchStatus {
+  phase: SemanticSearchPhase;
+  progress: number;
+  message: string | null;
+  bytes: number;
+}
+
+export type SemanticSearchScope = { kind: "all" } | { kind: "panel"; panelId: string };
+export type SemanticSearchMode = "lexical" | "hybrid";
+
+export interface SemanticSearchResult {
+  items: FeedItem[];
+  truncated: boolean;
+  mode: SemanticSearchMode;
+}
+
 export interface MediaGenApi {
   getState: () => Promise<AppState>;
   createPanel: (
@@ -204,6 +228,16 @@ export interface MediaGenApi {
   refreshAll: () => Promise<AppState>;
   markItemsSeen: (itemIds: string[]) => Promise<AppState>;
   markItemOpened: (itemId: string) => Promise<AppState>;
+  getSemanticSearchStatus: () => Promise<SemanticSearchStatus>;
+  prepareSemanticSearch: () => Promise<SemanticSearchStatus>;
+  cancelSemanticSearchPreparation: () => Promise<void>;
+  searchFeedItems: (request: {
+    query: string;
+    scope: SemanticSearchScope;
+    mode: SemanticSearchMode;
+  }) => Promise<SemanticSearchResult>;
+  removeSemanticSearchData: () => Promise<void>;
+  finishSemanticSearchFocus: (restoreNative: boolean) => void;
   exportDashboard: () => Promise<LocalFileActionResult>;
   importDashboard: () => Promise<LocalImportResult>;
   exportDiagnostics: () => Promise<LocalFileActionResult>;
@@ -224,4 +258,8 @@ export interface MediaGenApi {
     callback: (state: WebPanelRuntimeState) => void,
   ) => () => void;
   onWebPanelEscape: (callback: (panelId: string) => void) => () => void;
+  onSemanticSearchStatusChanged: (
+    callback: (status: SemanticSearchStatus) => void,
+  ) => () => void;
+  onOpenGlobalSearch: (callback: (nativeOrigin: boolean) => void) => () => void;
 }
