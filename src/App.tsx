@@ -152,8 +152,13 @@ type FeedPanelUi = {
 };
 
 type LinkPreview = {
-  url: string;
+  itemId: string;
   title: string;
+};
+
+type ReaderReturnFocus = {
+  panelId: string;
+  rowId: string;
 };
 
 type ActiveSemanticSearch = {
@@ -274,6 +279,15 @@ function focusDashboardPanelRoot(panelId: string) {
   return document.activeElement === panel;
 }
 
+function restoreArticleFocus(target: ReaderReturnFocus) {
+  const article = document.getElementById(target.rowId);
+  if (article instanceof HTMLElement) {
+    article.focus({ preventScroll: true });
+    return;
+  }
+  focusDashboardPanelRoot(target.panelId);
+}
+
 function restoreSemanticSearchControl(restore: SemanticSearchRestoreState | null) {
   const control = restore?.focusedControl;
   if (control) {
@@ -326,6 +340,7 @@ export default function App() {
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
 
   const layoutRef = useRef<LayoutNode | null>(null);
+  const linkPreviewRef = useRef<LinkPreview | null>(null);
   const feedUiRef = useRef<Record<string, FeedPanelUi>>({});
   const draftsRef = useRef<Record<string, DraftPanel>>({});
   const revisionRef = useRef(0);
@@ -342,6 +357,7 @@ export default function App() {
     identity: PanelFocusIdentity;
   } | null>(null);
   const pendingKeyboardPanelFocusRef = useRef<string | null>(null);
+  const readerReturnFocusRef = useRef<ReaderReturnFocus | null>(null);
   const focusedPanelIdRef = useRef<string | null>(null);
   const semanticResultItemsRef = useRef<FeedItem[]>([]);
   const semanticBaseItemIdsRef = useRef(new Set<string>());
@@ -350,6 +366,7 @@ export default function App() {
   const semanticSearchNativeOriginRef = useRef(false);
 
   layoutRef.current = layout;
+  linkPreviewRef.current = linkPreview;
   feedUiRef.current = feedUi;
   draftsRef.current = drafts;
   focusedPanelIdRef.current = focusedPanelId;
@@ -584,6 +601,23 @@ export default function App() {
     };
   }, [applyServerState]);
 
+  useLayoutEffect(() => {
+    if (linkPreview || !readerReturnFocusRef.current) return;
+    const target = readerReturnFocusRef.current;
+    readerReturnFocusRef.current = null;
+    const activeElement = document.activeElement;
+    if (!document.hasFocus()) return;
+    if (
+      activeElement instanceof HTMLElement &&
+      activeElement !== document.body &&
+      activeElement.isConnected &&
+      activeElement.id !== target.rowId
+    ) {
+      return;
+    }
+    restoreArticleFocus(target);
+  }, [linkPreview]);
+
   useEffect(() => {
     const timer = window.setInterval(() => setClock(new Date()), 15_000);
     return () => window.clearInterval(timer);
@@ -617,6 +651,7 @@ export default function App() {
           !failedPanelIds.has(panel.id);
         const rect = surface?.getBoundingClientRect();
         return {
+          kind: "web",
           panelId: panel.id,
           url: panel.url,
           bounds: rect
@@ -631,14 +666,16 @@ export default function App() {
       );
       const rect = surface?.getBoundingClientRect();
       descriptors.push({
+        kind: "reader",
         panelId: LINK_READER_ID,
-        url: linkPreview.url,
+        itemId: linkPreview.itemId,
         bounds: rect
           ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
           : { x: 0, y: 0, width: 0, height: 0 },
         visible:
           Boolean(surface) &&
           !modal &&
+          !semanticSearchOpen &&
           !interactionActive &&
           !failedPanelIds.has(LINK_READER_ID),
       });
@@ -990,8 +1027,15 @@ export default function App() {
     }
   }
 
-  function openItem(item: FeedItem) {
-    setLinkPreview({ url: item.canonicalUrl, title: item.title });
+  function openItem(item: FeedItem, returnFocus: ReaderReturnFocus) {
+    readerReturnFocusRef.current = returnFocus;
+    setWebStates((current) => {
+      if (!(LINK_READER_ID in current)) return current;
+      const next = { ...current };
+      delete next[LINK_READER_ID];
+      return next;
+    });
+    setLinkPreview({ itemId: item.id, title: item.title });
     void window.mediagen
       .markItemOpened(item.id)
       .then((nextState) => applyServerState(nextState))
@@ -1207,10 +1251,10 @@ export default function App() {
           closeSemanticSearchPalette();
         }
         else if (isTypingTarget(event.target)) return;
+        else if (!modal && linkPreview) setLinkPreview(null);
         else if (Object.values(feedUi).some(({ searchItemIds }) => searchItemIds !== null)) {
           clearSemanticSearchFilter();
         }
-        else if (!modal && linkPreview) setLinkPreview(null);
         else if (!modal && maximizedPanelId) setMaximizedPanelId(null);
         return;
       }
@@ -1323,7 +1367,10 @@ export default function App() {
           if (ui.visibilityFilter === "unseen") {
             patchFeedUi(panel.id, { focusedItemId: null });
           }
-          void openItem(item);
+          void openItem(item, {
+            panelId: panel.id,
+            rowId: `article-${panel.id}-${item.id}`,
+          });
         }
       }
     }
@@ -1414,7 +1461,7 @@ export default function App() {
           state={state!}
           ui={ui}
           onUi={(patch) => patchFeedUi(panel.id, patch)}
-          onOpen={openItem}
+          onOpen={(item, rowId) => openItem(item, { panelId: panel.id, rowId })}
           onSeen={markItemsSeen}
           onRefresh={() => refreshFeedPanel(panel)}
           onConfigure={() => setModal({ kind: "configure-feed", panelId: panel.id })}
@@ -1483,7 +1530,13 @@ export default function App() {
           <Search size={13} /> Rechercher
         </button>
         {linkPreview && (
-          <button type="button" className="restore-pill" onClick={() => setLinkPreview(null)}>
+          <button
+            type="button"
+            className="restore-pill"
+            onClick={() => {
+              setLinkPreview(null);
+            }}
+          >
             Retour au fil <kbd>Échap</kbd>
           </button>
         )}
@@ -1565,7 +1618,9 @@ export default function App() {
           <LinkPreviewView
             preview={linkPreview}
             runtime={webStates[LINK_READER_ID]}
-            onClose={() => setLinkPreview(null)}
+            onClose={() => {
+              setLinkPreview(null);
+            }}
           />
         )}
       </main>
@@ -1648,8 +1703,19 @@ export default function App() {
           onCancelPreparation={() => void window.mediagen.cancelSemanticSearchPreparation()}
           onClose={closeSemanticSearchPalette}
           onOpenItem={(item) => {
+            const preferredPanelId =
+              semanticSearchRestoreRef.current?.focusedPanelId ?? focusedPanelId;
+            const candidatePanels = state.panels.filter(
+              (panel): panel is FeedPanel =>
+                panel.kind === "feed" && panel.sourceIds.includes(item.sourceId),
+            );
+            const originPanel =
+              candidatePanels.find(({ id }) => id === preferredPanelId) ?? candidatePanels[0];
             closeSemanticSearchPalette();
-            void openItem(item);
+            void openItem(item, {
+              panelId: originPanel?.id ?? preferredPanelId ?? "",
+              rowId: originPanel ? `article-${originPanel.id}-${item.id}` : "",
+            });
           }}
           onApply={applySemanticSearchFilter}
         />
@@ -2378,7 +2444,7 @@ function FeedPanelView({
   state: AppState;
   ui: FeedPanelUi;
   onUi: (patch: Partial<FeedPanelUi>) => void;
-  onOpen: (item: FeedItem) => void | Promise<void>;
+  onOpen: (item: FeedItem, rowId: string) => void | Promise<void>;
   onSeen: (itemIds: string[]) => void;
   onRefresh: () => void | Promise<void>;
   onConfigure: () => void;
@@ -2622,7 +2688,7 @@ function FeedPanelView({
                     if (ui.visibilityFilter === "unseen") {
                       onUi({ focusedItemId: null });
                     }
-                    void onOpen(item);
+                    void onOpen(item, `article-${panel.id}-${item.id}`);
                   }}
                 >
                   <time
@@ -2831,8 +2897,21 @@ function LinkPreviewView({
   runtime?: WebPanelRuntimeState;
   onClose: () => void;
 }) {
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
   const failed = ["error", "crashed", "unresponsive"].includes(runtime?.status ?? "");
-  const currentUrl = runtime?.url || preview.url;
+  const readerMode = runtime?.readerMode ?? "extracting";
+  const readerStatus =
+    readerMode === "extracting"
+      ? "Préparation de la lecture…"
+      : readerMode === "simplified"
+        ? "Lecture simplifiée"
+        : runtime?.readerFallback
+          ? "Page originale · lecture simplifiée indisponible"
+          : "Page originale";
+
+  useLayoutEffect(() => {
+    closeButtonRef.current?.focus({ preventScroll: true });
+  }, [preview.itemId]);
 
   return (
     <section className="dashboard-panel link-reader" aria-label={`Lecture — ${preview.title}`}>
@@ -2843,6 +2922,7 @@ function LinkPreviewView({
         </strong>
         <button
           type="button"
+          ref={closeButtonRef}
           className="icon-button icon-button--danger"
           aria-label="Retour au fil"
           title="Retour au fil"
@@ -2853,47 +2933,18 @@ function LinkPreviewView({
       </header>
       <div className="panel-content">
         <div className="web-toolbar link-reader__toolbar">
-          <IconButton
-            label="Page précédente"
-            disabled={!runtime?.canGoBack}
-            onClick={() => void window.mediagen.goBackWebPanel(LINK_READER_ID)}
-          >
-            <ArrowLeft size={12} />
-          </IconButton>
-          <IconButton
-            label="Page suivante"
-            disabled={!runtime?.canGoForward}
-            onClick={() => void window.mediagen.goForwardWebPanel(LINK_READER_ID)}
-          >
-            <ArrowRight size={12} />
-          </IconButton>
-          <IconButton
-            label={runtime?.loading ? "Arrêter" : "Recharger"}
-            disabled={!runtime}
-            onClick={() =>
-              void (runtime?.loading
-                ? window.mediagen.stopWebPanel(LINK_READER_ID)
-                : window.mediagen.reloadWebPanel(LINK_READER_ID))
-            }
-          >
-            {runtime?.loading ? <X size={12} /> : <RefreshCw size={12} />}
-          </IconButton>
-          <span className="web-address" title={currentUrl}>
-            {currentUrl}
+          <span className="web-address" aria-live="polite">
+            {readerStatus}
           </span>
-          <IconButton
-            label={runtime?.muted === false ? "Couper le son" : "Activer le son"}
-            disabled={!runtime}
-            active={runtime?.muted === false}
-            onClick={() =>
-              void window.mediagen.setWebPanelMuted(
-                LINK_READER_ID,
-                runtime?.muted === false,
-              )
-            }
-          >
-            {runtime?.muted === false ? <Volume2 size={12} /> : <VolumeX size={12} />}
-          </IconButton>
+          {readerMode === "simplified" && (
+            <button
+              type="button"
+              className="quiet-button"
+              onClick={() => void window.mediagen.showOriginalArticle(preview.itemId)}
+            >
+              Page originale
+            </button>
+          )}
           <button
             type="button"
             className="quiet-button link-reader__external"
@@ -2909,8 +2960,10 @@ function LinkPreviewView({
               icon={<Globe2 size={20} />}
               title="Impossible d’afficher cet article"
               body={runtime?.error ?? "La page ne répond pas dans l’application."}
-              action="Réessayer"
-              onAction={() => void window.mediagen.reloadWebPanel(LINK_READER_ID)}
+              action={readerMode === "original" ? "Réessayer" : "Page originale"}
+              onAction={() => void (readerMode === "original"
+                ? window.mediagen.retryOriginalArticle(preview.itemId)
+                : window.mediagen.showOriginalArticle(preview.itemId))}
             />
           )}
           {!runtime && (

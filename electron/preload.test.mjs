@@ -89,6 +89,17 @@ test("clearWebData always requests a full profile clear without exposing a raw s
   assert.deepEqual(Object.keys(calls[0][1]), ["scope"]);
 });
 
+test("controls the original reader article through an item id only", async () => {
+  const { api, calls } = await loadPreloadApi();
+
+  await api.showOriginalArticle("item-42");
+  await api.retryOriginalArticle("item-42");
+  assert.deepEqual(calls, [
+    ["reader:show-original", "item-42"],
+    ["reader:retry-original", "item-42"],
+  ]);
+});
+
 test("exposes only the narrow semantic-search IPC API", async () => {
   const { api, calls } = await loadPreloadApi();
   const request = { query: "inflation", scope: { kind: "all" }, mode: "hybrid" };

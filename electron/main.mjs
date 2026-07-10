@@ -6,7 +6,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { finished } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
-import { createFeedEngine, isNonPublicIpAddress } from "./feed-engine.mjs";
+import { createFeedEngine } from "./feed-engine.mjs";
 import { createRefreshScheduler } from "./refresh-scheduler.mjs";
 import {
   backupAndImportDashboard,
@@ -24,10 +24,16 @@ import {
   collectEnterpriseNetworkDiagnostics,
   createElectronSessionFetch,
   createWebPanelController,
+  validateWebPanelDescriptorList,
   WEB_PANEL_SESSION_STRATEGY,
 } from "./web-panel-controller.mjs";
 import { runWithFinalStateBroadcast } from "./final-state-operation.mjs";
 import { closePersistenceAfterPending } from "./shutdown.mjs";
+import {
+  createArticleReaderService,
+  resolveReaderArticle,
+} from "./article-reader.mjs";
+import { isNonPublicIpAddress } from "./network-safety.mjs";
 import {
   SemanticSearchService,
   assertModelDownloadUrl,
@@ -73,6 +79,8 @@ protocol.registerSchemesAsPrivileged([
 let mainWindow = null;
 let engine = null;
 let feedNetworkSession = null;
+let articleReaderService = null;
+let lastRendererState = null;
 let semanticSearchNetworkSession = null;
 let semanticSearch = null;
 let semanticSyncTask = null;
@@ -319,6 +327,54 @@ function cleanWebDataRequest(value) {
   return { scope: value.scope };
 }
 
+function resolveWebPanelDescriptors(value, controller) {
+  validateWebPanelDescriptorList(value);
+  const state = lastRendererState ?? readEngineState();
+  const webPanels = new Map(
+    state.panels
+      .filter((panel) => panel.kind === "web")
+      .map((panel) => [panel.id, panel]),
+  );
+  return value.map((descriptor) => {
+    if (!descriptor || typeof descriptor !== "object" || Array.isArray(descriptor)) {
+      throw new TypeError("Descripteur de panel web invalide.");
+    }
+    if (descriptor.kind === "reader") {
+      if (descriptor.panelId !== "reader:article") {
+        throw new TypeError("Identifiant du lecteur d’article invalide.");
+      }
+      const itemId = cleanId(descriptor.itemId);
+      const article = resolveReaderArticle(
+        itemId,
+        state,
+        controller.getActiveReaderArticle(itemId),
+      );
+      return {
+        kind: "reader",
+        panelId: "reader:article",
+        itemId: article.itemId,
+        url: article.url,
+        bounds: descriptor.bounds,
+        visible: descriptor.visible,
+        connectorId: article.connectorId,
+        readerMode: article.readerMode,
+        readerFallback: article.readerFallback,
+      };
+    }
+    if (descriptor.kind !== "web") throw new TypeError("Type de panel web invalide.");
+    const panel = webPanels.get(cleanId(descriptor.panelId));
+    if (!panel) throw new Error("Panel web introuvable.");
+    // The stored URL wins over any stale or forged renderer value.
+    return {
+      kind: "web",
+      panelId: panel.id,
+      url: panel.url,
+      bounds: descriptor.bounds,
+      visible: descriptor.visible,
+    };
+  });
+}
+
 function assertNoArguments(args) {
   if (args.length !== 0) throw new TypeError("Cette commande n’accepte aucun paramètre.");
 }
@@ -422,8 +478,15 @@ function sendToWindow(window, channel, value) {
   }
 }
 
-function broadcastState(state = engine?.getState(), { syncSemantic = false } = {}) {
+function readEngineState() {
+  const state = engine?.getState() ?? null;
+  lastRendererState = state;
+  return state;
+}
+
+function broadcastState(state = readEngineState(), { syncSemantic = false } = {}) {
   if (!state) return;
+  lastRendererState = state;
   for (const window of webPanelControllers.keys()) {
     sendToWindow(window, "aggregator:state-changed", state);
   }
@@ -631,7 +694,7 @@ function runEngineOperation(operation) {
 }
 
 function registerIpcHandlers() {
-  registerHandle("aggregator:get-state", () => engine.getState());
+  registerHandle("aggregator:get-state", () => readEngineState());
   registerHandle("semantic-search:get-status", () => semanticSearch.getStatus());
   registerHandle("semantic-search:prepare", () => runEngineOperation(() => semanticSearch.prepare()));
   registerHandle("semantic-search:cancel-preparation", () => {
@@ -951,11 +1014,12 @@ function registerIpcHandlers() {
     try {
       const controller = controllerForEvent(event);
       if (!resettingWebPanelControllers.has(controller)) {
-        controller.sync(descriptors);
+        const resolvedDescriptors = resolveWebPanelDescriptors(descriptors, controller);
+        controller.sync(resolvedDescriptors);
         const window = requireMainSender(event);
         const panelId = semanticSearchNativeFocus.get(window);
         if (panelId && semanticSearchNativeRestoreRequested.has(window)) {
-          const descriptor = descriptors.find(
+          const descriptor = resolvedDescriptors.find(
             (candidate) => candidate?.panelId === panelId && candidate.visible === true,
           );
           if (descriptor && controller.focus(panelId)) {
@@ -984,6 +1048,10 @@ function registerIpcHandlers() {
     controllerForEvent(event).home(cleanId(panelId)));
   registerHandle("web-panels:open-external", (event, panelId) =>
     controllerForEvent(event).openExternal(cleanId(panelId)));
+  registerHandle("reader:show-original", (event, itemId) =>
+    controllerForEvent(event).showOriginalArticle(cleanId(itemId)));
+  registerHandle("reader:retry-original", (event, itemId) =>
+    controllerForEvent(event).retryOriginalArticle(cleanId(itemId)));
   registerHandle("web-panels:set-muted", (event, panelId, muted) => {
     if (typeof muted !== "boolean") throw new TypeError("L’état audio doit être un booléen.");
     return controllerForEvent(event).setMuted(cleanId(panelId), muted);
@@ -1014,6 +1082,7 @@ function createWindow() {
   const webPanelController = createWebPanelController({
     window,
     shell,
+    extractArticle: (input) => articleReaderService.extract(input),
     onState: (state) => {
       sendToWindow(window, "web-panels:state-changed", state);
     },
@@ -1090,6 +1159,7 @@ async function handleStartupFailure(error) {
   refreshScheduler?.stop();
   engine?.cancelPending();
   await destroyAllWebPanelControllers();
+  await articleReaderService?.shutdown();
   const pendingRefresh = refreshScheduler?.pending();
   if (pendingRefresh) await Promise.allSettled([pendingRefresh]);
   try {
@@ -1100,6 +1170,8 @@ async function handleStartupFailure(error) {
   }
   engine = null;
   feedNetworkSession = null;
+  articleReaderService = null;
+  lastRendererState = null;
   refreshScheduler = null;
   const detail = error instanceof Error ? error.message : "Erreur de démarrage inconnue.";
   dialog.showErrorBox(
@@ -1136,6 +1208,10 @@ if (!hasSingleInstanceLock) {
     feedNetworkSession = session.fromPartition(FEED_NETWORK_PARTITION, {
       cache: false,
     });
+    articleReaderService = createArticleReaderService({
+      sessionForConnector: (connectorId) =>
+        session.fromPartition(`mediagen-reader-${connectorId}`, { cache: false }),
+    });
     semanticSearchNetworkSession = session.fromPartition(SEMANTIC_SEARCH_NETWORK_PARTITION, {
       cache: false,
     });
@@ -1160,6 +1236,7 @@ if (!hasSingleInstanceLock) {
       allowPrivateNetwork:
         !app.isPackaged && process.env.MEDIAGEN_ALLOW_PRIVATE_NETWORK === "true",
     });
+    lastRendererState = engine.getState();
     refreshScheduler = createRefreshScheduler({
       getSources: () => engine.getState().sources,
       refreshSource: (sourceId) => engine.refreshSource(sourceId),
@@ -1207,6 +1284,7 @@ app.on("before-quit", (event) => {
   pilotHeartbeatTimer = null;
   const pendingPersistence = [...activeOperations];
   const webCleanup = destroyAllWebPanelControllers();
+  const readerCleanup = articleReaderService?.shutdown() ?? Promise.resolve();
   if (refreshTimer) clearInterval(refreshTimer);
   refreshTimer = null;
   refreshScheduler?.stop();
@@ -1215,6 +1293,7 @@ app.on("before-quit", (event) => {
   const pendingRefresh = refreshScheduler?.pending();
   if (pendingRefresh) pendingPersistence.push(pendingRefresh);
   if (!conductorShutdownRequested) pendingPersistence.push(webCleanup);
+  pendingPersistence.push(readerCleanup);
 
   void closePersistenceAfterPending({
     pending: pendingPersistence,
@@ -1230,6 +1309,8 @@ app.on("before-quit", (event) => {
       } finally {
         engine = null;
         feedNetworkSession = null;
+        articleReaderService = null;
+        lastRendererState = null;
         refreshScheduler = null;
       }
     },
