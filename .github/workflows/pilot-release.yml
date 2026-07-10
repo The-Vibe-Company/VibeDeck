@@ -20,6 +20,9 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    permissions:
+      # GitHub réserve la visibilité des releases brouillon aux identités avec accès push.
+      contents: write
     outputs:
       tag: ${{ steps.release.outputs.tag }}
       sha: ${{ steps.release.outputs.sha }}
