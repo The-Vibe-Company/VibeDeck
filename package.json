@@ -122,8 +122,9 @@
         "nsis"
       ]
     },
-    "nsis": {
-      "oneClick": false,
+  "nsis": {
+    "artifactName": "vibedeck-setup-${version}.${ext}",
+    "oneClick": false,
       "allowToChangeInstallationDirectory": true
     }
   }

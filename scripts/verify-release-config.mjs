@@ -70,6 +70,11 @@ assert.equal(build.productName, "VibeDeck", "Nom public de l’application inatt
 assert.equal(build.asar, true, "Le code de diffusion doit être emballé dans ASAR");
 assert.equal(build.afterSign, "scripts/after-sign.mjs", "Hook de scellement macOS manquant");
 assert.equal(
+  build.nsis?.artifactName,
+  "vibedeck-setup-${version}.${ext}",
+  "Le nom NSIS doit rester identique localement et lors de la publication GitHub",
+);
+assert.equal(
   build.mac?.x64ArchFiles,
   "**/node_modules/{@img,onnxruntime-node}/**",
   "Le paquet macOS universel doit conserver les variantes natives de sharp et ONNX Runtime",

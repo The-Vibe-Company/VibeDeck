@@ -107,7 +107,7 @@ Le build x64 et l’installateur doivent être produits sur une machine Windows 
 npm ci
 npm run dist:win:signed
 npm run verify:packaged-fuses
-Get-AuthenticodeSignature "release\VibeDeck Setup 0.2.0.exe"
+Get-AuthenticodeSignature "release\vibedeck-setup-0.2.0.exe"
 npm run checksums:release
 npm run verify:checksums
 ```
