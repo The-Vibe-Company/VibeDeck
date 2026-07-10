@@ -1,0 +1,49 @@
+.conductor/settings.toml
+  s_c99743418e1b1f::t_e51c2adeb3a9d0 1-11
+scripts/run-conductor.mjs
+  s_c99743418e1b1f::t_96029c978a8ecb 17-20,39,47-54,61
+  s_c99743418e1b1f::t_e51c2adeb3a9d0 1-16,21-38,40-46,55-60,62-68
+.gitignore
+  s_c99743418e1b1f::t_e51c2adeb3a9d0 2
+package.json
+  s_c99743418e1b1f::t_96029c978a8ecb 19
+  s_c99743418e1b1f::t_e51c2adeb3a9d0 15
+electron/shutdown.mjs
+  s_c99743418e1b1f::t_412f92753e472c 1-27
+electron/development-config.mjs
+  s_c99743418e1b1f::t_e51c2adeb3a9d0 1-65
+electron/development-config.test.mjs
+  s_c99743418e1b1f::t_e51c2adeb3a9d0 1-71
+vite.config.ts
+  s_c99743418e1b1f::t_e51c2adeb3a9d0 3-6,8-28,30-43
+electron/shutdown.test.mjs
+  s_c99743418e1b1f::t_412f92753e472c 1-53
+scripts/test-conductor-run.mjs
+  s_c99743418e1b1f::t_e4094fdd7f6828 147
+  s_c99743418e1b1f::t_847f36e3037d44 3,34-48,161,195
+  s_c99743418e1b1f::t_e1dc985b637258 17
+  s_c99743418e1b1f::t_96029c978a8ecb 1-2,4-6,8-16,18-33,59-64,66-73,75-110,140-143,146,152-160,162-165,167-168,171-175,178-189,203-207
+  s_c99743418e1b1f::t_8c14aeab45c7e3 49-58,196
+  s_c99743418e1b1f::t_ceb005d8bd1930 144-145,148-151
+  s_c99743418e1b1f::t_c34e60e1a8fced 7,65,74,111-139,166,169-170,176-177,190-194,197-202
+electron/main.mjs
+  s_c99743418e1b1f::t_412f92753e472c 25,47,71,77-80,983,990-1010,1012-1017
+  s_c99743418e1b1f::t_c34e60e1a8fced 76,81-82
+  s_c99743418e1b1f::t_e51c2adeb3a9d0 16,836-840
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a492dd901ad7939a18617a900868a7909026de27",
+  "prompts": {},
+  "sessions": {
+    "s_c99743418e1b1f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4bc3-6b13-7893-94a5-dd284819f35b",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
