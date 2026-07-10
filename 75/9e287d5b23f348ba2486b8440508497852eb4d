@@ -1,0 +1,43 @@
+release-please-config.json
+  s_6db472b68a9b1a::t_7d7e96068d0ce4 4
+scripts/verify-release-config.mjs
+  s_6db472b68a9b1a::t_611c5223902a30 428,496-497,510
+  s_6db472b68a9b1a::t_816b1cc04fcccb 380,407,430-432,437,500,506-509
+  s_6db472b68a9b1a::t_ef56a57436fa88 381-393
+  s_6db472b68a9b1a::t_8f1be0630b8875 379,429,501-505
+  s_6db472b68a9b1a::t_7d7e96068d0ce4 109,112,315,402
+  s_6db472b68a9b1a::t_926b812dff091c 421-425,427
+  s_6db472b68a9b1a::t_c26825dcf27e88 498-499
+package.json
+  s_6db472b68a9b1a::t_7d7e96068d0ce4 102
+README.md
+  s_6db472b68a9b1a::t_3756694034163b 87
+  s_6db472b68a9b1a::t_12f12308908982 89
+.github/workflows/pilot-release.yml
+  s_6db472b68a9b1a::t_ef56a57436fa88 67,146
+  s_6db472b68a9b1a::t_926b812dff091c 100-101,161,172
+  s_6db472b68a9b1a::t_816b1cc04fcccb 24-25,57-58,238,250,252,256
+  s_6db472b68a9b1a::t_c26825dcf27e88 242-245,249,251,253-255
+  s_6db472b68a9b1a::t_7d7e96068d0ce4 9,56,233
+  s_6db472b68a9b1a::t_8f1be0630b8875 239-241,246-248
+  s_6db472b68a9b1a::t_611c5223902a30 213,236-237
+PILOT_RELEASE.md
+  s_6db472b68a9b1a::t_12f12308908982 80,96,123
+  s_6db472b68a9b1a::t_bab49f69e100f9 117
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "759e287d5b23f348ba2486b8440508497852eb4d",
+  "prompts": {},
+  "sessions": {
+    "s_6db472b68a9b1a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4d84-0ede-7f91-b339-3e77ba028c88",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
