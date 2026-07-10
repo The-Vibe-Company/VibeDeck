@@ -8,6 +8,7 @@ import {
   discoverFeedsInHtml,
   enrichItemsFromNewsSitemap,
   feedUrlsShareSite,
+  isNonPublicIpAddress,
   matchKnownPublication,
   normalizeInputUrl,
   parseFeedDocument,
@@ -276,6 +277,13 @@ test("blocks private feed destinations and recognizes same-site hosts", () => {
       }),
     /autre domaine/,
   );
+});
+
+test("classifies reserved IPv6 forms for every protected network boundary", () => {
+  for (const address of ["::", "::1", "::ffff:127.0.0.1", "ff02::1", "2001:db8::1"]) {
+    assert.equal(isNonPublicIpAddress(address), true, address);
+  }
+  assert.equal(isNonPublicIpAddress("2606:4700:4700::1111"), false);
 });
 
 test("stops reading a streamed response as soon as its byte limit is exceeded", async () => {

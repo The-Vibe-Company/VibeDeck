@@ -8,11 +8,16 @@ import electronExecutable from "electron";
 import { _electron as electron } from "playwright-core";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// VIBEDECK_PILOT_UI_SHOW=1 affiche la fenêtre pour débugger ; sinon la suite
+// tourne fenêtre cachée pour ne pas voler le focus de l'écran.
+const showWindow = process.env.VIBEDECK_PILOT_UI_SHOW === "1";
 const initialArticleCount = 90;
 const secondaryArticleCount = 2;
 const baselineArticleCount = initialArticleCount + secondaryArticleCount;
 const MIN_PANEL_WIDTH = 256;
 const SUBPIXEL_EPSILON = 0.5;
+// Doit rester aligné sur HOVER_SEEN_DELAY_MS dans src/App.tsx.
+const HOVER_SEEN_DELAY_MS = 1000;
 const newArticleTitle = "ARRIVÉE CONTRÔLÉE — invariant du viewport";
 const topArrivalTitle = "ARRIVÉE EN TÊTE — scroll nul";
 const sharedArrivalTitle = "ARRIVÉE PARTAGÉE — tampon indépendant par panel";
@@ -61,6 +66,11 @@ async function listen(server) {
 async function closeServer(server) {
   server.closeAllConnections?.();
   await new Promise((resolve) => server.close(resolve));
+}
+
+async function hoverRow(row) {
+  await row.hover();
+  await row.dispatchEvent("pointermove", { pointerType: "mouse" });
 }
 
 function assertWithin(actual, expected, tolerance, label) {
@@ -170,6 +180,8 @@ try {
       ELECTRON_DISABLE_SECURITY_WARNINGS: "true",
       VIBEDECK_ALLOW_PRIVATE_NETWORK: "true",
       VIBEDECK_DB_PATH: databasePath,
+      VIBEDECK_FAKE_SEMANTIC_SEARCH: "true",
+      VIBEDECK_TEST_HEADLESS: showWindow ? "" : "true",
       VITE_DEV_SERVER_URL: "",
     },
     timeout: 30_000,
@@ -177,7 +189,7 @@ try {
 
   const page = await electronApp.firstWindow({ timeout: 30_000 });
   page.setDefaultTimeout(20_000);
-  await page.bringToFront();
+  if (showWindow) await page.bringToFront();
   await page.waitForFunction(() => Boolean(window.vibedeck?.getState));
   await page.evaluate(() => window.vibedeck.focusDashboard());
   const updateAnnouncement = page.locator(".update-announcement");
@@ -258,10 +270,16 @@ try {
     await page.locator('.article-row[tabindex="-1"]').count(),
     baselineArticleCount - 1,
   );
+  const firstArticleId = await page.locator(".article-row").first().getAttribute("id");
+  assert.ok(firstArticleId, "Le premier article doit avoir un identifiant stable.");
   const secondArticleId = await page.locator(".article-row").nth(1).getAttribute("id");
   assert.ok(secondArticleId, "Le deuxième article doit avoir un identifiant stable.");
+  await page.locator(".article-row").first().focus();
+  await page.waitForFunction(
+    (articleId) => document.querySelector(".article-row--focused")?.id === articleId,
+    firstArticleId,
+  );
   const activeArticleIdAfterKeyDown = await page.locator(".article-row").first().evaluate((row) => {
-    row.focus();
     row.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
     return document.activeElement?.id ?? null;
   });
@@ -302,18 +320,28 @@ try {
   );
   await allFilter.evaluate((button) => button.blur());
   await page.locator(".global-bar").hover();
-  await page.locator(".dashboard-panel").hover();
+  // Hover a row distinct from the prior keyboard anchor (nth(1)) so the assertion
+  // truly isolates hover-preselect: only onPointerMove can move the selection to nth(3).
+  const hoveredRow = page.locator(".article-row").nth(3);
+  const hoveredRowId = await hoveredRow.getAttribute("id");
+  await hoverRow(hoveredRow);
   assert.equal(
     await page.locator(".dashboard-panel").evaluate((panel) => document.activeElement === panel),
     true,
     "Le survol doit rendre le panel prêt pour les raccourcis sans voler ensuite les contrôles.",
   );
+  await page.waitForFunction(
+    (articleId) => document.querySelector(".article-row--focused")?.id === articleId,
+    hoveredRowId,
+  );
   await page.keyboard.press("ArrowDown");
   assert.equal(
-    await page.locator(".article-row").nth(2).evaluate((row) => document.activeElement === row),
+    await page.locator(".article-row").nth(4).evaluate((row) => document.activeElement === row),
     true,
-    "Après survol, les flèches doivent reprendre la navigation dans les articles.",
+    "Après survol, les flèches doivent partir de la ligne survolée et avancer d’un cran.",
   );
+  // Relâcher le survol du fil pour ne pas laisser de minuteur « vu » armé.
+  await page.locator(".global-bar").hover();
 
   await page.keyboard.press("ControlOrMeta+N");
   const draftLeaf = page.locator('.split-layout__leaf[data-panel-id^="draft:"]');
@@ -330,6 +358,7 @@ try {
   );
   await draftLeaf.getByLabel("Fermer le panel").click();
   await draftLeaf.waitFor({ state: "detached" });
+  await page.locator(".global-bar").hover();
 
   const reference = await page.evaluate(async () => {
     const list = document.querySelector(".article-list");
@@ -391,15 +420,15 @@ try {
     1,
     "compensation du scroll",
   );
-  const expectedAfterJ = await page.evaluate(
+  const expectedAfterArrowDown = await page.evaluate(
     (articleId) => document.getElementById(articleId)?.nextElementSibling?.id ?? null,
     reference.id,
   );
-  assert.ok(expectedAfterJ, "L’article suivant après insertion doit exister.");
-  await page.keyboard.press("j");
+  assert.ok(expectedAfterArrowDown, "L’article suivant après insertion doit exister.");
+  await page.keyboard.press("ArrowDown");
   await page.waitForFunction(
     (articleId) => document.activeElement?.id === articleId,
-    expectedAfterJ,
+    expectedAfterArrowDown,
   );
 
   assert.match(
@@ -433,23 +462,42 @@ try {
   const readerSourceRow = page.locator(".article-row").first();
   const readerSourceId = await readerSourceRow.getAttribute("id");
   await readerSourceRow.focus();
+  const readerDecisionStartedAt = performance.now();
   await page.keyboard.press("Enter");
   await page.locator(".link-reader").waitFor({ state: "visible" });
-  await electronApp.evaluate(async ({ webContents }, articlePrefix) => {
+  await page
+    .locator(".link-reader__toolbar .web-address")
+    .filter({ hasText: "Page originale · lecture simplifiée indisponible" })
+    .waitFor({ state: "visible" });
+  assert.ok(
+    performance.now() - readerDecisionStartedAt < 1_000,
+    "La décision du lecteur doit rester sous une seconde.",
+  );
+  // Fenêtre cachée : le focus OS n'existe pas, isFocused() reste faux côté
+  // main process. Le contrat de focus est prouvé après Échap par le retour de
+  // document.activeElement sur la ligne du fil ; ici on attend seulement que
+  // le lecteur soit chargé (et focalisé quand la fenêtre est affichée).
+  await electronApp.evaluate(async ({ webContents }, { articlePrefix, requireFocus }) => {
     let reader;
     for (let attempt = 0; attempt < 100; attempt += 1) {
       reader = webContents
         .getAllWebContents()
-        .find((contents) => contents.getURL().startsWith(articlePrefix));
+        .find((contents) =>
+          contents.getURL().startsWith(articlePrefix) &&
+          !contents.isLoading() &&
+          (!requireFocus || contents.isFocused()));
       if (reader) break;
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    if (!reader) throw new Error("Le WebContentsView du lecteur est introuvable.");
-    reader.focus();
+    if (!reader) throw new Error("Le lecteur natif focalisé est introuvable.");
     reader.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
     reader.sendInputEvent({ type: "keyUp", keyCode: "Escape" });
-  }, `${origin}/articles/`);
+  }, { articlePrefix: `${origin}/articles/`, requireFocus: showWindow });
   await page.locator(".link-reader").waitFor({ state: "detached" });
+  await page.waitForFunction(
+    (articleId) => document.activeElement?.id === articleId,
+    readerSourceId,
+  );
   await page.keyboard.press("ArrowDown");
   await page.waitForFunction(
     (previousId) => {
@@ -552,7 +600,142 @@ try {
     "L’état de lecture doit rester explicite dans le panel le plus étroit.",
   );
 
+  const searchOrigin = panelLeaf.locator(".article-row").nth(12);
+  const searchOriginId = await searchOrigin.getAttribute("id");
+  assert.ok(searchOriginId, "L’article d’origine de la recherche doit être identifiable.");
+  await searchOrigin.evaluate((row) => {
+    const list = row.closest(".article-list");
+    if (!(list instanceof HTMLElement) || !(row instanceof HTMLElement)) {
+      throw new Error("Origine de recherche invalide.");
+    }
+    list.scrollTop = row.offsetTop - 60;
+    row.focus({ preventScroll: true });
+  });
+  const searchOriginScrollTop = await panelLeaf.locator(".article-list").evaluate(
+    (list) => list.scrollTop,
+  );
+
+  await page.keyboard.press("ControlOrMeta+K");
+  const searchPalette = page.locator("dialog.search-palette");
+  await searchPalette.waitFor({ state: "visible" });
+  const searchInput = searchPalette.getByLabel("Requête");
+  assert.equal(
+    await searchInput.evaluate((input) => document.activeElement === input),
+    true,
+    "Cmd/Ctrl + K doit donner le vrai focus DOM au champ de recherche.",
+  );
+  await searchInput.fill("référence 42");
+  await searchPalette.locator(".search-palette__result").first().waitFor({ state: "visible" });
+  assert.equal(
+    await searchInput.evaluate((input) => document.activeElement === input),
+    true,
+    "L’arrivée des résultats ne doit pas retirer le focus du champ.",
+  );
+  const sharedResultMeta = await searchPalette
+    .locator(".search-palette__result-meta")
+    .first()
+    .textContent();
+  assert.match(sharedResultMeta ?? "", /Preuve viewport/);
+  assert.match(sharedResultMeta ?? "", /Panel étroit témoin/);
+  await page.screenshot({ path: path.join(projectRoot, ".context", "search-palette.png") });
+
+  await page.keyboard.press("Enter");
+  await searchPalette.waitFor({ state: "detached" });
+  await page.locator(".search-filter-summary").waitFor({ state: "visible" });
+  assert.equal(
+    await page.locator(".feed-toolbar__search-state").count(),
+    2,
+    "Chaque Fil concerné doit signaler le filtre actif.",
+  );
+  assert.equal(
+    await panelLeaf.locator(".article-row").count(),
+    1,
+    "Entrée depuis le champ doit appliquer le filtre au Fil principal.",
+  );
+  assert.equal(
+    await narrowLeaf.locator(".article-row").count(),
+    1,
+    "Le même filtre doit s’appliquer au Fil partageant la source.",
+  );
+
+  await page.locator(".search-filter-summary").click();
+  await searchPalette.waitFor({ state: "visible" });
+  await page.keyboard.press("Escape");
+  await searchPalette.waitFor({ state: "detached" });
+  assert.equal(
+    await page.locator(".search-filter-summary").isVisible(),
+    true,
+    "Le premier Échap doit fermer la palette sans retirer le filtre actif.",
+  );
+  await page.keyboard.press("Escape");
+  await page.locator(".search-filter-summary").waitFor({ state: "detached" });
+  await page.waitForFunction(
+    (articleId) => document.activeElement?.id === articleId,
+    searchOriginId,
+  );
+  assertWithin(
+    await panelLeaf.locator(".article-list").evaluate((list) => list.scrollTop),
+    searchOriginScrollTop,
+    0.5,
+    "scrollTop restauré après retrait du filtre",
+  );
+
+  await page.keyboard.press("ControlOrMeta+K");
+  await searchPalette.waitFor({ state: "visible" });
+  await searchPalette.getByLabel("Requête").fill("référence 42");
+  await searchPalette.locator(".search-palette__result").first().hover();
+  await searchPalette.getByRole("button", { name: "Filtrer" }).click();
+  await searchPalette.waitFor({ state: "detached" });
+  await page.locator(".search-filter-summary").waitFor({ state: "visible" });
+  assert.equal(
+    await page.locator(".link-reader").count(),
+    0,
+    "Le bouton Filtrer doit appliquer la recherche même après le survol d’un résultat.",
+  );
+  await page.keyboard.press("Escape");
+  await page.locator(".search-filter-summary").waitFor({ state: "detached" });
+
+  await page.keyboard.press("ControlOrMeta+K");
+  await searchPalette.waitFor({ state: "visible" });
+  await searchPalette.getByLabel("Requête").fill("référence 42");
+  await searchPalette.locator(".search-palette__result").first().waitFor({ state: "visible" });
+  await page.keyboard.press("ArrowDown");
+  assert.match(
+    (await searchPalette.getByLabel("Requête").getAttribute("aria-activedescendant")) ?? "",
+    /^semantic-search-result-/,
+    "ArrowDown doit activer un résultat sans déplacer le focus hors du champ.",
+  );
+  await page.keyboard.press("ArrowUp");
+  assert.equal(
+    await searchPalette.getByLabel("Requête").getAttribute("aria-activedescendant"),
+    null,
+    "ArrowUp depuis le premier résultat doit revenir à l’état de saisie.",
+  );
+  await page.keyboard.press("Enter");
+  await searchPalette.waitFor({ state: "detached" });
+  await page.locator(".search-filter-summary").waitFor({ state: "visible" });
+  await page.keyboard.press("Escape");
+  await page.locator(".search-filter-summary").waitFor({ state: "detached" });
+
+  await page.keyboard.press("ControlOrMeta+K");
+  await searchPalette.waitFor({ state: "visible" });
+  await searchPalette.getByLabel("Requête").fill("référence 42");
+  await searchPalette.locator(".search-palette__result").first().waitFor({ state: "visible" });
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await searchPalette.waitFor({ state: "detached" });
+  await page.locator(".link-reader").waitFor({ state: "visible" });
+  await page.keyboard.press("Escape");
+  await page.locator(".link-reader").waitFor({ state: "detached" });
+  console.log("✓ recherche live: focus direct, source partagée, filtre explicite et navigation clavier");
+
   await panelLeaf.locator(".dashboard-panel").focus();
+  await page.waitForFunction(
+    (targetPanelId) => document
+      .querySelector(`.split-layout__leaf[data-panel-id="${targetPanelId}"] .dashboard-panel`)
+      ?.classList.contains("dashboard-panel--focused"),
+    panelId,
+  );
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("ArrowRight");
   await page.waitForFunction(
@@ -580,6 +763,31 @@ try {
         document.activeElement?.classList.contains("article-row");
     },
     narrowPanelId,
+  );
+  const sharedReaderSourceId = await page.evaluate(() => document.activeElement?.id ?? null);
+  assert.ok(sharedReaderSourceId, "Le panel partagé doit exposer un article actif.");
+  await page.keyboard.press("Enter");
+  await page.locator(".link-reader").waitFor({ state: "visible" });
+  await electronApp.evaluate(async ({ webContents }, articlePrefix) => {
+    let reader;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      reader = webContents
+        .getAllWebContents()
+        .find((contents) => contents.getURL().startsWith(articlePrefix));
+      if (reader) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    if (!reader) throw new Error("Le lecteur du panel partagé est introuvable.");
+    reader.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
+    reader.sendInputEvent({ type: "keyUp", keyCode: "Escape" });
+  }, `${origin}/articles/`);
+  await page.locator(".link-reader").waitFor({ state: "detached" });
+  await page.waitForFunction(
+    ({ articleId, targetPanelId }) =>
+      document.activeElement?.id === articleId &&
+      document.activeElement?.closest(".split-layout__leaf")?.getAttribute("data-panel-id") ===
+        targetPanelId,
+    { articleId: sharedReaderSourceId, targetPanelId: narrowPanelId },
   );
 
   await narrowLeaf.getByLabel("Agrandir").click();
@@ -899,6 +1107,76 @@ try {
     "Le MIME interne et le drag actif doivent continuer à échanger les deux panels.",
   );
 
+  // Marquage « vu » par survol : seule une immobilité prolongée sur une ligne compte.
+  const dwellTitle = "ARRIVÉE DWELL — survol prolongé marque « vu »";
+  const globalBar = page.locator(".global-bar");
+  const globalBarBox = await globalBar.boundingBox();
+  const dwellProbeAttempts = 3;
+  let dwellRow = null;
+  let dwellId = null;
+  let dwellProbeExitDelay = null;
+  for (let attempt = 1; attempt <= dwellProbeAttempts; attempt += 1) {
+    const probeTitle = `${dwellTitle} (essai ${attempt})`;
+    articles = [
+      {
+        id: `dwell-arrival-${attempt}`,
+        title: probeTitle,
+        summary: "Doit passer « vue » uniquement après un survol maintenu.",
+        publishedAt: new Date(),
+      },
+      ...articles,
+    ];
+    await page.evaluate((id) => window.vibedeck.refreshSource(id), sourceId);
+    dwellRow = page.locator(".article-row").filter({ hasText: probeTitle }).first();
+    await dwellRow.waitFor({ state: "visible" });
+    dwellId = await dwellRow.getAttribute("id");
+    assert.equal(
+      await dwellRow.evaluate((row) => row.classList.contains("article-row--seen")),
+      false,
+      "Une arrivée fraîche doit être non vue avant tout survol.",
+    );
+    // Survol bref puis sortie du fil avant le délai : le marquage est annulé.
+    // Deux mouvements souris bruts dos à dos, sans checks d'actionabilité
+    // entre l'armement du minuteur et la sortie, pour que la sortie précède
+    // largement le délai de dwell même sur un runner lent. Si la sortie est
+    // quand même trop tardive pour prouver l'annulation, nouvel article et
+    // nouvel essai plutôt qu'un verdict ambigu.
+    await dwellRow.scrollIntoViewIfNeeded();
+    const dwellRowBox = await dwellRow.boundingBox();
+    const enteredAt = Date.now();
+    await page.mouse.move(
+      dwellRowBox.x + dwellRowBox.width / 2,
+      dwellRowBox.y + dwellRowBox.height / 2,
+    );
+    await page.mouse.move(
+      globalBarBox.x + globalBarBox.width / 2,
+      globalBarBox.y + globalBarBox.height / 2,
+    );
+    dwellProbeExitDelay = Date.now() - enteredAt;
+    if (dwellProbeExitDelay > HOVER_SEEN_DELAY_MS - 300) {
+      dwellProbeExitDelay = null;
+      continue;
+    }
+    await page.waitForTimeout(HOVER_SEEN_DELAY_MS + 300);
+    assert.equal(
+      await dwellRow.evaluate((row) => row.classList.contains("article-row--seen")),
+      false,
+      `Quitter le fil avant le délai de dwell doit annuler le marquage « vu » (sortie après ${dwellProbeExitDelay}ms).`,
+    );
+    break;
+  }
+  assert.ok(
+    dwellProbeExitDelay !== null,
+    `Impossible de sortir du fil en moins de ${HOVER_SEEN_DELAY_MS - 300}ms après ${dwellProbeAttempts} essais : runner trop lent pour prouver l'annulation du dwell.`,
+  );
+  // Survol immobile maintenu au-delà du délai : la ligne devient « vue ».
+  await hoverRow(dwellRow);
+  await page.waitForFunction(
+    (articleId) => document.getElementById(articleId)?.classList.contains("article-row--seen") === true,
+    dwellId,
+  );
+  await globalBar.hover();
+
   console.log(`✓ baseline: ${baselineArticleCount} articles interclassés, roving tabindex actif`);
   console.log(`✓ viewport initial: scrollTop ${beforeArrival.scrollTop.toFixed(1)}px`);
   console.log(`✓ arrivée automatique: même article à ${revealed.selectedTop.toFixed(1)}px, compensation ${revealed.newRowHeight.toFixed(1)}px`);
@@ -910,6 +1188,7 @@ try {
   console.log("✓ état d’actualisation diffusé pendant une réponse réseau lente");
   console.log("✓ panne manuelle explicite: toast honnête, diagnostic daté et cache conservé");
   console.log("✓ glisser-déposer: texte externe ignoré, MIME interne conservé");
+  console.log("✓ survol immobile: la ligne passe « vue » après le délai, un survol bref l’annule");
 } finally {
   if (electronApp) await electronApp.close().catch(() => undefined);
   await closeServer(server).catch(() => undefined);

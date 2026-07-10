@@ -12,6 +12,7 @@ import {
   stopWebPanelSessionActivity,
   WEB_PANEL_SESSION_STRATEGY,
 } from "./web-panel-controller.mjs";
+import { normalizeExtractedArticle } from "./article-reader.mjs";
 
 class FakeSession extends EventEmitter {
   constructor() {
@@ -133,17 +134,27 @@ class FakeWebContents extends EventEmitter {
   }
 }
 
-function createHarness({ contentSize = [800, 600], sharedWebSession = null } = {}) {
+function createHarness({
+  contentSize = [800, 600],
+  sharedWebSession = null,
+  readerExtractionResult = null,
+  viewCreationError = null,
+} = {}) {
   const views = [];
   const addedViews = [];
   const removedViews = [];
   const states = [];
   const externalCalls = [];
   const escapeCalls = [];
+  const readerExtractionCalls = [];
+  const searchCalls = [];
+  const creationEvents = [];
   const windowEvents = new Map();
 
   class FakeWebContentsView {
     constructor(options) {
+      creationEvents.push("view");
+      if (viewCreationError) throw viewCreationError;
       this.options = options;
       this.webContents = new FakeWebContents();
       if (sharedWebSession) this.webContents.session = sharedWebSession;
@@ -174,6 +185,13 @@ function createHarness({ contentSize = [800, 600], sharedWebSession = null } = {
     },
     getContentSize: () => contentSize,
     isDestroyed: () => false,
+    webContents: {
+      focusCalls: 0,
+      focus() {
+        this.focusCalls += 1;
+      },
+      isDestroyed: () => false,
+    },
     once(event, listener) {
       windowEvents.set(event, listener);
     },
@@ -186,19 +204,34 @@ function createHarness({ contentSize = [800, 600], sharedWebSession = null } = {
   const controller = createWebPanelController({
     window,
     shell,
-    onState: (state) => states.push(state),
+    extractArticle: async (input) => {
+      readerExtractionCalls.push(input);
+      const result = await (typeof readerExtractionResult === "function"
+        ? readerExtractionResult(input)
+        : readerExtractionResult);
+      return typeof result?.ok === "boolean" ? result : normalizeExtractedArticle(result);
+    },
+    onState: (state) => {
+      states.push(state);
+      creationEvents.push(`state:${state.readerMode ?? "web"}`);
+    },
     onEscape: (panelId) => escapeCalls.push(panelId),
+    onOpenSearch: (panelId) => searchCalls.push(panelId),
     WebContentsViewClass: FakeWebContentsView,
   });
 
   return {
     addedViews,
     controller,
+    creationEvents,
     externalCalls,
     escapeCalls,
     removedViews,
+    readerExtractionCalls,
+    searchCalls,
     states,
     views,
+    window,
     windowEvents,
   };
 }
@@ -335,7 +368,14 @@ test("starts muted and updates audio state explicitly", () => {
 test("installs fast arrow scrolling and focuses only the dedicated article reader", () => {
   const { controller, views } = createHarness();
   controller.sync([
-    descriptor("reader:article"),
+    {
+      ...descriptor("reader:article"),
+      url: "https://www.lemonde.fr/article",
+      kind: "reader",
+      itemId: "article-1",
+      connectorId: "le-monde",
+      readerMode: "extracting",
+    },
     descriptor("ordinary-browser", { url: "https://example.org/" }),
   ]);
 
@@ -343,9 +383,251 @@ test("installs fast arrow scrolling and focuses only the dedicated article reade
     views[0].options.webPreferences.preload,
     /article-reader-preload\.cjs$/,
   );
-  assert.equal(views[0].webContents.focusCalls, 1);
+  assert.equal(views[0].webContents.focusCalls, 0, "the public page remains hidden while extracting");
   assert.equal(views[1].options.webPreferences.preload, undefined);
   assert.equal(views[1].webContents.focusCalls, 0);
+});
+
+test("rejects reader fallback reasons outside the closed runtime vocabulary", () => {
+  const { controller, views } = createHarness();
+  assert.throws(() => controller.sync([{
+    ...descriptor("reader:article"),
+    url: "https://www.lemonde.fr/article",
+    kind: "reader",
+    itemId: "article-1",
+    connectorId: null,
+    readerMode: "original",
+    readerFallback: "publisher-secret",
+  }]), /Motif de repli/);
+  assert.equal(views.length, 0);
+});
+
+test("publishes an original-reader decision before allocating its native view", () => {
+  const { controller, creationEvents, searchCalls, states, views, window } = createHarness();
+  controller.sync([{
+    ...descriptor("reader:article"),
+    url: "https://example.org/article",
+    kind: "reader",
+    itemId: "article-1",
+    connectorId: null,
+    readerMode: "original",
+    readerFallback: "unsupported-source",
+  }]);
+
+  assert.deepEqual(creationEvents.slice(0, 2), ["state:original", "view"]);
+  assert.equal(states[0].status, "loading");
+  assert.equal(states[0].readerFallback, "unsupported-source");
+  const initialFocusCalls = views[0].webContents.focusCalls;
+  views[0].webContents.emit("dom-ready");
+  assert.equal(views[0].webContents.focusCalls, initialFocusCalls + 1);
+  views[0].webContents.emit("before-input-event", { preventDefault() {} }, {
+    type: "keyDown", key: "k", meta: true,
+  });
+  assert.equal(views[0].visible, false);
+  assert.deepEqual(searchCalls, ["reader:article"]);
+  const hiddenFocusCalls = views[0].webContents.focusCalls;
+  views[0].webContents.emit("dom-ready");
+  assert.equal(views[0].webContents.focusCalls, hiddenFocusCalls);
+  views[0].webContents.emit("before-input-event", {}, {
+    type: "keyDown", key: "Escape",
+  });
+  assert.equal(window.webContents.focusCalls, 1);
+});
+
+test("clears a provisional original-reader decision when native allocation fails", () => {
+  const { controller, states } = createHarness({
+    viewCreationError: new Error("native allocation failed"),
+  });
+
+  assert.throws(() => controller.sync([{
+    ...descriptor("reader:article"),
+    url: "https://example.org/article",
+    kind: "reader",
+    itemId: "article-1",
+    connectorId: null,
+    readerMode: "original",
+    readerFallback: "unsupported-source",
+  }]), /native allocation failed/);
+
+  assert.equal(states[0].status, "loading");
+  assert.equal(states.at(-1).status, "destroyed");
+});
+
+test("keeps the public reader invisible until a bounded extraction becomes static", async () => {
+  const articleText = "Contenu public structuré. ".repeat(30);
+  const { controller, states, views } = createHarness({
+    readerExtractionResult: {
+      elementCount: 120,
+      title: "Article public",
+      blocks: [
+        { kind: "paragraph", text: articleText },
+        { kind: "heading", text: "Le contexte" },
+        { kind: "paragraph", text: articleText },
+      ],
+    },
+  });
+  controller.sync([
+    {
+      ...descriptor("reader:article"),
+      url: "https://www.lemonde.fr/article",
+      kind: "reader",
+      itemId: "article-1",
+      connectorId: "le-monde",
+      readerMode: "extracting",
+    },
+  ]);
+
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(views[0].options.webPreferences.partition, "vibedeck-reader-static");
+  assert.equal(views[0].webContents.loadCalls.length, 1);
+  assert.match(views[0].webContents.loadCalls[0], /^data:text\/html/);
+  assert.equal(views[0].visible, true);
+  assert.equal(states.at(-1).readerMode, "simplified");
+  assert.equal(states.at(-1).readerFallback, null);
+});
+
+test("recreates a persistent original reader after an extraction fallback", async () => {
+  const stalledCleanupSession = new FakeSession();
+  stalledCleanupSession.clearData = () => new Promise(() => {});
+  const { controller, states, views } = createHarness({
+    sharedWebSession: stalledCleanupSession,
+    readerExtractionResult: { reason: "paywalled" },
+  });
+  controller.sync([
+    {
+      ...descriptor("reader:article"),
+      url: "https://www.lemonde.fr/article",
+      kind: "reader",
+      itemId: "article-1",
+      connectorId: "le-monde",
+      readerMode: "extracting",
+    },
+  ]);
+
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(views.length, 2);
+  assert.equal(views[0].options.webPreferences.partition, "vibedeck-reader-static");
+  assert.equal(views[1].options.webPreferences.partition, WEB_PANEL_SESSION_STRATEGY.partition);
+  assert.deepEqual(views[1].webContents.loadCalls, ["https://www.lemonde.fr/article"]);
+  assert.equal(states.at(-1).readerMode, "original");
+  assert.equal(states.at(-1).readerFallback, "paywalled");
+  assert.deepEqual(controller.getActiveReaderArticle("article-1"), {
+    itemId: "article-1",
+    url: "https://www.lemonde.fr/article",
+    connectorId: null,
+    readerMode: "original",
+    readerFallback: "paywalled",
+  });
+  controller.retryOriginalArticle("article-1");
+  assert.equal(views[1].webContents.reloadCalls, 1);
+});
+
+test("manual original mode replaces simplified content without accepting a renderer URL", async () => {
+  const articleText = "Contenu public structuré. ".repeat(30);
+  const { controller, views } = createHarness({
+    readerExtractionResult: {
+      elementCount: 120,
+      title: "Article public",
+      blocks: [
+        { kind: "paragraph", text: articleText },
+        { kind: "heading", text: "Le contexte" },
+        { kind: "paragraph", text: articleText },
+      ],
+    },
+  });
+  controller.sync([
+    {
+      ...descriptor("reader:article"),
+      url: "https://www.lemonde.fr/article",
+      kind: "reader",
+      itemId: "article-1",
+      connectorId: "le-monde",
+      readerMode: "extracting",
+    },
+  ]);
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  controller.showOriginalArticle("article-1");
+  assert.equal(views.length, 2);
+  assert.equal(views[1].options.webPreferences.partition, WEB_PANEL_SESSION_STRATEGY.partition);
+  assert.throws(
+    () => controller.showOriginalArticle("article-forged"),
+    /correspond pas/,
+  );
+});
+
+test("keeps the extracting view inert and aborts a stale extraction after close", async () => {
+  let finishExtraction;
+  const extraction = new Promise((resolve) => {
+    finishExtraction = resolve;
+  });
+  let extractionSignal;
+  const { controller, views } = createHarness({
+    readerExtractionResult: ({ signal }) => {
+      extractionSignal = signal;
+      return extraction;
+    },
+  });
+  controller.sync([
+    {
+      ...descriptor("reader:article"),
+      url: "https://www.lemonde.fr/article",
+      kind: "reader",
+      itemId: "article-1",
+      connectorId: "le-monde",
+      readerMode: "extracting",
+    },
+  ]);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  let prevented = false;
+  views[0].webContents.emit("will-redirect", {
+    preventDefault: () => (prevented = true),
+  }, "https://attacker.test/article");
+  assert.equal(prevented, true);
+
+  controller.sync([]);
+  assert.equal(extractionSignal.aborted, true);
+  finishExtraction({
+    elementCount: 120,
+    title: "Article public",
+    blocks: [
+      { kind: "paragraph", text: "Contenu public structuré. ".repeat(30) },
+      { kind: "heading", text: "Le contexte" },
+      { kind: "paragraph", text: "Contenu public structuré. ".repeat(30) },
+    ],
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(views[0].webContents.loadCalls.some((url) => url.startsWith("data:text/html")), false);
+});
+
+test("rejects generic web commands for the dedicated reader", () => {
+  const { controller } = createHarness();
+  controller.sync([{
+    ...descriptor("reader:article"),
+    url: "https://www.lemonde.fr/article",
+    kind: "reader",
+    itemId: "article-1",
+    connectorId: "le-monde",
+    readerMode: "extracting",
+  }]);
+
+  assert.throws(
+    () => controller.navigate("reader:article", "https://example.org/"),
+    /réservée aux panels web/,
+  );
+  for (const command of ["reload", "stop", "goBack", "goForward", "home"]) {
+    assert.throws(() => controller[command]("reader:article"), /réservée aux panels web/);
+  }
+  assert.throws(
+    () => controller.setMuted("reader:article", false),
+    /réservée aux panels web/,
+  );
 });
 
 test("destroys omitted views and destroyAll closes every remaining WebContents", () => {
@@ -365,7 +647,7 @@ test("destroys omitted views and destroyAll closes every remaining WebContents",
 });
 
 test("denies permissions, downloads and popups while opening safe popup links in place", () => {
-  const { controller, escapeCalls, views } = createHarness();
+  const { controller, escapeCalls, searchCalls, views } = createHarness();
   controller.sync([descriptor("locked-down")]);
   const view = views[0];
   const contents = view.webContents;
@@ -414,6 +696,19 @@ test("denies permissions, downloads and popups while opening safe popup links in
   contents.emit("before-input-event", {}, { type: "keyDown", key: "Escape" });
   contents.emit("before-input-event", {}, { type: "keyDown", key: "Escape", isAutoRepeat: true });
   assert.deepEqual(escapeCalls, ["locked-down"]);
+  let searchPrevented = false;
+  contents.emit("before-input-event", { preventDefault: () => { searchPrevented = true; } }, {
+    type: "keyDown", key: "k", meta: true,
+  });
+  contents.emit("before-input-event", {}, {
+    type: "keyDown", key: "k", control: true, isAutoRepeat: true,
+  });
+  assert.equal(searchPrevented, true);
+  assert.deepEqual(searchCalls, ["locked-down"]);
+  assert.equal(view.visible, false);
+  controller.sync([descriptor("locked-down")]);
+  assert.equal(controller.focus("locked-down"), true);
+  assert.equal(contents.focusCalls, 1);
 });
 
 test("documents the persistent web session while clearing background workers on shutdown", async () => {

@@ -1,6 +1,11 @@
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, session, shell } from "electron";
 import electronUpdater from "electron-updater";
+import { createHash } from "node:crypto";
+import { createWriteStream } from "node:fs";
+import { rm } from "node:fs/promises";
 import path from "node:path";
+import { Readable } from "node:stream";
+import { finished } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { createFeedEngine } from "./feed-engine.mjs";
 import { createRefreshScheduler } from "./refresh-scheduler.mjs";
@@ -20,11 +25,22 @@ import {
   collectEnterpriseNetworkDiagnostics,
   createElectronSessionFetch,
   createWebPanelController,
+  validateWebPanelDescriptorList,
   WEB_PANEL_SESSION_STRATEGY,
 } from "./web-panel-controller.mjs";
 import { runWithFinalStateBroadcast } from "./final-state-operation.mjs";
 import { closePersistenceAfterPending } from "./shutdown.mjs";
 import { createUpdateController } from "./update-controller.mjs";
+import {
+  createArticleReaderService,
+  resolveReaderArticle,
+} from "./article-reader.mjs";
+import { isNonPublicIpAddress } from "./network-safety.mjs";
+import {
+  SemanticSearchService,
+  assertModelDownloadUrl,
+  normalizeSearchMode,
+} from "./semantic-search.mjs";
 
 const { autoUpdater } = electronUpdater;
 
@@ -34,6 +50,7 @@ const PILOT_HEARTBEAT_MS = 60_000;
 const MAX_LAYOUT_DEPTH = 32;
 const MAX_LAYOUT_NODES = 1_023;
 const MAX_DASHBOARD_WEB_PANELS = 6;
+const MAX_MODEL_REDIRECTS = 5;
 const MIN_REFRESH_INTERVAL_SECONDS = 30;
 const MAX_REFRESH_INTERVAL_SECONDS = 3_600;
 const CONNECTOR_PREFERENCES = new Set(["auto", "rss", "atom", "news-sitemap"]);
@@ -43,6 +60,7 @@ const WEB_DATA_SCOPES = new Set(["cache", "site-data", "all"]);
 // It inherits Electron/Chromium proxy and certificate handling without sharing
 // page cookies or duplicating the SQLite feed cache on disk.
 const FEED_NETWORK_PARTITION = "vibedeck-feed-network";
+const SEMANTIC_SEARCH_NETWORK_PARTITION = "vibedeck-semantic-search";
 const MAX_ITEM_IDS_PER_CALL = 500;
 const MAX_FEED_CONFIGURATION_SOURCE_IDS = 4_096;
 const MAX_FEED_CONFIGURATION_NEW_SOURCES = 256;
@@ -65,6 +83,12 @@ protocol.registerSchemesAsPrivileged([
 let mainWindow = null;
 let engine = null;
 let feedNetworkSession = null;
+let articleReaderService = null;
+let lastRendererState = null;
+let semanticSearchNetworkSession = null;
+let semanticSearch = null;
+let semanticSyncTask = null;
+let semanticSyncRevision = 0;
 let refreshTimer = null;
 let refreshScheduler = null;
 let updateController = null;
@@ -79,12 +103,28 @@ let shutdownPromise = null;
 const activeOperations = new Set();
 const webPanelControllers = new Map();
 const resettingWebPanelControllers = new WeakSet();
+const semanticSearchNativeFocus = new WeakMap();
+const semanticSearchNativeRestoreRequested = new WeakSet();
 
 if (!app.isPackaged) {
   process.on("SIGHUP", () => {
     conductorShutdownRequested = true;
     if (!isQuitting) app.quit();
   });
+}
+
+// Fenêtre pilotée par les tests : jamais affichée ni activée, pour que la
+// suite test:pilot-ui ne vole pas le focus de l'écran.
+const isHeadlessTestWindow =
+  !app.isPackaged && process.env.VIBEDECK_TEST_HEADLESS === "true";
+if (isHeadlessTestWindow) {
+  // Fenêtre cachée => Chromium étranglerait requestAnimationFrame et les
+  // minuteurs dont dépendent les tests de viewport et de dwell.
+  app.commandLine.appendSwitch("disable-renderer-backgrounding");
+  app.commandLine.appendSwitch("disable-background-timer-throttling");
+  app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+  // Avant ready, sinon l'icône du Dock peut apparaître brièvement sur macOS.
+  app.dock?.hide();
 }
 
 function cleanName(value) {
@@ -108,6 +148,17 @@ function cleanItemIds(value) {
     throw new TypeError("Liste d’articles invalide.");
   }
   return [...new Set(value.map(cleanId))];
+}
+
+function cleanSemanticSearchScope(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Portée de recherche invalide.");
+  }
+  if (value.kind === "all" && Object.keys(value).length === 1) return { kind: "all" };
+  if (value.kind === "panel" && Object.keys(value).length === 2) {
+    return { kind: "panel", panelId: cleanId(value.panelId) };
+  }
+  throw new TypeError("Portée de recherche invalide.");
 }
 
 function cleanHttpUrl(value) {
@@ -297,6 +348,54 @@ function cleanWebDataRequest(value) {
   return { scope: value.scope };
 }
 
+function resolveWebPanelDescriptors(value, controller) {
+  validateWebPanelDescriptorList(value);
+  const state = lastRendererState ?? readEngineState();
+  const webPanels = new Map(
+    state.panels
+      .filter((panel) => panel.kind === "web")
+      .map((panel) => [panel.id, panel]),
+  );
+  return value.map((descriptor) => {
+    if (!descriptor || typeof descriptor !== "object" || Array.isArray(descriptor)) {
+      throw new TypeError("Descripteur de panel web invalide.");
+    }
+    if (descriptor.kind === "reader") {
+      if (descriptor.panelId !== "reader:article") {
+        throw new TypeError("Identifiant du lecteur d’article invalide.");
+      }
+      const itemId = cleanId(descriptor.itemId);
+      const article = resolveReaderArticle(
+        itemId,
+        state,
+        controller.getActiveReaderArticle(itemId),
+      );
+      return {
+        kind: "reader",
+        panelId: "reader:article",
+        itemId: article.itemId,
+        url: article.url,
+        bounds: descriptor.bounds,
+        visible: descriptor.visible,
+        connectorId: article.connectorId,
+        readerMode: article.readerMode,
+        readerFallback: article.readerFallback,
+      };
+    }
+    if (descriptor.kind !== "web") throw new TypeError("Type de panel web invalide.");
+    const panel = webPanels.get(cleanId(descriptor.panelId));
+    if (!panel) throw new Error("Panel web introuvable.");
+    // The stored URL wins over any stale or forged renderer value.
+    return {
+      kind: "web",
+      panelId: panel.id,
+      url: panel.url,
+      bounds: descriptor.bounds,
+      visible: descriptor.visible,
+    };
+  });
+}
+
 function assertNoArguments(args) {
   if (args.length !== 0) throw new TypeError("Cette commande n’accepte aucun paramètre.");
 }
@@ -400,10 +499,137 @@ function sendToWindow(window, channel, value) {
   }
 }
 
-function broadcastState(state = engine?.getState()) {
+function readEngineState() {
+  const state = engine?.getState() ?? null;
+  lastRendererState = state;
+  return state;
+}
+
+function broadcastState(state = readEngineState(), { syncSemantic = false } = {}) {
   if (!state) return;
+  lastRendererState = state;
   for (const window of webPanelControllers.keys()) {
     sendToWindow(window, "aggregator:state-changed", state);
+  }
+  if (syncSemantic) void scheduleSemanticSearchSync();
+}
+
+function broadcastSemanticSearchStatus(status) {
+  for (const window of webPanelControllers.keys()) {
+    sendToWindow(window, "semantic-search:status-changed", status);
+  }
+}
+
+function scheduleSemanticSearchSync() {
+  if (!semanticSearch || isQuitting) return;
+  semanticSyncRevision += 1;
+  if (semanticSyncTask) return;
+  semanticSyncTask = Promise.resolve()
+    .then(async () => {
+      while (!isQuitting) {
+        const revision = semanticSyncRevision;
+        await semanticSearch.sync();
+        if (revision === semanticSyncRevision) break;
+      }
+    })
+    .catch((error) => console.warn("Mise à jour de l’index local impossible :", error))
+    .finally(() => { semanticSyncTask = null; });
+  trackActiveOperation(semanticSyncTask);
+}
+
+function semanticSearchSourceIds(scope) {
+  const state = engine.getState();
+  if (scope.kind === "panel") {
+    const panel = state.panels.find((candidate) => candidate.id === scope.panelId);
+    if (!panel || panel.kind !== "feed") throw new Error("Le fil de recherche n’existe plus.");
+    return panel.sourceIds;
+  }
+  return [...new Set(state.panels.filter((panel) => panel.kind === "feed").flatMap((panel) => panel.sourceIds))];
+}
+
+async function assertSemanticModelTarget(candidate) {
+  const resolution = await semanticSearchNetworkSession.resolveHost(candidate.hostname, {
+    cacheUsage: "allowed", source: "any", secureDnsPolicy: "allow",
+  });
+  if (
+    !resolution?.endpoints?.length ||
+    !resolution.endpoints.every(
+      ({ address }) => typeof address === "string" && !isNonPublicIpAddress(address),
+    )
+  ) {
+    throw new Error("L’hôte du modèle ne peut pas être résolu de manière sûre.");
+  }
+  const route = await semanticSearchNetworkSession.resolveProxy(candidate.href);
+  if (typeof route !== "string" || !/^direct\s*$/i.test(route.trim())) {
+    throw new Error("Le téléchargement du modèle exige une connexion directe vérifiable.");
+  }
+}
+
+async function fetchSemanticModel(url, signal) {
+  const fetchImpl = createElectronSessionFetch(semanticSearchNetworkSession);
+  let candidate = assertModelDownloadUrl(url);
+  for (let redirectCount = 0; redirectCount <= MAX_MODEL_REDIRECTS; redirectCount += 1) {
+    await assertSemanticModelTarget(candidate);
+    if (signal?.aborted) throw new Error("Téléchargement de la recherche locale annulé.");
+    const response = await fetchImpl(candidate.href, { redirect: "manual", signal });
+    const observedUrl = response.url || candidate.href;
+    if (response.redirected === true || observedUrl !== candidate.href) {
+      assertModelDownloadUrl(observedUrl);
+      throw new Error("Le téléchargeur du modèle a suivi une redirection sans contrôle préalable.");
+    }
+    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+    if (redirectCount === MAX_MODEL_REDIRECTS) {
+      throw new Error("Le téléchargement du modèle effectue trop de redirections.");
+    }
+    const location = response.headers?.get?.("location");
+    if (!location) throw new Error("La redirection du modèle est incomplète.");
+    candidate = assertModelDownloadUrl(new URL(location, candidate).href);
+  }
+  throw new Error("Le téléchargement du modèle effectue trop de redirections.");
+}
+
+async function downloadSemanticModelFile(
+  url,
+  destination,
+  { expectedBytes, expectedSha256, cancelled, signal },
+) {
+  const response = await fetchSemanticModel(url, signal);
+  if (!response.ok || !response.body) throw new Error("Le téléchargement du modèle a échoué.");
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength !== expectedBytes) throw new Error("Taille du modèle inattendue.");
+  const output = createWriteStream(destination, { flags: "w", mode: 0o600 });
+  let outputFailure = null;
+  const outputDone = finished(output).catch((error) => {
+    outputFailure = error;
+  });
+  const digest = createHash("sha256");
+  let written = 0;
+  try {
+    for await (const chunk of Readable.fromWeb(response.body)) {
+      if (cancelled()) throw new Error("Téléchargement de la recherche locale annulé.");
+      written += chunk.length;
+      if (written > expectedBytes) throw new Error("Taille du modèle inattendue.");
+      digest.update(chunk);
+      if (!output.write(chunk)) {
+        await Promise.race([
+          new Promise((resolve) => output.once("drain", resolve)),
+          outputDone,
+        ]);
+        if (outputFailure) throw outputFailure;
+      }
+    }
+    output.end();
+    await outputDone;
+    if (outputFailure) throw outputFailure;
+  } catch (error) {
+    output.destroy();
+    await outputDone;
+    await rm(destination, { force: true });
+    throw error;
+  }
+  if (written !== expectedBytes || digest.digest("hex") !== expectedSha256) {
+    await rm(destination, { force: true });
+    throw new Error("La vérification du modèle a échoué.");
   }
 }
 
@@ -508,7 +734,23 @@ function registerIpcHandlers() {
     assertNoArguments(args);
     return updateController.restartForUpdate();
   });
-  registerHandle("aggregator:get-state", () => engine.getState());
+  registerHandle("aggregator:get-state", () => readEngineState());
+  registerHandle("semantic-search:get-status", () => semanticSearch.getStatus());
+  registerHandle("semantic-search:prepare", () => runEngineOperation(() => semanticSearch.prepare()));
+  registerHandle("semantic-search:cancel-preparation", () => {
+    semanticSearch.cancelPreparation();
+  });
+  registerHandle("semantic-search:search", (_event, request) => runEngineOperation(async () => {
+    if (!request || typeof request !== "object" || Array.isArray(request)) {
+      throw new TypeError("Recherche invalide.");
+    }
+    const scope = cleanSemanticSearchScope(request.scope);
+    const mode = normalizeSearchMode(request.mode);
+    const sourceIds = semanticSearchSourceIds(scope);
+    if (sourceIds.length === 0) return { items: [], truncated: false, mode };
+    return semanticSearch.search({ query: request.query, sourceIds, mode });
+  }));
+  registerHandle("semantic-search:remove-data", () => runEngineOperation(() => semanticSearch.removeData()));
   registerHandle("aggregator:create-panel", (_event, input, placement) => runEngineOperation(async () => {
     const cleanedInput = cleanPanelInput(input);
     if (
@@ -562,7 +804,7 @@ function registerIpcHandlers() {
         ),
         {
           getState: () => engine.getState(),
-          broadcast: (state) => broadcastState(state),
+          broadcast: (state) => broadcastState(state, { syncSemantic: true }),
           onBroadcastError: (error) =>
             console.warn("Synchronisation finale du fil impossible :", error),
         },
@@ -570,7 +812,7 @@ function registerIpcHandlers() {
   );
   registerHandle("aggregator:delete-panel", (_event, panelId) => runEngineOperation(async () => {
     const state = await engine.deletePanel(cleanId(panelId));
-    broadcastState(state);
+    broadcastState(state, { syncSemantic: true });
     return state;
   }));
   registerHandle(
@@ -590,31 +832,31 @@ function registerIpcHandlers() {
       cleanId(catalogId),
       cleanSourceAddOptions(options),
     );
-    broadcastState(result.state);
+    broadcastState(result.state, { syncSemantic: true });
     return result;
   }));
   registerHandle("aggregator:add-source", (_event, panelId, source) => runEngineOperation(async () => {
     const result = await engine.addSource(cleanId(panelId), cleanSourceRequest(source));
-    broadcastState(result.state);
+    broadcastState(result.state, { syncSemantic: true });
     return result;
   }));
   registerHandle("aggregator:remove-source", (_event, panelId, sourceId) => runEngineOperation(async () => {
     const state = await engine.removeSource(cleanId(panelId), cleanId(sourceId));
-    broadcastState(state);
+    broadcastState(state, { syncSemantic: true });
     return state;
   }));
   registerHandle("aggregator:refresh-source", (_event, sourceId) => runEngineOperation(async () => {
     const refresh = engine.refreshSource(cleanId(sourceId), { force: true });
     broadcastState();
     const state = await refresh;
-    broadcastState(state);
+    broadcastState(state, { syncSemantic: true });
     return state;
   }));
   registerHandle("aggregator:refresh-all", () => runEngineOperation(async () => {
     const refresh = engine.refreshAll();
     broadcastState();
     const state = await refresh;
-    broadcastState(state);
+    broadcastState(state, { syncSemantic: true });
     return state;
   }));
   registerHandle("aggregator:mark-items-seen", (_event, itemIds) =>
@@ -704,7 +946,7 @@ function registerIpcHandlers() {
       });
     });
     const { state, backupFilePath } = imported;
-    broadcastState(state);
+    broadcastState(state, { syncSemantic: true });
     return { canceled: false, filePath, state, backupFilePath };
   });
   registerHandle("aggregator:export-diagnostics", async (event, ...args) => {
@@ -793,10 +1035,39 @@ function registerIpcHandlers() {
     }
   });
 
+  ipcMain.on("semantic-search:finish-focus", (event, restoreNative) => {
+    try {
+      if (typeof restoreNative !== "boolean") throw new TypeError("Restauration de focus invalide.");
+      const window = requireMainSender(event);
+      const panelId = semanticSearchNativeFocus.get(window);
+      if (restoreNative && panelId) semanticSearchNativeRestoreRequested.add(window);
+      else {
+        semanticSearchNativeRestoreRequested.delete(window);
+        semanticSearchNativeFocus.delete(window);
+      }
+    } catch (error) {
+      console.warn("Restauration du focus de recherche refusée :", error);
+    }
+  });
+
   ipcMain.on("web-panels:sync", (event, descriptors) => {
     try {
       const controller = controllerForEvent(event);
-      if (!resettingWebPanelControllers.has(controller)) controller.sync(descriptors);
+      if (!resettingWebPanelControllers.has(controller)) {
+        const resolvedDescriptors = resolveWebPanelDescriptors(descriptors, controller);
+        controller.sync(resolvedDescriptors);
+        const window = requireMainSender(event);
+        const panelId = semanticSearchNativeFocus.get(window);
+        if (panelId && semanticSearchNativeRestoreRequested.has(window)) {
+          const descriptor = resolvedDescriptors.find(
+            (candidate) => candidate?.panelId === panelId && candidate.visible === true,
+          );
+          if (descriptor && controller.focus(panelId)) {
+            semanticSearchNativeRestoreRequested.delete(window);
+            semanticSearchNativeFocus.delete(window);
+          }
+        }
+      }
     } catch (error) {
       // This one-way channel intentionally cannot mutate anything after a
       // validation failure. Navigation commands use invoke and reject instead.
@@ -817,6 +1088,10 @@ function registerIpcHandlers() {
     controllerForEvent(event).home(cleanId(panelId)));
   registerHandle("web-panels:open-external", (event, panelId) =>
     controllerForEvent(event).openExternal(cleanId(panelId)));
+  registerHandle("reader:show-original", (event, itemId) =>
+    controllerForEvent(event).showOriginalArticle(cleanId(itemId)));
+  registerHandle("reader:retry-original", (event, itemId) =>
+    controllerForEvent(event).retryOriginalArticle(cleanId(itemId)));
   registerHandle("web-panels:set-muted", (event, panelId, muted) => {
     if (typeof muted !== "boolean") throw new TypeError("L’état audio doit être un booléen.");
     return controllerForEvent(event).setMuted(cleanId(panelId), muted);
@@ -840,6 +1115,7 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      backgroundThrottling: !isHeadlessTestWindow,
     },
   });
   mainWindow = window;
@@ -847,12 +1123,20 @@ function createWindow() {
   const webPanelController = createWebPanelController({
     window,
     shell,
+    extractArticle: (input) => articleReaderService.extract(input),
     onState: (state) => {
       sendToWindow(window, "web-panels:state-changed", state);
     },
     onEscape: (panelId) => {
       if (!window.isDestroyed()) {
         sendToWindow(window, "web-panels:escape", panelId);
+        window.webContents.focus();
+      }
+    },
+    onOpenSearch: (panelId) => {
+      if (!window.isDestroyed()) {
+        semanticSearchNativeFocus.set(window, panelId);
+        sendToWindow(window, "semantic-search:open-global", true);
         window.webContents.focus();
       }
     },
@@ -866,7 +1150,16 @@ function createWindow() {
   }));
 
   window.once("ready-to-show", () => {
-    if (!window.isDestroyed()) window.show();
+    if (window.isDestroyed()) return;
+    if (!isHeadlessTestWindow) {
+      window.show();
+    } else if (process.platform !== "darwin") {
+      // Hors macOS, une fenêtre jamais affichée ne produit plus de frames et
+      // les événements souris CDP (alignés sur le compositeur) restent en
+      // file. showInactive rend la fenêtre visible sans jamais prendre le
+      // focus clavier de l'application au premier plan.
+      window.showInactive();
+    }
   });
   for (const eventName of ["show", "hide", "focus", "blur", "minimize", "restore"]) {
     window.on(eventName, () => heartbeatPilotUsage());
@@ -917,6 +1210,8 @@ async function handleStartupFailure(error) {
   updateController?.stop();
   engine?.cancelPending();
   await destroyAllWebPanelControllers();
+  await articleReaderService?.shutdown();
+  await semanticSearch?.close();
   const pendingRefresh = refreshScheduler?.pending();
   if (pendingRefresh) await Promise.allSettled([pendingRefresh]);
   try {
@@ -927,6 +1222,10 @@ async function handleStartupFailure(error) {
   }
   engine = null;
   feedNetworkSession = null;
+  semanticSearchNetworkSession = null;
+  semanticSearch = null;
+  articleReaderService = null;
+  lastRendererState = null;
   refreshScheduler = null;
   const detail = error instanceof Error ? error.message : "Erreur de démarrage inconnue.";
   dialog.showErrorBox(
@@ -946,13 +1245,16 @@ function prepareForShutdown({ deadlineMs = null } = {}) {
   pilotHeartbeatTimer = null;
   const pendingPersistence = [...activeOperations];
   const webCleanup = destroyAllWebPanelControllers();
+  const readerCleanup = articleReaderService?.shutdown() ?? Promise.resolve();
   if (refreshTimer) clearInterval(refreshTimer);
   refreshTimer = null;
   refreshScheduler?.stop();
   engine?.cancelPending();
   const pendingRefresh = refreshScheduler?.pending();
   if (pendingRefresh) pendingPersistence.push(pendingRefresh);
+  if (semanticSearch) pendingPersistence.push(semanticSearch.close());
   if (deadlineMs === null) pendingPersistence.push(webCleanup);
+  pendingPersistence.push(readerCleanup);
 
   shutdownPromise = closePersistenceAfterPending({
     pending: pendingPersistence,
@@ -961,11 +1263,15 @@ function prepareForShutdown({ deadlineMs = null } = {}) {
       try {
         endPilotUsageSession();
         engine?.close();
+        semanticSearch = null;
+        semanticSearchNetworkSession = null;
       } catch (error) {
         console.error("Fermeture de la base locale incomplète :", error);
       } finally {
         engine = null;
         feedNetworkSession = null;
+        articleReaderService = null;
+        lastRendererState = null;
         refreshScheduler = null;
       }
     },
@@ -983,13 +1289,13 @@ if (!hasSingleInstanceLock) {
   app.quit();
 } else {
   app.on("second-instance", () => {
-    if (!mainWindow) return;
+    if (!mainWindow || isHeadlessTestWindow) return;
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show();
     mainWindow.focus();
   });
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     app.setName("VibeDeck");
     protocol.handle(
       APP_PROTOCOL_SCHEME,
@@ -1004,6 +1310,21 @@ if (!hasSingleInstanceLock) {
     feedNetworkSession = session.fromPartition(FEED_NETWORK_PARTITION, {
       cache: false,
     });
+    articleReaderService = createArticleReaderService({
+      sessionForConnector: (connectorId) =>
+        session.fromPartition(`vibedeck-reader-${connectorId}`, { cache: false }),
+    });
+    semanticSearchNetworkSession = session.fromPartition(SEMANTIC_SEARCH_NETWORK_PARTITION, {
+      cache: false,
+    });
+    semanticSearchNetworkSession.webRequest.onBeforeRequest({ urls: ["http://*/*", "https://*/*"] }, (details, callback) => {
+      try {
+        assertModelDownloadUrl(details.url);
+        callback({ cancel: false });
+      } catch {
+        callback({ cancel: true });
+      }
+    });
     engine = createFeedEngine({
       dbPath: developmentDatabasePath
         ? path.resolve(developmentDatabasePath)
@@ -1017,10 +1338,11 @@ if (!hasSingleInstanceLock) {
       allowPrivateNetwork:
         !app.isPackaged && process.env.VIBEDECK_ALLOW_PRIVATE_NETWORK === "true",
     });
+    lastRendererState = engine.getState();
     refreshScheduler = createRefreshScheduler({
       getSources: () => engine.getState().sources,
       refreshSource: (sourceId) => engine.refreshSource(sourceId),
-      onStateChange: () => broadcastState(),
+      onStateChange: () => broadcastState(undefined, { syncSemantic: true }),
     });
     updateController = createUpdateController({
       updater: autoUpdater,
@@ -1041,10 +1363,24 @@ if (!hasSingleInstanceLock) {
         app.exit(1);
       },
     });
+    semanticSearch = new SemanticSearchService({
+      rootPath: path.join(app.getPath("userData"), "semantic-search"),
+      getDocuments: () => semanticSearchSourceIds({ kind: "all" }).length
+        ? engine.getSemanticSearchDocuments(semanticSearchSourceIds({ kind: "all" }))
+        : [],
+      getItems: (itemIds) => engine.getSemanticSearchItems(itemIds),
+      download: downloadSemanticModelFile,
+      testMode:
+        !app.isPackaged && process.env.VIBEDECK_FAKE_SEMANTIC_SEARCH === "true",
+    });
+    semanticSearch.onStatusChanged(broadcastSemanticSearchStatus);
     beginPilotUsageSession();
     registerIpcHandlers();
     createWindow();
     updateController.start();
+    void semanticSearch.initialize()
+      .then(() => scheduleSemanticSearchSync())
+      .catch((error) => console.warn("Initialisation de la recherche locale impossible :", error));
     heartbeatPilotUsage({ force: true });
 
     refreshTimer = setInterval(() => void refreshDueSources(), REFRESH_TICK_MS);

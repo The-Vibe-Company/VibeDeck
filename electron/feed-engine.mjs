@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { BlockList, isIP } from "node:net";
 
 import { load as loadHtml } from "cheerio";
 import { XMLParser } from "fast-xml-parser";
@@ -10,6 +9,13 @@ import {
   MAX_HTTP_URL_LENGTH,
   MAX_ITEMS_PER_SOURCE,
 } from "./database.mjs";
+import {
+  isNonPublicIpAddress,
+  isPrivateNetworkHostname,
+  proxyRouteKind,
+} from "./network-safety.mjs";
+
+export { isNonPublicIpAddress } from "./network-safety.mjs";
 
 const DEFAULT_TTL_SECONDS = 60;
 const MAX_CACHE_TTL_SECONDS = 3_600;
@@ -51,48 +57,6 @@ const TRACKING_PARAMETERS = new Set([
   "oly_anon_id",
   "oly_enc_id",
 ]);
-
-function createAddressBlockList(subnets, family) {
-  const blockList = new BlockList();
-  for (const [network, prefix] of subnets) {
-    blockList.addSubnet(network, prefix, family);
-  }
-  return blockList;
-}
-
-// IANA special-purpose ranges that must never be reached by a user-provided
-// connector. Public allow-listing for IPv6 also rejects ULA, link-local,
-// multicast, mapped IPv4 and future reserved space by default.
-const NON_PUBLIC_IPV4 = createAddressBlockList(
-  [
-    ["0.0.0.0", 8],
-    ["10.0.0.0", 8],
-    ["100.64.0.0", 10],
-    ["127.0.0.0", 8],
-    ["169.254.0.0", 16],
-    ["172.16.0.0", 12],
-    ["192.0.0.0", 24],
-    ["192.0.2.0", 24],
-    ["192.88.99.0", 24],
-    ["192.168.0.0", 16],
-    ["198.18.0.0", 15],
-    ["198.51.100.0", 24],
-    ["203.0.113.0", 24],
-    ["224.0.0.0", 4],
-    ["240.0.0.0", 4],
-  ],
-  "ipv4",
-);
-const PUBLIC_IPV6 = createAddressBlockList([["2000::", 3]], "ipv6");
-const NON_PUBLIC_IPV6 = createAddressBlockList(
-  [
-    ["2001::", 23],
-    ["2001:db8::", 32],
-    ["2002::", 16],
-    ["3fff::", 20],
-  ],
-  "ipv6",
-);
 
 const xmlParser = new XMLParser({
   ignoreAttributes: false,
@@ -311,55 +275,6 @@ function assertConnectorKind(expected, actual) {
 
 function baseHostname(hostname) {
   return hostname.toLowerCase().replace(/^(?:www\.|m\.)/, "");
-}
-
-function proxyRouteKind(value) {
-  if (typeof value !== "string" || !value.trim()) return "unknown";
-  const routes = value
-    .split(";")
-    .map((route) => route.trim())
-    .filter(Boolean);
-  if (routes.length === 0) return "unknown";
-  let hasProxy = false;
-  for (const route of routes) {
-    if (/^DIRECT$/i.test(route)) continue;
-    if (
-      /^(?:PROXY|HTTP|HTTPS|SOCKS|SOCKS4|SOCKS5|QUIC)(?:\s+|:\/\/)\S+$/i.test(
-        route,
-      )
-    ) {
-      hasProxy = true;
-      continue;
-    }
-    return "unknown";
-  }
-  return hasProxy ? "proxy" : "direct";
-}
-
-function isNonPublicIpAddress(address) {
-  const family = isIP(address);
-  if (family === 4) return NON_PUBLIC_IPV4.check(address, "ipv4");
-  if (family === 6) {
-    return (
-      !PUBLIC_IPV6.check(address, "ipv6") ||
-      NON_PUBLIC_IPV6.check(address, "ipv6")
-    );
-  }
-  return true;
-}
-
-function isPrivateNetworkHostname(hostname) {
-  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
-  if (
-    normalized === "localhost" ||
-    normalized.endsWith(".localhost") ||
-    normalized.endsWith(".local") ||
-    normalized.endsWith(".internal") ||
-    normalized.endsWith(".home.arpa")
-  ) {
-    return true;
-  }
-  return isIP(normalized) !== 0 && isNonPublicIpAddress(normalized);
 }
 
 export function feedUrlsShareSite(first, second) {
@@ -1372,6 +1287,14 @@ export class FeedEngine {
 
   getPilotDiagnostics() {
     return this.database.getPilotDiagnostics(this.#nowIso());
+  }
+
+  getSemanticSearchDocuments(sourceIds) {
+    return this.database.listSemanticSearchDocuments(sourceIds);
+  }
+
+  getSemanticSearchItems(itemIds) {
+    return this.database.getSemanticSearchItems(itemIds);
   }
 
   beginPilotSession() {

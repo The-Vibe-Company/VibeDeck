@@ -6,6 +6,7 @@ Ce document décrit les vérifications nécessaires avant de remettre une versio
 
 - fil local RSS, Atom ou Google News Sitemap ;
 - pages web interactives dans l’application ;
+- lecture simplifiée locale pour les articles publics éligibles du Monde, du Figaro et du Parisien, sans stockage durable du contenu et avec repli vers la page originale ;
 - baseline au premier import, puis états distincts `nouveau`, `vu` et `ouvert` ;
 - arrivées mises en attente pour ne jamais déplacer un journaliste en cours de lecture ;
 - état de fraîcheur et erreurs explicites par source ;
@@ -25,7 +26,7 @@ npm run test:live
 npm run verify:release
 ```
 
-Le test live doit être exécuté depuis le réseau cible. Il doit confirmer que Le Monde, Le Figaro et Le Parisien retournent chacun des éléments exploitables, sans panne silencieuse.
+Le test live doit être exécuté depuis le réseau cible. Il doit confirmer que Le Monde, Le Figaro et Le Parisien retournent chacun des éléments exploitables, sans panne silencieuse. La recette du lecteur prend au plus cinq candidats par publication et rapporte uniquement le nombre de succès, de replis et la décision la plus lente ; les sorties ne doivent jamais contenir de titre, URL, contenu ou cookie. Chaque décision doit rester sous une seconde. Les articles réservés, lives, vidéos, galeries et tout contenu insuffisamment structuré doivent rester sur la page originale.
 
 ## Réseau AFP
 
@@ -131,6 +132,7 @@ Avant le premier shift :
 - une source utilisée dans deux panels conserve un tampon d’arrivées indépendant dans chacun ;
 - état global calculé sur la source la moins fraîche ;
 - cache visible lorsque le réseau échoue ;
+- lecteur simplifié sans flash de la page originale, puis page originale conservée lorsque l’extraction est refusée ou échoue ;
 - configuration du desk installable en moins d’une minute ;
 - domaines contactés par cette configuration relus et acceptés dans l’aperçu d’import ;
 - export du diagnostic validé sur un cas sain et un cas en erreur ;

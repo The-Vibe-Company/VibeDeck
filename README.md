@@ -25,8 +25,10 @@ Application locale de veille pour journalistes. À la création, chaque panel re
 - reconnaissance directe du Monde, du Figaro et du Parisien ;
 - découverte automatique du RSS déclaré par les autres sites ;
 - enrichissement des dates du Parisien avec son News Sitemap ;
-- filtres par source, état de lecture et navigation au clavier ;
+- recherche locale hybride dans tous les fils, avec résultats FTS5 immédiats puis enrichissement E5 hors ligne, filtre explicite et navigation complète au clavier ;
+- filtres par source, recherche et état de lecture, composables sans réordonner la chronologie ;
 - lecteur web intégré au clic sur un article, avec option d’ouverture externe ;
+- lecture simplifiée publique et éphémère pour les articles éligibles du Monde, du Figaro et du Parisien, avec repli immédiat vers la page originale pour les abonnements, formats non structurés, blocages et sources personnalisées ;
 - actualisation automatique, cache hors ligne et déduplication ;
 - backoff automatique des sources en échec, avec actualisation manuelle toujours disponible ;
 - destinations locales/privées et redirections vers un autre site refusées avant chaque requête ; sur une route directe, chaque nom doit aussi résoudre uniquement vers des IP publiques, tandis qu’une route proxy n’accepte que les quatre URL HTTPS exactes utilisées par les trois connecteurs optimisés, puis leurs redirections HTTPS sur le même site, et refuse toute URL personnalisée ;
@@ -53,13 +55,15 @@ npm run dev
 Raccourcis principaux :
 
 - `Cmd/Ctrl + N` : créer un panel ;
-- `↑` / `↓` ou `J` / `K` : parcourir le fil sous la souris ;
+- `Cmd/Ctrl + K` : ouvrir la recherche globale et placer le focus dans la requête ;
+- dans la recherche, `↑` / `↓` sélectionnent un résultat ; `Entrée` filtre les fils depuis le champ ou ouvre le résultat sélectionné ;
+- `↑` / `↓` : parcourir le fil sous la souris, avec un défilement fluide et continu quand la touche reste enfoncée ;
 - `Entrée` : ouvrir l’article ;
-- dans le lecteur, `↑` / `↓` : avancer ou reculer rapidement en gardant environ 28 % de recouvrement visuel ;
+- dans le lecteur, `↑` / `↓` : un appui avance d’une page animée (≈ 28 % de recouvrement visuel), maintenir la touche déclenche un défilement rapide continu ;
 - double-appui rapide sur `←` / `→` : passer au panel précédent ou suivant ;
 - `Alt + ←` / `Alt + →` : déplacer le panel à la position précédente ou suivante, sans glisser-déposer ;
 - `R` : actualiser le fil actif ;
-- `Échap` : restaurer un panel agrandi ou fermer une fenêtre de réglages.
+- `Échap` : fermer la recherche sans modifier le filtre actif, puis retirer ce filtre depuis le dashboard ; restaurer aussi un panel agrandi ou fermer une fenêtre de réglages.
 
 Le simple déplacement de la souris au-dessus d’un panel lui donne le focus clavier, sauf lorsqu’un champ, un bouton ou une page web possède déjà le clavier ; dans ce cas, un clic explicite évite d’interrompre la saisie. Après la fermeture du lecteur intégré avec `Échap`, la navigation dans le fil reprend directement.
 
@@ -78,7 +82,7 @@ npm run verify:packaged-fuses
 npm run test:packaged
 ```
 
-`test:pilot-ui` construit puis pilote Electron sur deux flux RSS et une base temporaires afin de prouver l’interclassement de la baseline, le retour clavier depuis le lecteur, la navigation et le déplacement avec conservation du focus, la géométrie minimale des panels, l’indépendance des tampons partagés et l’absence de déplacement du viewport lors des arrivées. `test:live` interroge réellement les trois sources de lancement. `dist:dir` produit une application locale dans `release/`, `verify:packaged-fuses` lit directement le binaire Electron produit et `test:packaged` lance ce paquet via son ASAR et son protocole interne. La configuration Windows NSIS est prête, mais doit être validée sur une machine ou une CI Windows avant diffusion.
+`test:pilot-ui` construit puis pilote Electron sur deux flux RSS et une base temporaires afin de prouver l’interclassement de la baseline, le retour clavier depuis le lecteur, la navigation et le déplacement avec conservation du focus, la géométrie minimale des panels, l’indépendance des tampons partagés et l’absence de déplacement du viewport lors des arrivées. La suite ne vole jamais le focus de l’écran : sur macOS la fenêtre reste totalement cachée (sans icône du Dock), ailleurs elle s’affiche sans être activée ; définir `VIBEDECK_PILOT_UI_SHOW=1` pour retrouver la fenêtre au premier plan pendant un débogage. `test:live` interroge réellement les trois sources de lancement et vérifie au plus cinq décisions du lecteur par publication sans journaliser les articles testés. `dist:dir` produit une application locale dans `release/`, `verify:packaged-fuses` lit directement le binaire Electron produit et `test:packaged` lance ce paquet via son ASAR et son protocole interne. La configuration Windows NSIS est prête, mais doit être validée sur une machine ou une CI Windows avant diffusion.
 
 Les commandes `dist:mac:signed` et `dist:win:signed` imposent la présence des identifiants de diffusion. Windows utilise Azure Artifact Signing sans clé privée exportée. Les jobs signés vérifient les fuses du binaire et le job final génère `release/SHA256SUMS.txt`, puis recalcule chaque somme avant de publier la release. La notarisation macOS, la signature Windows et le réseau d’entreprise AFP restent donc des validations externes. Le protocole complet est décrit dans [PILOT_RELEASE.md](./PILOT_RELEASE.md).
 
@@ -86,11 +90,11 @@ Les versions sont préparées par Release Please à partir des commits Conventio
 
 ## Architecture
 
-Le rendu React ne contacte jamais directement les journaux. Le processus principal Electron télécharge et normalise les flux, puis conserve dashboard, panneaux, sources, articles et métadonnées HTTP dans une base SQLite locale. Une même source est mutualisée entre plusieurs panneaux et un échec réseau ne supprime jamais les articles déjà reçus.
+Le rendu React ne contacte jamais directement les journaux. Le processus principal Electron télécharge et normalise les flux, puis conserve dashboard, panneaux, sources, articles et métadonnées HTTP dans une base SQLite locale. Une même source est mutualisée entre plusieurs panneaux et un échec réseau ne supprime jamais les articles déjà reçus. La recherche utilise un index dérivé et supprimable dans `semantic-search/` ; le modèle E5 et cet index ne modifient jamais `veille.sqlite3` et ne font pas partie des exports.
 
 La durée d’usage du pilote est comptabilisée localement par intervalles d’une minute et lors des changements de focus ou de visibilité. Chaque intervalle actif est ventilé à la milliseconde entre les journées civiles du fuseau local du poste, y compris au passage de minuit et lors des changements d’heure. Les 400 journées les plus récentes restent détaillées ; les plus anciennes sont fusionnées dans un cumul qui préserve le total exact. Seules des durées et des quantités agrégées sont exportées dans le diagnostic : aucun identifiant de panel ou d’article n’est exporté, afin qu’une URL publique candidate ne permette pas de réidentifier ce qui a été ouvert.
 
-Les panels Page web et le lecteur d’article utilisent des vues natives Electron isolées du reste de l’application, sans accès Node, avec permissions et téléchargements refusés par défaut. Les liens demandant une nouvelle fenêtre restent dans la page courante ; l’ouverture externe demeure une action explicite. Leur position suit le layout React, tandis que leur contenu reste un vrai site interactif. À la fermeture d’une vue, ses service workers sont arrêtés sans effacer les cookies, le stockage local ou le cache HTTP utiles aux autres vues ; les origines encore ouvertes restent intactes.
+Les panels Page web et le lecteur d’article utilisent des vues natives Electron isolées du reste de l’application, sans accès Node, avec permissions et téléchargements refusés par défaut. Pour les trois publications validées, un adaptateur dédié télécharge uniquement le document HTML public dans une session Chromium mémoire partagée par publication, sans cookie ni cache, avec un budget de 900 ms et une limite de 2 Mio. Avant chaque requête et redirection, cette même session doit confirmer une route directe et des adresses IP publiques ; sinon le lecteur bascule sans requête vers la page originale. Aucun script, publicité, police ou autre sous-ressource de la page n’est chargé. Le processus principal extrait des données texte bornées avec Cheerio, puis ne montre qu’un document statique échappé avec CSP restrictive. Aucun HTML de publication ne passe au renderer et aucun contenu d’article n’est conservé. Une extraction incertaine, payante, bloquée ou trop courte recrée immédiatement la même vue avec le profil web persistant et affiche la page originale. Les sources personnalisées suivent directement ce dernier chemin. Les liens demandant une nouvelle fenêtre restent dans la page courante ; l’ouverture externe demeure une action explicite. À la fermeture d’une vue, ses service workers sont arrêtés sans effacer les cookies, le stockage local ou le cache HTTP utiles aux autres vues ; les origines encore ouvertes restent intactes.
 
 En production, l’interface est chargée par le protocole interne sécurisé `vibedeck-app://` et non par `file://`. Le paquet désactive notamment l’exécution d’Electron comme Node, les options Node injectées par l’environnement et les privilèges supplémentaires du protocole fichier ; l’intégrité de l’ASAR et le chiffrement des cookies sont activés. La vérification des fuses se fait sur le binaire réellement empaqueté, pas seulement sur la configuration du projet.
 

@@ -135,12 +135,33 @@ export interface WebPanelBounds {
   height: number;
 }
 
-export interface WebPanelDescriptor {
+export interface WebPanelDescriptorBase {
   panelId: string;
-  url: string;
   bounds: WebPanelBounds;
   visible: boolean;
 }
+
+export interface DashboardWebPanelDescriptor extends WebPanelDescriptorBase {
+  kind: "web";
+  url: string;
+}
+
+export interface ArticleReaderPanelDescriptor extends WebPanelDescriptorBase {
+  kind: "reader";
+  panelId: "reader:article";
+  itemId: string;
+}
+
+export type WebPanelDescriptor = DashboardWebPanelDescriptor | ArticleReaderPanelDescriptor;
+
+export type ReaderMode = "extracting" | "simplified" | "original";
+export type ReaderFallbackReason =
+  | "unsupported-source"
+  | "paywalled"
+  | "not-article"
+  | "blocked"
+  | "timeout"
+  | "extraction-failed";
 
 export interface WebPanelRuntimeState {
   panelId: string;
@@ -160,6 +181,8 @@ export interface WebPanelRuntimeState {
   crashed: boolean;
   unresponsive: boolean;
   destroyed: boolean;
+  readerMode: ReaderMode | null;
+  readerFallback: ReaderFallbackReason | null;
 }
 
 export interface LocalFileActionResult {
@@ -188,6 +211,30 @@ export interface UpdateState {
   progressPercent: number | null;
   checkedAt: string | null;
   message: string | null;
+}
+
+export type SemanticSearchPhase =
+  | "not-installed"
+  | "downloading"
+  | "indexing"
+  | "ready"
+  | "updating"
+  | "error";
+
+export interface SemanticSearchStatus {
+  phase: SemanticSearchPhase;
+  progress: number;
+  message: string | null;
+  bytes: number;
+}
+
+export type SemanticSearchScope = { kind: "all" } | { kind: "panel"; panelId: string };
+export type SemanticSearchMode = "lexical" | "hybrid";
+
+export interface SemanticSearchResult {
+  items: FeedItem[];
+  truncated: boolean;
+  mode: SemanticSearchMode;
 }
 
 export interface VibeDeckApi {
@@ -225,6 +272,16 @@ export interface VibeDeckApi {
   refreshAll: () => Promise<AppState>;
   markItemsSeen: (itemIds: string[]) => Promise<AppState>;
   markItemOpened: (itemId: string) => Promise<AppState>;
+  getSemanticSearchStatus: () => Promise<SemanticSearchStatus>;
+  prepareSemanticSearch: () => Promise<SemanticSearchStatus>;
+  cancelSemanticSearchPreparation: () => Promise<void>;
+  searchFeedItems: (request: {
+    query: string;
+    scope: SemanticSearchScope;
+    mode: SemanticSearchMode;
+  }) => Promise<SemanticSearchResult>;
+  removeSemanticSearchData: () => Promise<void>;
+  finishSemanticSearchFocus: (restoreNative: boolean) => void;
   exportDashboard: () => Promise<LocalFileActionResult>;
   importDashboard: () => Promise<LocalImportResult>;
   exportDiagnostics: () => Promise<LocalFileActionResult>;
@@ -239,6 +296,8 @@ export interface VibeDeckApi {
   goForwardWebPanel: (panelId: string) => Promise<void>;
   homeWebPanel: (panelId: string) => Promise<void>;
   openExternalWebPanel: (panelId: string) => Promise<void>;
+  showOriginalArticle: (itemId: string) => Promise<void>;
+  retryOriginalArticle: (itemId: string) => Promise<void>;
   setWebPanelMuted: (panelId: string, muted: boolean) => Promise<void>;
   onStateChanged: (callback: (state: AppState) => void) => () => void;
   onUpdateStateChanged: (callback: (state: UpdateState) => void) => () => void;
@@ -246,4 +305,8 @@ export interface VibeDeckApi {
     callback: (state: WebPanelRuntimeState) => void,
   ) => () => void;
   onWebPanelEscape: (callback: (panelId: string) => void) => () => void;
+  onSemanticSearchStatusChanged: (
+    callback: (status: SemanticSearchStatus) => void,
+  ) => () => void;
+  onOpenGlobalSearch: (callback: (nativeOrigin: boolean) => void) => () => void;
 }
