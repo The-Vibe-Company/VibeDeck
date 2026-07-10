@@ -1,0 +1,30 @@
+electron/web-panel-controller.test.mjs
+  s_8f0044f36e14e9::t_d4457ca3eac572 141,157,412-431
+  s_8f0044f36e14e9::t_d4f70f6a05c40d 151,156,207-210,219,397-411
+  s_8f0044f36e14e9::t_15e9b6436b3a1a 432
+scripts/test-pilot-ui.mjs
+  s_8f0044f36e14e9::t_a19e462bf86644 449-450,454
+src/App.tsx
+  s_8f0044f36e14e9::t_d4f70f6a05c40d 605,607-609,612-614
+  s_8f0044f36e14e9::t_d4457ca3eac572 606,610-611
+electron/web-panel-controller.mjs
+  s_8f0044f36e14e9::t_d4457ca3eac572 720,741,1122,1129,1212,1228-1234
+  s_8f0044f36e14e9::t_d4f70f6a05c40d 708-711,721-740,742-743,1125-1128,1130,1235
+  s_8f0044f36e14e9::t_fbce1d0567a6f3 744
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9818527f5c999f5e070ddfa7e3da337bbafe4423",
+  "prompts": {},
+  "sessions": {
+    "s_8f0044f36e14e9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4c09-dd30-7fc3-8b4f-2bb336b613dc",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
