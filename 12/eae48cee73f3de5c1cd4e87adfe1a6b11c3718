@@ -1,0 +1,19 @@
+scripts/test-pilot-ui.mjs
+  s_423bb963c430be::t_0ae67134c4843a 1052-1110,1118
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "12eae48cee73f3de5c1cd4e87adfe1a6b11c3718",
+  "prompts": {},
+  "sessions": {
+    "s_423bb963c430be": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "52f0459c-999b-4b5a-8a62-c6773a3c0cb1",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
