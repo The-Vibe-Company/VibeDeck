@@ -137,6 +137,22 @@ test("a very fast key repeat never pushes the focused row out of view", () => {
   }
 });
 
+test("an external jump without a content change wins over the glide", () => {
+  const { tick } = installWindow();
+  const list = new FakeList({ scrollHeight: 3_000, clientHeight: 700 });
+  const row = new FakeRow(list, 1_000);
+
+  smoothScrollIntoView(list, row);
+  tick(32);
+  assert.ok(list.scrollTop > 0);
+  // Home key, programmatic navigation… the scroll height did not change, so
+  // this is a takeover, not a prepend compensation.
+  list.scrollTop = 0;
+  tick(1_000);
+  assert.equal(list.scrollTop, 0, "the glide must not drag the list back");
+  assert.equal(list.listeners.size, 0, "the animation is cancelled");
+});
+
 test("wheel input cancels the animation immediately", () => {
   const { tick } = installWindow();
   const list = new FakeList({ scrollHeight: 3_000, clientHeight: 700 });

@@ -9,6 +9,7 @@ type ScrollAnimation = {
   // round-tripped through scrollTop.
   pos: number;
   lastWritten: number;
+  lastScrollHeight: number;
   lastTime: number | null;
   frame: number;
   detach: () => void;
@@ -103,6 +104,7 @@ export function smoothScrollIntoView(container: HTMLElement, target: HTMLElement
     target,
     pos: container.scrollTop,
     lastWritten: container.scrollTop,
+    lastScrollHeight: container.scrollHeight,
     lastTime: null,
     frame: 0,
     detach: () => {
@@ -127,11 +129,21 @@ export function smoothScrollIntoView(container: HTMLElement, target: HTMLElement
       cancelSmoothScroll(container);
       return;
     }
-    // Someone else moved the list (e.g. the scroll-preservation effect when
-    // new articles are prepended): adopt the new position and keep going.
+    // Someone else moved the list. Two very different cases:
+    // - content changed too (scroll-preservation effect compensating a
+    //   prepend): adopt the shifted position and keep gliding;
+    // - content unchanged (Home/End, a programmatic jump, a scrollbar path
+    //   we could not observe): that scroll wins — cancel instead of
+    //   dragging the list back toward the focused row.
     if (Math.abs(container.scrollTop - animation.lastWritten) > 1) {
-      animation.pos = container.scrollTop;
+      if (Math.abs(container.scrollHeight - animation.lastScrollHeight) > 1) {
+        animation.pos = container.scrollTop;
+      } else {
+        cancelSmoothScroll(container);
+        return;
+      }
     }
+    animation.lastScrollHeight = container.scrollHeight;
     const { destination, margin } = nearestDestination(container, animation.target, animation.pos);
     const dt = Math.min(
       animation.lastTime === null ? 16 : now - animation.lastTime,
