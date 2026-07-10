@@ -41,7 +41,7 @@ function nearestDestination(
   container: HTMLElement,
   target: HTMLElement,
   from: number,
-): number {
+): { destination: number; margin: number } {
   const containerRect = container.getBoundingClientRect();
   const targetRect = target.getBoundingClientRect();
   const elementTop = container.scrollTop + (targetRect.top - containerRect.top);
@@ -56,7 +56,22 @@ function nearestDestination(
   } else if (elementBottom + margin > destination + container.clientHeight) {
     destination = elementBottom + margin - container.clientHeight;
   }
-  return Math.max(0, Math.min(destination, container.scrollHeight - container.clientHeight));
+  destination = Math.max(
+    0,
+    Math.min(destination, container.scrollHeight - container.clientHeight),
+  );
+  return { destination, margin };
+}
+
+// scrollTop assignment honours a CSS `scroll-behavior: smooth`, which would
+// turn each frame write into a competing native animation; scrollTo can
+// force instant behavior.
+function writeScrollTop(container: HTMLElement, value: number): void {
+  if (typeof container.scrollTo === "function") {
+    container.scrollTo({ top: value, behavior: "instant" });
+  } else {
+    container.scrollTop = value;
+  }
 }
 
 export function cancelSmoothScroll(container: HTMLElement): void {
@@ -70,7 +85,10 @@ export function cancelSmoothScroll(container: HTMLElement): void {
 export function smoothScrollIntoView(container: HTMLElement, target: HTMLElement): void {
   if (prefersReducedMotion()) {
     cancelSmoothScroll(container);
-    container.scrollTop = nearestDestination(container, target, container.scrollTop);
+    writeScrollTop(
+      container,
+      nearestDestination(container, target, container.scrollTop).destination,
+    );
     return;
   }
 
@@ -114,7 +132,7 @@ export function smoothScrollIntoView(container: HTMLElement, target: HTMLElement
     if (Math.abs(container.scrollTop - animation.lastWritten) > 1) {
       animation.pos = container.scrollTop;
     }
-    const destination = nearestDestination(container, animation.target, animation.pos);
+    const { destination, margin } = nearestDestination(container, animation.target, animation.pos);
     const dt = Math.min(
       animation.lastTime === null ? 16 : now - animation.lastTime,
       MAX_FRAME_MS,
@@ -122,12 +140,19 @@ export function smoothScrollIntoView(container: HTMLElement, target: HTMLElement
     animation.lastTime = now;
     const alpha = 1 - Math.exp(-dt / TAU_MS);
     animation.pos += (destination - animation.pos) * alpha;
+    // A very fast key repeat outruns the exponential follower; cap the error
+    // at the context margin so the focused row never leaves the viewport.
+    if (destination - animation.pos > margin) {
+      animation.pos = destination - margin;
+    } else if (animation.pos - destination > margin) {
+      animation.pos = destination + margin;
+    }
     if (Math.abs(destination - animation.pos) < 0.5) {
-      container.scrollTop = destination;
+      writeScrollTop(container, destination);
       cancelSmoothScroll(container);
       return;
     }
-    container.scrollTop = animation.pos;
+    writeScrollTop(container, animation.pos);
     animation.lastWritten = container.scrollTop;
     animation.frame = window.requestAnimationFrame(step);
   };

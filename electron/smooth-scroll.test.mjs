@@ -118,6 +118,25 @@ test("adopts an external scroll shift (prepend compensation) and stays on target
   assert.equal(list.scrollTop, 500);
 });
 
+test("a very fast key repeat never pushes the focused row out of view", () => {
+  const { tick } = installWindow();
+  const list = new FakeList({ scrollHeight: 6_000, clientHeight: 700 });
+  const rowHeight = 60;
+
+  // Selection advancing one row every ~32 ms — faster than the follower's
+  // time constant, so only the error cap keeps the row visible.
+  for (let index = 12; index < 60; index += 1) {
+    const row = new FakeRow(list, index * rowHeight, rowHeight);
+    smoothScrollIntoView(list, row);
+    tick(32);
+    const rowBottom = (index + 1) * rowHeight;
+    assert.ok(
+      list.scrollTop >= rowBottom - list.clientHeight - 0.5,
+      `row ${index} must stay in view (scrollTop ${list.scrollTop}, bottom ${rowBottom})`,
+    );
+  }
+});
+
 test("wheel input cancels the animation immediately", () => {
   const { tick } = installWindow();
   const list = new FakeList({ scrollHeight: 3_000, clientHeight: 700 });

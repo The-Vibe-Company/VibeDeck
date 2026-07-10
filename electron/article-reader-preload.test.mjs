@@ -40,6 +40,11 @@ function createHarness({ reducedMotion = false, matchMedia = true } = {}) {
       const maximum = Math.max(0, this.scrollHeight - this.clientHeight);
       this.scrollTop = Math.max(0, Math.min(maximum, this.scrollTop + options.top));
     }
+
+    scrollTo(options) {
+      const maximum = Math.max(0, this.scrollHeight - this.clientHeight);
+      this.scrollTop = Math.max(0, Math.min(maximum, options.top));
+    }
   }
 
   const root = new FakeHTMLElement({
@@ -285,6 +290,20 @@ test("a hold crossing a nested scroller's limit hands off to the article", () =>
   tick(2_000);
   assert.equal(nested.scrollTop, 500, "nested scroller stops at its limit");
   assert.ok(root.scrollTop > 0, "the article takes over after the handoff");
+});
+
+test("a hold parked at the end of the article resumes when direction reverses", () => {
+  const { press, tick, pendingFrames, root } = createHarness();
+  root.scrollTop = 2_200;
+
+  press("ArrowDown");
+  tick(600);
+  assert.equal(root.scrollTop, 2_300, "stops at the bottom of the article");
+  assert.equal(pendingFrames(), 0, "the rAF loop is parked, not spinning");
+
+  press("ArrowUp");
+  tick(200);
+  assert.ok(root.scrollTop < 2_300, "reversing restarts the parked loop");
 });
 
 test("an external scroll adjustment during a hold is adopted, not overwritten", () => {

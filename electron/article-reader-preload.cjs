@@ -109,7 +109,14 @@
   }
 
   function writePos(value) {
-    scroller.scrollTop = value;
+    // scrollTop assignment honours the page's `scroll-behavior: smooth`,
+    // which would turn each frame write into a competing native animation;
+    // scrollTo can force instant behavior.
+    if (typeof scroller.scrollTo === "function") {
+      scroller.scrollTo({ top: value, behavior: "instant" });
+    } else {
+      scroller.scrollTop = value;
+    }
     lastWritten = scroller.scrollTop;
   }
 
@@ -178,6 +185,12 @@
         if (replacement && replacement !== scroller) {
           scroller = replacement;
           syncPos();
+        } else {
+          // Nothing can scroll further: park the loop instead of forcing
+          // layout (elementFromPoint/getComputedStyle) at 60 fps in the
+          // page. mode stays "hold"; key events restart the loop.
+          stopAnimation();
+          return;
         }
       }
       frame = window.requestAnimationFrame(step);
@@ -258,6 +271,7 @@
         event.preventDefault();
         event.stopImmediatePropagation();
         if (mode !== "hold") enterHold();
+        else startAnimation(); // restart a loop parked at a boundary
         return;
       }
 
@@ -286,8 +300,8 @@
           Math.min(maxScrollTop(scroller), tapDest + direction * pageDistance(scroller)),
         );
         mode = "tap";
-        startAnimation();
       }
+      startAnimation(); // also restarts a hold loop parked at a boundary
 
       armHoldTimer(event.key);
     },
@@ -311,7 +325,9 @@
           mode = "idle";
           stopAnimation();
         }
-      } else if (mode !== "hold" && drivingKey) {
+      } else if (mode === "hold") {
+        startAnimation(); // the surviving key may reverse out of a boundary
+      } else if (drivingKey) {
         // The surviving key's hold timer was stolen by the released key's
         // keydown (single timer slot); re-arm it or the still-held arrow
         // would never reach hold.
