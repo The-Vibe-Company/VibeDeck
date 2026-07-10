@@ -71,7 +71,7 @@ function startWorkspace(workspacePath, port, inheritedDatabasePath) {
       CONDUCTOR_PORT: String(port),
       CONDUCTOR_WORKSPACE_PATH: workspacePath,
       ELECTRON_DISABLE_SECURITY_WARNINGS: "true",
-      MEDIAGEN_DB_PATH: inheritedDatabasePath,
+      VIBEDECK_DB_PATH: inheritedDatabasePath,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -152,7 +152,7 @@ async function stopProcessGroup(processRecord) {
   }
 }
 
-const temporaryRoot = await mkdtemp(path.join(tmpdir(), "mediagen-conductor-run-"));
+const temporaryRoot = await mkdtemp(path.join(tmpdir(), "vibedeck-conductor-run-"));
 const workspacePaths = [path.join(temporaryRoot, "workspace-a"), path.join(temporaryRoot, "workspace-b")];
 const processes = [];
 
@@ -170,7 +170,7 @@ try {
     startWorkspace(workspacePaths[1], ports[1], inheritedDatabasePath),
   );
   const databasePaths = workspacePaths.map((workspacePath) =>
-    path.join(workspacePath, ".context", "mediagen-dev", "user-data", "veille.sqlite3"));
+    path.join(workspacePath, ".context", "vibedeck-dev", "user-data", "vibedeck.sqlite3"));
 
   await waitFor(
     () => Promise.all(databasePaths.map(hasActivePilotSession)).then((results) => results.every(Boolean)),
@@ -190,7 +190,7 @@ try {
   assert.equal(
     await pathExists(inheritedDatabasePath),
     false,
-    "Un MEDIAGEN_DB_PATH hérité ne doit jamais contourner l’isolation Conductor.",
+    "Un VIBEDECK_DB_PATH hérité ne doit jamais contourner l’isolation Conductor.",
   );
   await Promise.all(processes.map(stopProcessGroup));
   await waitForPortsReleased(ports);

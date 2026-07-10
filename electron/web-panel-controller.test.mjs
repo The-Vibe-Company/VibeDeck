@@ -480,7 +480,7 @@ test("keeps the public reader invisible until a bounded extraction becomes stati
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(views[0].options.webPreferences.partition, "mediagen-reader-static");
+  assert.equal(views[0].options.webPreferences.partition, "vibedeck-reader-static");
   assert.equal(views[0].webContents.loadCalls.length, 1);
   assert.match(views[0].webContents.loadCalls[0], /^data:text\/html/);
   assert.equal(views[0].visible, true);
@@ -510,7 +510,7 @@ test("recreates a persistent original reader after an extraction fallback", asyn
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(views.length, 2);
-  assert.equal(views[0].options.webPreferences.partition, "mediagen-reader-static");
+  assert.equal(views[0].options.webPreferences.partition, "vibedeck-reader-static");
   assert.equal(views[1].options.webPreferences.partition, WEB_PANEL_SESSION_STRATEGY.partition);
   assert.deepEqual(views[1].webContents.loadCalls, ["https://www.lemonde.fr/article"]);
   assert.equal(states.at(-1).readerMode, "original");
@@ -716,7 +716,7 @@ test("documents the persistent web session while clearing background workers on 
   controller.sync([descriptor("news")]);
   const webSession = views[0].webContents.session;
 
-  assert.equal(WEB_PANEL_SESSION_STRATEGY.partition, "persist:mediagen-web-panels");
+  assert.equal(WEB_PANEL_SESSION_STRATEGY.partition, "persist:vibedeck-web-panels");
   assert.equal(WEB_PANEL_SESSION_STRATEGY.persistent, true);
   assert.deepEqual(WEB_PANEL_SESSION_STRATEGY.retainedWhenClosed, [
     "cookies",

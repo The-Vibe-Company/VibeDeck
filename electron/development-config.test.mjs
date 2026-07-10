@@ -8,7 +8,7 @@ import {
   resolveRendererEntryUrl,
 } from "./development-config.mjs";
 
-const packagedUrl = "mediagen-app://bundle/index.html";
+const packagedUrl = "vibedeck-app://bundle/index.html";
 
 test("accepts bounded decimal development ports and the local fallback", () => {
   assert.equal(parseDevelopmentPort("55050"), 55_050);

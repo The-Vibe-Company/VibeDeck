@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, session, shell } from "electron";
+import electronUpdater from "electron-updater";
 import { createHash } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { rm } from "node:fs/promises";
@@ -29,6 +30,7 @@ import {
 } from "./web-panel-controller.mjs";
 import { runWithFinalStateBroadcast } from "./final-state-operation.mjs";
 import { closePersistenceAfterPending } from "./shutdown.mjs";
+import { createUpdateController } from "./update-controller.mjs";
 import {
   createArticleReaderService,
   resolveReaderArticle,
@@ -39,6 +41,8 @@ import {
   assertModelDownloadUrl,
   normalizeSearchMode,
 } from "./semantic-search.mjs";
+
+const { autoUpdater } = electronUpdater;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REFRESH_TICK_MS = 15_000;
@@ -55,12 +59,12 @@ const WEB_DATA_SCOPES = new Set(["cache", "site-data", "all"]);
 // Feed downloads deliberately use an isolated, memory-only Chromium session.
 // It inherits Electron/Chromium proxy and certificate handling without sharing
 // page cookies or duplicating the SQLite feed cache on disk.
-const FEED_NETWORK_PARTITION = "mediagen-feed-network";
-const SEMANTIC_SEARCH_NETWORK_PARTITION = "mediagen-semantic-search";
+const FEED_NETWORK_PARTITION = "vibedeck-feed-network";
+const SEMANTIC_SEARCH_NETWORK_PARTITION = "vibedeck-semantic-search";
 const MAX_ITEM_IDS_PER_CALL = 500;
 const MAX_FEED_CONFIGURATION_SOURCE_IDS = 4_096;
 const MAX_FEED_CONFIGURATION_NEW_SOURCES = 256;
-const DIAGNOSTICS_FORMAT = "mediagen-veille-diagnostics";
+const DIAGNOSTICS_FORMAT = "vibedeck-diagnostics";
 const DIAGNOSTICS_VERSION = 1;
 const CONDUCTOR_SHUTDOWN_GRACE_MS = 120;
 
@@ -87,12 +91,15 @@ let semanticSyncTask = null;
 let semanticSyncRevision = 0;
 let refreshTimer = null;
 let refreshScheduler = null;
+let updateController = null;
 let pilotHeartbeatTimer = null;
 let pilotSessionId = null;
 let lastPilotHeartbeatActive = null;
 let isQuitting = false;
 let shutdownComplete = false;
 let conductorShutdownRequested = false;
+let updateInstallRequested = false;
+let shutdownPromise = null;
 const activeOperations = new Set();
 const webPanelControllers = new Map();
 const resettingWebPanelControllers = new WeakSet();
@@ -109,7 +116,7 @@ if (!app.isPackaged) {
 // Fenêtre pilotée par les tests : jamais affichée ni activée, pour que la
 // suite test:pilot-ui ne vole pas le focus de l'écran.
 const isHeadlessTestWindow =
-  !app.isPackaged && process.env.MEDIAGEN_TEST_HEADLESS === "true";
+  !app.isPackaged && process.env.VIBEDECK_TEST_HEADLESS === "true";
 if (isHeadlessTestWindow) {
   // Fenêtre cachée => Chromium étranglerait requestAnimationFrame et les
   // minuteurs dont dépendent les tests de viewport et de dwell.
@@ -626,6 +633,13 @@ async function downloadSemanticModelFile(
   }
 }
 
+function broadcastUpdateState(state = updateController?.getState()) {
+  if (!state) return;
+  for (const window of webPanelControllers.keys()) {
+    sendToWindow(window, "updates:state-changed", state);
+  }
+}
+
 function windowIsActivelyUsed() {
   if (isQuitting) return false;
   return BrowserWindow.getAllWindows().some((window) => {
@@ -708,6 +722,18 @@ function runEngineOperation(operation) {
 }
 
 function registerIpcHandlers() {
+  registerHandle("updates:get-state", (_event, ...args) => {
+    assertNoArguments(args);
+    return updateController.getState();
+  });
+  registerHandle("updates:check", (_event, ...args) => {
+    assertNoArguments(args);
+    return updateController.checkNow();
+  });
+  registerHandle("updates:restart", (_event, ...args) => {
+    assertNoArguments(args);
+    return updateController.restartForUpdate();
+  });
   registerHandle("aggregator:get-state", () => readEngineState());
   registerHandle("semantic-search:get-status", () => semanticSearch.getStatus());
   registerHandle("semantic-search:prepare", () => runEngineOperation(() => semanticSearch.prepare()));
@@ -850,8 +876,8 @@ function registerIpcHandlers() {
     const window = requireMainSender(event);
     const selection = await dialog.showSaveDialog(window, {
       title: "Exporter le dashboard",
-      defaultPath: datedJsonName("mediagen-dashboard"),
-      filters: [{ name: "Dashboard MediaGen", extensions: ["json"] }],
+      defaultPath: datedJsonName("vibedeck-dashboard"),
+      filters: [{ name: "Dashboard VibeDeck", extensions: ["json"] }],
       properties: ["createDirectory", "showOverwriteConfirmation"],
     });
     if (selection.canceled || !selection.filePath) {
@@ -868,7 +894,7 @@ function registerIpcHandlers() {
     const window = requireMainSender(event);
     const selection = await dialog.showOpenDialog(window, {
       title: "Importer un dashboard",
-      filters: [{ name: "Dashboard MediaGen", extensions: ["json"] }],
+      filters: [{ name: "Dashboard VibeDeck", extensions: ["json"] }],
       properties: ["openFile"],
     });
     const filePath = selection.filePaths[0];
@@ -931,8 +957,8 @@ function registerIpcHandlers() {
     const window = requireMainSender(event);
     const selection = await dialog.showSaveDialog(window, {
       title: "Exporter le diagnostic local",
-      defaultPath: datedJsonName("mediagen-diagnostic"),
-      filters: [{ name: "Diagnostic MediaGen", extensions: ["json"] }],
+      defaultPath: datedJsonName("vibedeck-diagnostic"),
+      filters: [{ name: "Diagnostic VibeDeck", extensions: ["json"] }],
       properties: ["createDirectory", "showOverwriteConfirmation"],
     });
     if (selection.canceled || !selection.filePath) {
@@ -1078,7 +1104,7 @@ function createWindow() {
     height: 820,
     minWidth: 860,
     minHeight: 600,
-    title: "MediaGen Veille",
+    title: "VibeDeck",
     autoHideMenuBar: true,
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     trafficLightPosition: process.platform === "darwin" ? { x: 18, y: 17 } : undefined,
@@ -1175,15 +1201,17 @@ function refreshDueSources() {
 
 async function handleStartupFailure(error) {
   isQuitting = true;
-  console.error("Démarrage de MediaGen Veille impossible :", error);
+  console.error("Démarrage de VibeDeck impossible :", error);
   if (refreshTimer) clearInterval(refreshTimer);
   if (pilotHeartbeatTimer) clearInterval(pilotHeartbeatTimer);
   refreshTimer = null;
   pilotHeartbeatTimer = null;
   refreshScheduler?.stop();
+  updateController?.stop();
   engine?.cancelPending();
   await destroyAllWebPanelControllers();
   await articleReaderService?.shutdown();
+  await semanticSearch?.close();
   const pendingRefresh = refreshScheduler?.pending();
   if (pendingRefresh) await Promise.allSettled([pendingRefresh]);
   try {
@@ -1194,16 +1222,66 @@ async function handleStartupFailure(error) {
   }
   engine = null;
   feedNetworkSession = null;
+  semanticSearchNetworkSession = null;
+  semanticSearch = null;
   articleReaderService = null;
   lastRendererState = null;
   refreshScheduler = null;
   const detail = error instanceof Error ? error.message : "Erreur de démarrage inconnue.";
   dialog.showErrorBox(
-    "MediaGen Veille ne peut pas démarrer",
+    "VibeDeck ne peut pas démarrer",
     `${detail}\n\nLa base locale n’a pas été modifiée après cet échec. Contactez le support avec ce message.`,
   );
   shutdownComplete = true;
   app.exit(1);
+}
+
+function prepareForShutdown({ deadlineMs = null } = {}) {
+  if (shutdownPromise) return shutdownPromise;
+  isQuitting = true;
+  heartbeatPilotUsage({ force: true });
+  updateController?.stop();
+  if (pilotHeartbeatTimer) clearInterval(pilotHeartbeatTimer);
+  pilotHeartbeatTimer = null;
+  const pendingPersistence = [...activeOperations];
+  const webCleanup = destroyAllWebPanelControllers();
+  const readerCleanup = articleReaderService?.shutdown() ?? Promise.resolve();
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = null;
+  refreshScheduler?.stop();
+  engine?.cancelPending();
+  const pendingRefresh = refreshScheduler?.pending();
+  if (pendingRefresh) pendingPersistence.push(pendingRefresh);
+  if (semanticSearch) pendingPersistence.push(semanticSearch.close());
+  if (deadlineMs === null) pendingPersistence.push(webCleanup);
+  pendingPersistence.push(readerCleanup);
+
+  shutdownPromise = closePersistenceAfterPending({
+    pending: pendingPersistence,
+    deadlineMs,
+    closePersistence: () => {
+      try {
+        endPilotUsageSession();
+        engine?.close();
+        semanticSearch = null;
+        semanticSearchNetworkSession = null;
+      } catch (error) {
+        console.error("Fermeture de la base locale incomplète :", error);
+      } finally {
+        engine = null;
+        feedNetworkSession = null;
+        articleReaderService = null;
+        lastRendererState = null;
+        refreshScheduler = null;
+      }
+    },
+  }).then(({ pendingSettled }) => {
+    if (!pendingSettled) {
+      console.warn("Fermeture Conductor forcée après annulation des opérations en cours.");
+    }
+    shutdownComplete = true;
+  });
+  return shutdownPromise;
 }
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -1218,7 +1296,7 @@ if (!hasSingleInstanceLock) {
   });
 
   app.whenReady().then(async () => {
-    app.setName("MediaGen Veille");
+    app.setName("VibeDeck");
     protocol.handle(
       APP_PROTOCOL_SCHEME,
       createAppProtocolHandler({
@@ -1227,14 +1305,14 @@ if (!hasSingleInstanceLock) {
       }),
     );
     const developmentDatabasePath = !app.isPackaged
-      ? process.env.MEDIAGEN_DB_PATH
+      ? process.env.VIBEDECK_DB_PATH
       : null;
     feedNetworkSession = session.fromPartition(FEED_NETWORK_PARTITION, {
       cache: false,
     });
     articleReaderService = createArticleReaderService({
       sessionForConnector: (connectorId) =>
-        session.fromPartition(`mediagen-reader-${connectorId}`, { cache: false }),
+        session.fromPartition(`vibedeck-reader-${connectorId}`, { cache: false }),
     });
     semanticSearchNetworkSession = session.fromPartition(SEMANTIC_SEARCH_NETWORK_PARTITION, {
       cache: false,
@@ -1250,7 +1328,7 @@ if (!hasSingleInstanceLock) {
     engine = createFeedEngine({
       dbPath: developmentDatabasePath
         ? path.resolve(developmentDatabasePath)
-        : path.join(app.getPath("userData"), "veille.sqlite3"),
+        : path.join(app.getPath("userData"), "vibedeck.sqlite3"),
       fetchImpl: createElectronSessionFetch(feedNetworkSession),
       resolveHost: (hostname, options) =>
         feedNetworkSession.resolveHost(hostname, options),
@@ -1258,13 +1336,32 @@ if (!hasSingleInstanceLock) {
       requireHostResolution: app.isPackaged,
       requireProxyResolution: app.isPackaged,
       allowPrivateNetwork:
-        !app.isPackaged && process.env.MEDIAGEN_ALLOW_PRIVATE_NETWORK === "true",
+        !app.isPackaged && process.env.VIBEDECK_ALLOW_PRIVATE_NETWORK === "true",
     });
     lastRendererState = engine.getState();
     refreshScheduler = createRefreshScheduler({
       getSources: () => engine.getState().sources,
       refreshSource: (sourceId) => engine.refreshSource(sourceId),
       onStateChange: () => broadcastState(undefined, { syncSemantic: true }),
+    });
+    updateController = createUpdateController({
+      updater: autoUpdater,
+      isPackaged: app.isPackaged,
+      currentVersion: app.getVersion(),
+      onStateChange: (state) => broadcastUpdateState(state),
+      prepareForInstall: async () => {
+        updateInstallRequested = true;
+        try {
+          await prepareForShutdown();
+        } catch (error) {
+          updateInstallRequested = false;
+          throw error;
+        }
+      },
+      onInstallFailure: () => {
+        shutdownComplete = true;
+        app.exit(1);
+      },
     });
     semanticSearch = new SemanticSearchService({
       rootPath: path.join(app.getPath("userData"), "semantic-search"),
@@ -1274,12 +1371,13 @@ if (!hasSingleInstanceLock) {
       getItems: (itemIds) => engine.getSemanticSearchItems(itemIds),
       download: downloadSemanticModelFile,
       testMode:
-        !app.isPackaged && process.env.MEDIAGEN_FAKE_SEMANTIC_SEARCH === "true",
+        !app.isPackaged && process.env.VIBEDECK_FAKE_SEMANTIC_SEARCH === "true",
     });
     semanticSearch.onStatusChanged(broadcastSemanticSearchStatus);
     beginPilotUsageSession();
     registerIpcHandlers();
     createWindow();
+    updateController.start();
     void semanticSearch.initialize()
       .then(() => scheduleSemanticSearchSync())
       .catch((error) => console.warn("Initialisation de la recherche locale impossible :", error));
@@ -1302,55 +1400,15 @@ app.on("before-quit", (event) => {
   if (shutdownComplete) return;
   event.preventDefault();
   if (isQuitting) return;
-  isQuitting = true;
-  heartbeatPilotUsage({ force: true });
-  if (pilotHeartbeatTimer) clearInterval(pilotHeartbeatTimer);
-  pilotHeartbeatTimer = null;
-  const pendingPersistence = [...activeOperations];
-  const webCleanup = destroyAllWebPanelControllers();
-  const readerCleanup = articleReaderService?.shutdown() ?? Promise.resolve();
-  if (refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = null;
-  refreshScheduler?.stop();
-  if (semanticSearch) pendingPersistence.push(semanticSearch.close());
-  engine?.cancelPending();
-  const pendingRefresh = refreshScheduler?.pending();
-  if (pendingRefresh) pendingPersistence.push(pendingRefresh);
-  if (!conductorShutdownRequested) pendingPersistence.push(webCleanup);
-  pendingPersistence.push(readerCleanup);
-
-  void closePersistenceAfterPending({
-    pending: pendingPersistence,
+  void prepareForShutdown({
     deadlineMs: conductorShutdownRequested ? CONDUCTOR_SHUTDOWN_GRACE_MS : null,
-    closePersistence: () => {
-      try {
-        endPilotUsageSession();
-        engine?.close();
-        semanticSearch = null;
-        semanticSearchNetworkSession = null;
-      } catch (error) {
-        console.error("Fermeture de la base locale incomplète :", error);
-      } finally {
-        engine = null;
-        feedNetworkSession = null;
-        articleReaderService = null;
-        lastRendererState = null;
-        refreshScheduler = null;
-      }
-    },
-  }).then(({ pendingSettled }) => {
-    if (!pendingSettled) {
-      console.warn("Fermeture Conductor forcée après annulation des opérations en cours.");
-    }
-    shutdownComplete = true;
-    app.quit();
-  }).catch((error) => {
-    console.error("Arrêt de MediaGen Veille incomplet :", error);
+  }).then(() => app.quit()).catch((error) => {
+    console.error("Arrêt de VibeDeck incomplet :", error);
     shutdownComplete = true;
     app.quit();
   });
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  if (process.platform !== "darwin" && !updateInstallRequested) app.quit();
 });

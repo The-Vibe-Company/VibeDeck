@@ -57,9 +57,9 @@ function layoutForPanelIds(panelIds) {
 }
 
 function temporaryDatabase() {
-  const directory = mkdtempSync(path.join(os.tmpdir(), "mediagen-dashboard-"));
+  const directory = mkdtempSync(path.join(os.tmpdir(), "vibedeck-dashboard-"));
   return {
-    databasePath: path.join(directory, "veille.sqlite3"),
+    databasePath: path.join(directory, "vibedeck.sqlite3"),
     cleanup: () => rmSync(directory, { force: true, recursive: true }),
   };
 }
@@ -971,7 +971,7 @@ test("exports and transactionally imports configuration without articles or brow
     }));
     await assert.rejects(
       targetEngine.importDashboardConfig({
-        format: "mediagen-veille-dashboard",
+        format: "vibedeck-dashboard",
         version: 1,
         layout: layoutForPanelIds(webPanels.map(({ id }) => id)),
         panels: webPanels,
@@ -1007,7 +1007,7 @@ test("rolls back a validated dashboard import when SQLite fails during replaceme
       () =>
         database.importDashboardConfig(
           {
-            format: "mediagen-veille-dashboard",
+            format: "vibedeck-dashboard",
             version: 1,
             layout: { type: "panel", panelId: "replacement-panel" },
             panels: [

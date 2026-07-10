@@ -136,7 +136,7 @@ npm run build
 
 Ajouter selon le périmètre :
 
-- UI, clavier, focus, layout, buffers : `npm run test:pilot-ui` (ne vole jamais le focus de l’écran : fenêtre cachée sur macOS, affichée sans activation ailleurs ; `MEDIAGEN_PILOT_UI_SHOW=1` pour la mettre au premier plan en débogage) ;
+- UI, clavier, focus, layout, buffers : `npm run test:pilot-ui` (ne vole jamais le focus de l’écran : fenêtre cachée sur macOS, affichée sans activation ailleurs ; `VIBEDECK_PILOT_UI_SHOW=1` pour la mettre au premier plan en débogage) ;
 - connecteur ou politique réseau : tests ciblés puis `npm run test:live` si le réseau est disponible ;
 - preload, IPC, SQLite ou import/export : tests Electron correspondants et scénario d’échec/rollback ;
 - release, dépendances ou packaging : `npm run verify:release` et les deux audits npm ;
@@ -163,7 +163,7 @@ Les signatures macOS/Windows, la notarisation Apple et la recette réseau AFP so
 - Tester les courses dans les deux sens, ainsi que l’annulation et la libération des verrous.
 - Utiliser une base et un profil temporaires ; ne jamais dépendre des données locales du développeur.
 - Séparer le contrat multiplateforme des garanties POSIX. Les bits de permission Unix ne se testent pas sur Windows.
-- Un test du paquet doit utiliser l’application réellement empaquetée et son protocole `mediagen-app://`, pas seulement le serveur Vite.
+- Un test du paquet doit utiliser l’application réellement empaquetée et son protocole `vibedeck-app://`, pas seulement le serveur Vite.
 
 ## Git, PR et release
 

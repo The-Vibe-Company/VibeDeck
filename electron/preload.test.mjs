@@ -19,7 +19,7 @@ async function loadPreloadApi() {
   };
   const contextBridge = {
     exposeInMainWorld(name, api) {
-      assert.equal(name, "mediagen");
+      assert.equal(name, "vibedeck");
       exposedApi = api;
     },
   };
@@ -48,6 +48,22 @@ test("exposes the pilot persistence and local-file IPC commands", async () => {
     ["aggregator:import-dashboard"],
     ["aggregator:export-diagnostics"],
   ]);
+});
+
+test("exposes only narrow updater commands without URLs or raw Electron primitives", async () => {
+  const { api, calls } = await loadPreloadApi();
+
+  await api.getUpdateState();
+  await api.checkForUpdates();
+  assert.equal(await api.restartForUpdate(), undefined);
+  assert.deepEqual(calls, [
+    ["updates:get-state"],
+    ["updates:check"],
+    ["updates:restart"],
+  ]);
+  assert.equal(api.setFeedURL, undefined);
+  assert.equal(api.autoUpdater, undefined);
+  assert.equal(api.downloadUpdate, undefined);
 });
 
 test("forwards all catalog source arguments in the documented order", async () => {

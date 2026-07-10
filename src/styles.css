@@ -291,6 +291,13 @@ button:disabled {
   font: inherit;
 }
 
+.update-pill {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .dashboard-stage {
   position: relative;
   min-width: 0;
@@ -1941,6 +1948,33 @@ button:disabled {
   background: var(--line-soft);
 }
 
+.pilot-tools-update {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 10px 10px 0;
+  padding: 11px 12px;
+  border: 1px solid var(--amber-line);
+  border-radius: 5px;
+  background: var(--amber-wash);
+}
+
+.pilot-tools-update > span {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--muted);
+  font-size: 9.5px;
+  line-height: 1.4;
+}
+
+.pilot-tools-update strong {
+  color: var(--text);
+  font-size: 10.5px;
+}
+
 .pilot-tools-list > button {
   position: relative;
   display: flex;
@@ -2160,6 +2194,18 @@ button:disabled {
   .global-bar {
     gap: 7px;
   }
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {

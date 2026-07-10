@@ -1,7 +1,7 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const APP_PROTOCOL_SCHEME = "mediagen-app";
+export const APP_PROTOCOL_SCHEME = "vibedeck-app";
 export const APP_PROTOCOL_HOST = "bundle";
 export const APP_ENTRY_URL = `${APP_PROTOCOL_SCHEME}://${APP_PROTOCOL_HOST}/index.html`;
 

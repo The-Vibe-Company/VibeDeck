@@ -67,6 +67,7 @@ import type {
   Source,
   SourceCatalogEntry,
   SourceRequest,
+  UpdateState,
   SemanticSearchScope,
   SemanticSearchResult,
   SemanticSearchStatus,
@@ -330,6 +331,7 @@ export default function App() {
   const [interactionActive, setInteractionActive] = useState(false);
   const [fatalError, setFatalError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [updateState, setUpdateState] = useState<UpdateState | null>(null);
   const [semanticSearchStatus, setSemanticSearchStatus] = useState<SemanticSearchStatus>({
     phase: "not-installed", progress: 0, message: null, bytes: 0,
   });
@@ -550,7 +552,7 @@ export default function App() {
 
   useEffect(() => {
     let live = true;
-    window.mediagen
+    window.vibedeck
       .getState()
       .then((nextState) => {
         if (live) applyServerState(nextState, true);
@@ -558,11 +560,20 @@ export default function App() {
       .catch((error) => {
         if (live) setFatalError(cleanError(error));
       });
+    window.vibedeck
+      .getUpdateState()
+      .then((nextState) => {
+        if (live) setUpdateState(nextState);
+      })
+      .catch(() => undefined);
 
-    const unsubscribeState = window.mediagen.onStateChanged((nextState) => {
+    const unsubscribeState = window.vibedeck.onStateChanged((nextState) => {
       if (live) applyServerState(nextState);
     });
-    const unsubscribeWeb = window.mediagen.onWebPanelStateChanged((nextState) => {
+    const unsubscribeUpdate = window.vibedeck.onUpdateStateChanged((nextState) => {
+      if (live) setUpdateState(nextState);
+    });
+    const unsubscribeWeb = window.vibedeck.onWebPanelStateChanged((nextState) => {
       if (!live) return;
       setWebStates((current) => {
         if (nextState.status === "destroyed") {
@@ -573,27 +584,28 @@ export default function App() {
         return { ...current, [nextState.panelId]: nextState };
       });
     });
-    const unsubscribeWebEscape = window.mediagen.onWebPanelEscape(() => {
+    const unsubscribeWebEscape = window.vibedeck.onWebPanelEscape(() => {
       setLinkPreview((current) => {
         if (current) return null;
         setMaximizedPanelId(null);
         return current;
       });
     });
-    const unsubscribeSemanticStatus = window.mediagen.onSemanticSearchStatusChanged((nextStatus) => {
+    const unsubscribeSemanticStatus = window.vibedeck.onSemanticSearchStatusChanged((nextStatus) => {
       if (live) setSemanticSearchStatus(nextStatus);
     });
-    const unsubscribeGlobalSearch = window.mediagen.onOpenGlobalSearch((nativeOrigin) => {
+    const unsubscribeGlobalSearch = window.vibedeck.onOpenGlobalSearch((nativeOrigin) => {
       if (!live) return;
       openSemanticSearch({ kind: "all" }, nativeOrigin);
     });
-    void window.mediagen.getSemanticSearchStatus().then((nextStatus) => {
+    void window.vibedeck.getSemanticSearchStatus().then((nextStatus) => {
       if (live) setSemanticSearchStatus(nextStatus);
     });
 
     return () => {
       live = false;
       unsubscribeState();
+      unsubscribeUpdate();
       unsubscribeWeb();
       unsubscribeWebEscape();
       unsubscribeSemanticStatus();
@@ -626,7 +638,7 @@ export default function App() {
   useEffect(
     () => () => {
       if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
-      window.mediagen.syncWebPanels([]);
+      window.vibedeck.syncWebPanels([]);
     },
     [],
   );
@@ -680,7 +692,7 @@ export default function App() {
           !failedPanelIds.has(LINK_READER_ID),
       });
     }
-    window.mediagen.syncWebPanels(descriptors);
+    window.vibedeck.syncWebPanels(descriptors);
   }, [failedWebPanelKey, interactionActive, linkPreview, modal, semanticSearchOpen, state]);
 
   useEffect(() => {
@@ -707,14 +719,14 @@ export default function App() {
       const job = saveChainRef.current.then(async () => {
         serverLayoutMutationRef.current = true;
         try {
-          const nextState = await window.mediagen.saveDashboardLayout(
+          const nextState = await window.vibedeck.saveDashboardLayout(
             nextLayout,
             revisionRef.current,
           );
           applyServerState(nextState);
         } catch (error) {
           showToast(cleanError(error));
-          const recovered = await window.mediagen.getState();
+          const recovered = await window.vibedeck.getState();
           applyServerState(recovered, true);
         } finally {
           serverLayoutMutationRef.current = false;
@@ -866,7 +878,7 @@ export default function App() {
     const previousIds = new Set(state.panels.map(({ id }) => id));
     serverLayoutMutationRef.current = true;
     try {
-      let nextState = await window.mediagen.createPanel(
+      let nextState = await window.vibedeck.createPanel(
         input,
         panelPlacementForDraft(draft),
       );
@@ -880,7 +892,7 @@ export default function App() {
           input.kind === "feed" ? input.defaultRefreshIntervalSeconds : undefined;
         for (const catalogId of catalogIds) {
           try {
-            const result = await window.mediagen.addCatalogSource(
+            const result = await window.vibedeck.addCatalogSource(
               createdPanel.id,
               catalogId,
               { refreshIntervalSeconds },
@@ -893,7 +905,7 @@ export default function App() {
         }
         for (const source of customSources) {
           try {
-            const result = await window.mediagen.addSource(createdPanel.id, {
+            const result = await window.vibedeck.addSource(createdPanel.id, {
               ...source,
               refreshIntervalSeconds,
             });
@@ -904,7 +916,7 @@ export default function App() {
           }
         }
         if (sourceSuccesses === 0 && catalogIds.length + customSources.length > 0) {
-          await window.mediagen.deletePanel(createdPanel.id);
+          await window.vibedeck.deletePanel(createdPanel.id);
           throw new Error(sourceErrors[0] ?? "Aucune source n’a pu être ajoutée à ce fil.");
         }
       }
@@ -913,13 +925,13 @@ export default function App() {
       let layoutWarning = false;
       if (desiredLayout) {
         try {
-          nextState = await window.mediagen.saveDashboardLayout(
+          nextState = await window.vibedeck.saveDashboardLayout(
             desiredLayout,
             nextState.dashboard.revision,
           );
         } catch {
           layoutWarning = true;
-          nextState = await window.mediagen.getState();
+          nextState = await window.vibedeck.getState();
         }
       }
 
@@ -949,7 +961,7 @@ export default function App() {
   async function closePanel(panelId: string) {
     serverLayoutMutationRef.current = true;
     try {
-      const nextState = await window.mediagen.deletePanel(panelId);
+      const nextState = await window.vibedeck.deletePanel(panelId);
       applyServerState(nextState, true);
       setModal(null);
       setMaximizedPanelId((current) => (current === panelId ? null : current));
@@ -968,7 +980,7 @@ export default function App() {
     try {
       let nextState = state;
       for (const panel of [...state.panels]) {
-        nextState = await window.mediagen.deletePanel(panel.id);
+        nextState = await window.vibedeck.deletePanel(panel.id);
       }
       applyServerState(nextState, true);
       setDrafts({});
@@ -986,7 +998,7 @@ export default function App() {
 
   async function renamePanel(panelId: string, name: string) {
     try {
-      applyServerState(await window.mediagen.renamePanel(panelId, name));
+      applyServerState(await window.vibedeck.renamePanel(panelId, name));
     } catch (error) {
       showToast(cleanError(error));
     }
@@ -994,7 +1006,7 @@ export default function App() {
 
   async function updateWebPanelUrl(panelId: string, url: string) {
     try {
-      const nextState = await window.mediagen.setWebPanelUrl(panelId, url);
+      const nextState = await window.vibedeck.setWebPanelUrl(panelId, url);
       applyServerState(nextState);
       showToast("Page mise à jour");
     } catch (error) {
@@ -1011,9 +1023,9 @@ export default function App() {
     if (sources.length === 0) return;
     try {
       await Promise.all(
-        sources.map((source) => window.mediagen.refreshSource(source.id)),
+        sources.map((source) => window.vibedeck.refreshSource(source.id)),
       );
-      const nextState = await window.mediagen.getState();
+      const nextState = await window.vibedeck.getState();
       const failedCount = nextState.sources.filter(
         (source) => panel.sourceIds.includes(source.id) && source.status === "error",
       ).length;
@@ -1036,7 +1048,7 @@ export default function App() {
       return next;
     });
     setLinkPreview({ itemId: item.id, title: item.title });
-    void window.mediagen
+    void window.vibedeck
       .markItemOpened(item.id)
       .then((nextState) => applyServerState(nextState))
       .catch((error) => showToast(cleanError(error)));
@@ -1044,7 +1056,7 @@ export default function App() {
 
   function markItemsSeen(itemIds: string[]) {
     if (itemIds.length === 0) return;
-    void window.mediagen
+    void window.vibedeck
       .markItemsSeen(itemIds)
       .then((nextState) => applyServerState(nextState))
       .catch((error) => showToast(cleanError(error)));
@@ -1184,7 +1196,7 @@ export default function App() {
     setSemanticSearchOpen(false);
     const restoreNative = semanticSearchNativeOriginRef.current;
     semanticSearchNativeOriginRef.current = false;
-    window.mediagen.finishSemanticSearchFocus(restoreNative);
+    window.vibedeck.finishSemanticSearchFocus(restoreNative);
     if (restoreNative) {
       if (!activeSemanticSearch) semanticSearchRestoreRef.current = null;
       return;
@@ -1230,7 +1242,7 @@ export default function App() {
     setActiveSemanticSearch(appliedSearch);
     setSemanticSearchOpen(false);
     semanticSearchNativeOriginRef.current = false;
-    window.mediagen.finishSemanticSearchFocus(false);
+    window.vibedeck.finishSemanticSearchFocus(false);
     const destinationPanelId = scope.kind === "panel"
       ? scope.panelId
       : semanticSearchRestoreRef.current?.focusedPanelId ??
@@ -1487,6 +1499,14 @@ export default function App() {
 
   return (
     <div className={`app-shell${isMac ? " app-shell--mac" : ""}`}>
+      <div
+        className="visually-hidden update-announcement"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        {updateStateAnnouncement(updateState)}
+      </div>
       <header
         className="global-bar"
         aria-hidden={modal || semanticSearchOpen ? true : undefined}
@@ -1547,6 +1567,19 @@ export default function App() {
             onClick={() => setMaximizedPanelId(null)}
           >
             Panel agrandi · restaurer <kbd>Échap</kbd>
+          </button>
+        )}
+        {updateState?.status === "ready" && (
+          <button
+            type="button"
+            className="restore-pill update-pill"
+            onClick={() => {
+              void window.vibedeck.restartForUpdate().catch((error) => {
+                showToast(cleanError(error));
+              });
+            }}
+          >
+            Version {updateState.availableVersion ?? "suivante"} prête · Redémarrer
           </button>
         )}
         <button
@@ -1666,6 +1699,8 @@ export default function App() {
 
       {modal?.kind === "pilot-tools" && (
         <PilotToolsModal
+          updateState={updateState}
+          onUpdateState={setUpdateState}
           onClose={() => setModal(null)}
           onImported={(nextState, backupCreated) => {
             applyServerState(nextState, true, true);
@@ -1680,7 +1715,7 @@ export default function App() {
           semanticStatus={semanticSearchStatus}
           onRemoveSemanticData={async () => {
             clearSemanticSearchFilter();
-            await window.mediagen.removeSemanticSearchData();
+            await window.vibedeck.removeSemanticSearchData();
           }}
         />
       )}
@@ -1699,8 +1734,8 @@ export default function App() {
           panels={state.panels.filter((panel): panel is FeedPanel => panel.kind === "feed")}
           sources={state.sources}
           onScopeChange={setSemanticSearchScope}
-          onPrepare={() => void window.mediagen.prepareSemanticSearch().catch((error) => showToast(cleanError(error)))}
-          onCancelPreparation={() => void window.mediagen.cancelSemanticSearchPreparation()}
+          onPrepare={() => void window.vibedeck.prepareSemanticSearch().catch((error) => showToast(cleanError(error)))}
+          onCancelPreparation={() => void window.vibedeck.cancelSemanticSearchPreparation()}
           onClose={closeSemanticSearchPalette}
           onOpenItem={(item) => {
             const preferredPanelId =
@@ -1818,7 +1853,7 @@ function SearchPalette({
       return Promise.resolve(hybridResultRef.current.result);
     }
     if (hybridRequestRef.current?.key === key) return hybridRequestRef.current.promise;
-    const promise = window.mediagen
+    const promise = window.vibedeck
       .searchFeedItems({ query: candidateQuery, scope: candidateScope, mode: "hybrid" })
       .then((result) => {
         hybridResultRef.current = { key, result };
@@ -1883,7 +1918,7 @@ function SearchPalette({
 
     const key = searchDraftKey(normalizedQuery, scope);
     setLexicalPending(true);
-    void window.mediagen
+    void window.vibedeck
       .searchFeedItems({ query: normalizedQuery, scope, mode: "lexical" })
       .then((result) => {
         if (requestRevisionRef.current !== revision) return;
@@ -2152,14 +2187,14 @@ function SearchPalette({
 
 function Brand() {
   return (
-    <div className="brand" aria-label="MediaGen Veille">
+    <div className="brand" aria-label="VibeDeck">
       <span className="brand__mark" aria-hidden="true">
         <i />
         <i />
         <i />
       </span>
-      <strong>MEDIAGEN</strong>
-      <span>VEILLE<span className="brand__cursor">_</span></span>
+      <strong>VIBE</strong>
+      <span>DECK<span className="brand__cursor">_</span></span>
     </div>
   );
 }
@@ -2219,7 +2254,7 @@ function PanelFrame({
   const panelClassKind = kind === "PAGE WEB" ? "web" : kind.toLowerCase();
 
   function focusFromPointer(panelElement: HTMLElement) {
-    window.mediagen.focusDashboard();
+    window.vibedeck.focusDashboard();
     onFocus();
     panelElement.focus({ preventScroll: true });
   }
@@ -2792,26 +2827,26 @@ function WebPanelView({
         <IconButton
           label="Page précédente"
           disabled={!runtime?.canGoBack}
-          onClick={() => void window.mediagen.goBackWebPanel(panel.id)}
+          onClick={() => void window.vibedeck.goBackWebPanel(panel.id)}
         >
           <ArrowLeft size={12} />
         </IconButton>
         <IconButton
           label="Page suivante"
           disabled={!runtime?.canGoForward}
-          onClick={() => void window.mediagen.goForwardWebPanel(panel.id)}
+          onClick={() => void window.vibedeck.goForwardWebPanel(panel.id)}
         >
           <ArrowRight size={12} />
         </IconButton>
-        <IconButton label="Accueil" onClick={() => void window.mediagen.homeWebPanel(panel.id)}>
+        <IconButton label="Accueil" onClick={() => void window.vibedeck.homeWebPanel(panel.id)}>
           <Home size={12} />
         </IconButton>
         <IconButton
           label={runtime?.loading ? "Arrêter" : "Recharger"}
           onClick={() =>
             void (runtime?.loading
-              ? window.mediagen.stopWebPanel(panel.id)
-              : window.mediagen.reloadWebPanel(panel.id))
+              ? window.vibedeck.stopWebPanel(panel.id)
+              : window.vibedeck.reloadWebPanel(panel.id))
           }
         >
           {runtime?.loading ? <X size={12} /> : <RefreshCw size={12} />}
@@ -2851,14 +2886,14 @@ function WebPanelView({
           label={runtime?.muted === false ? "Couper le son" : "Activer le son"}
           active={runtime?.muted === false}
           onClick={() =>
-            void window.mediagen.setWebPanelMuted(panel.id, runtime?.muted === false)
+            void window.vibedeck.setWebPanelMuted(panel.id, runtime?.muted === false)
           }
         >
           {runtime?.muted === false ? <Volume2 size={12} /> : <VolumeX size={12} />}
         </IconButton>
         <IconButton
           label="Ouvrir dans le navigateur"
-          onClick={() => void window.mediagen.openExternalWebPanel(panel.id)}
+          onClick={() => void window.vibedeck.openExternalWebPanel(panel.id)}
         >
           <ExternalLink size={12} />
         </IconButton>
@@ -2870,7 +2905,7 @@ function WebPanelView({
             title="Impossible d’afficher cette page"
             body={runtime?.error ?? "La page ne répond pas dans le panel."}
             action="Réessayer"
-            onAction={() => void window.mediagen.reloadWebPanel(panel.id)}
+            onAction={() => void window.vibedeck.reloadWebPanel(panel.id)}
           />
         )}
         {!runtime && (
@@ -2940,7 +2975,7 @@ function LinkPreviewView({
             <button
               type="button"
               className="quiet-button"
-              onClick={() => void window.mediagen.showOriginalArticle(preview.itemId)}
+              onClick={() => void window.vibedeck.showOriginalArticle(preview.itemId)}
             >
               Page originale
             </button>
@@ -2949,7 +2984,7 @@ function LinkPreviewView({
             type="button"
             className="quiet-button link-reader__external"
             disabled={!runtime}
-            onClick={() => void window.mediagen.openExternalWebPanel(LINK_READER_ID)}
+            onClick={() => void window.vibedeck.openExternalWebPanel(LINK_READER_ID)}
           >
             <ExternalLink size={12} /> Ouvrir à l’extérieur
           </button>
@@ -2962,8 +2997,8 @@ function LinkPreviewView({
               body={runtime?.error ?? "La page ne répond pas dans l’application."}
               action={readerMode === "original" ? "Réessayer" : "Page originale"}
               onAction={() => void (readerMode === "original"
-                ? window.mediagen.retryOriginalArticle(preview.itemId)
-                : window.mediagen.showOriginalArticle(preview.itemId))}
+                ? window.vibedeck.retryOriginalArticle(preview.itemId)
+                : window.vibedeck.showOriginalArticle(preview.itemId))}
             />
           )}
           {!runtime && (
@@ -3515,20 +3550,66 @@ function ConfirmModal({
   );
 }
 
+function updateStateText(state: UpdateState | null) {
+  if (!state) return "État des mises à jour indisponible.";
+  switch (state.status) {
+    case "disabled":
+      return state.message ?? "Disponible uniquement dans l’application installée.";
+    case "checking":
+      return "Recherche d’une nouvelle version…";
+    case "downloading":
+      return state.progressPercent === null
+        ? "Téléchargement de la nouvelle version…"
+        : `Téléchargement de la version ${state.availableVersion ?? "suivante"} · ${state.progressPercent} %`;
+    case "ready":
+      return `La version ${state.availableVersion ?? "suivante"} est prête.`;
+    case "up-to-date":
+      return "Cette version est à jour.";
+    case "error":
+      return state.message ?? "La recherche de mise à jour a échoué.";
+    default:
+      return "La recherche automatique est active.";
+  }
+}
+
+function updateStateAnnouncement(state: UpdateState | null) {
+  if (!state) return "";
+  switch (state.status) {
+    case "checking":
+      return "Recherche d’une mise à jour en cours.";
+    case "downloading":
+      return `Téléchargement de la version ${state.availableVersion ?? "suivante"} en cours.`;
+    case "ready":
+      return `La version ${state.availableVersion ?? "suivante"} est prête à redémarrer.`;
+    case "up-to-date":
+      return "VibeDeck est à jour.";
+    case "error":
+      return state.message ?? "La recherche de mise à jour a échoué.";
+    default:
+      return "";
+  }
+}
+
 function PilotToolsModal({
+  updateState,
+  onUpdateState,
   onClose,
   onImported,
   onToast,
   semanticStatus,
   onRemoveSemanticData,
 }: {
+  updateState: UpdateState | null;
+  onUpdateState: (state: UpdateState) => void;
   onClose: () => void;
   onImported: (state: AppState, backupCreated: boolean) => void;
   onToast: (message: string) => void;
   semanticStatus: SemanticSearchStatus;
   onRemoveSemanticData: () => Promise<void>;
 }) {
-  const [pending, setPending] = useState<"import" | "export" | "diagnostics" | "web" | "search" | null>(null);
+  const [pending, setPending] = useState<
+    "import" | "export" | "diagnostics" | "web" | "search" | "update" | "restart" | null
+  >(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmWebReset, setConfirmWebReset] = useState(false);
   const [confirmSearchReset, setConfirmSearchReset] = useState(false);
@@ -3563,13 +3644,52 @@ function PilotToolsModal({
             <X size={16} />
           </button>
         </header>
+        <div className="pilot-tools-update">
+          <span>
+            <strong>VibeDeck {updateState?.currentVersion ?? ""}</strong>
+            {updateStateText(updateState)}
+          </span>
+          {updateState?.status === "ready" ? (
+            <button
+              type="button"
+              className="primary-button"
+              disabled={Boolean(pending)}
+              onClick={() => void run("restart", () => window.vibedeck.restartForUpdate())}
+            >
+              {pending === "restart" && <LoaderCircle className="is-spinning" size={13} />}
+              Redémarrer
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="quiet-button"
+              disabled={
+                Boolean(pending) ||
+                !updateState ||
+                updateState.status === "disabled" ||
+                updateState.status === "checking" ||
+                updateState.status === "downloading"
+              }
+              onClick={() =>
+                void run("update", async () => {
+                  onUpdateState(await window.vibedeck.checkForUpdates());
+                })
+              }
+            >
+              {(pending === "update" || updateState?.status === "checking") && (
+                <LoaderCircle className="is-spinning" size={13} />
+              )}
+              Vérifier
+            </button>
+          )}
+        </div>
         <div className="pilot-tools-list">
           <button
             type="button"
             disabled={Boolean(pending)}
             onClick={() =>
               void run("import", async () => {
-                const result = await window.mediagen.importDashboard();
+                const result = await window.vibedeck.importDashboard();
                 if (result.state) onImported(result.state, Boolean(result.backupFilePath));
               })
             }
@@ -3583,7 +3703,7 @@ function PilotToolsModal({
             disabled={Boolean(pending)}
             onClick={() =>
               void run("export", async () => {
-                const result = await window.mediagen.exportDashboard();
+                const result = await window.vibedeck.exportDashboard();
                 if (!result.canceled) onToast("Dashboard exporté");
               })
             }
@@ -3597,7 +3717,7 @@ function PilotToolsModal({
             disabled={Boolean(pending)}
             onClick={() =>
               void run("diagnostics", async () => {
-                const result = await window.mediagen.exportDiagnostics();
+                const result = await window.vibedeck.exportDiagnostics();
                 if (!result.canceled) onToast("Diagnostic exporté");
               })
             }
@@ -3624,7 +3744,7 @@ function PilotToolsModal({
                 return;
               }
               void run("web", async () => {
-                await window.mediagen.clearWebData();
+                await window.vibedeck.clearWebData();
                 setConfirmWebReset(false);
                 onToast("Données des pages web effacées");
               });
@@ -3727,7 +3847,7 @@ function FeedConfigModal({
           ? [{ url: customInput.trim(), connectorKind: customConnectorKind }]
           : []),
       ];
-      const nextState = await saveFeedPanelConfiguration(window.mediagen, panel, state, {
+      const nextState = await saveFeedPanelConfiguration(window.vibedeck, panel, state, {
         name: name.trim(),
         defaultRefreshIntervalSeconds: defaultRefreshInterval,
         keptSourceIds: [...keptSourceIds],

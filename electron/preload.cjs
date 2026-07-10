@@ -1,7 +1,10 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
-contextBridge.exposeInMainWorld("mediagen", {
+contextBridge.exposeInMainWorld("vibedeck", {
   getState: () => ipcRenderer.invoke("aggregator:get-state"),
+  getUpdateState: () => ipcRenderer.invoke("updates:get-state"),
+  checkForUpdates: () => ipcRenderer.invoke("updates:check"),
+  restartForUpdate: () => ipcRenderer.invoke("updates:restart").then(() => undefined),
   createPanel: (input, placement) =>
     ipcRenderer.invoke("aggregator:create-panel", input, placement),
   renamePanel: (panelId, name) =>
@@ -81,6 +84,12 @@ contextBridge.exposeInMainWorld("mediagen", {
     const listener = (_event, state) => callback(state);
     ipcRenderer.on("aggregator:state-changed", listener);
     return () => ipcRenderer.removeListener("aggregator:state-changed", listener);
+  },
+  onUpdateStateChanged: (callback) => {
+    if (typeof callback !== "function") throw new TypeError("Callback invalide.");
+    const listener = (_event, state) => callback(state);
+    ipcRenderer.on("updates:state-changed", listener);
+    return () => ipcRenderer.removeListener("updates:state-changed", listener);
   },
   onWebPanelStateChanged: (callback) => {
     if (typeof callback !== "function") throw new TypeError("Callback invalide.");

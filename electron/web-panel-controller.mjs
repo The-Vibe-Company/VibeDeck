@@ -15,7 +15,7 @@ const MAX_URL_LENGTH = 4_096;
 const MAX_TEXT_LENGTH = 512;
 const MAX_COORDINATE = 10_000_000;
 export const WEB_PANEL_SESSION_STRATEGY = Object.freeze({
-  partition: "persist:mediagen-web-panels",
+  partition: "persist:vibedeck-web-panels",
   persistent: true,
   sharedAcrossPanels: true,
   retainedWhenClosed: Object.freeze(["cookies", "local-storage", "http-cache"]),
@@ -26,7 +26,7 @@ const ARTICLE_READER_PANEL_ID = "reader:article";
 const ARTICLE_READER_PRELOAD = fileURLToPath(
   new URL("./article-reader-preload.cjs", import.meta.url),
 );
-const ARTICLE_READER_STATIC_PARTITION = "mediagen-reader-static";
+const ARTICLE_READER_STATIC_PARTITION = "vibedeck-reader-static";
 const READER_FALLBACK_REASONS = new Set(ARTICLE_READER_FALLBACK_REASONS);
 const securedSessions = new WeakSet();
 const WEB_DATA_SCOPES = new Set(["cache", "site-data", "all"]);

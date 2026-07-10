@@ -1,13 +1,17 @@
 {
-  "name": "mediagen-veille",
+  "name": "vibedeck",
   "version": "0.2.0",
   "private": true,
   "engines": {
     "node": ">=22.18.0"
   },
-  "description": "Agrégateur local de flux d'actualité pour MediaGen",
-  "author": "MediaGen",
-  "license": "UNLICENSED",
+  "description": "Agrégateur local de veille pour journalistes",
+  "author": "The Vibe Company",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/The-Vibe-Company/VibeDeck.git"
+  },
   "type": "module",
   "main": "electron/main.mjs",
   "scripts": {
@@ -24,16 +28,18 @@
     "verify:packaged-fuses": "node scripts/verify-packaged-fuses.mjs",
     "checksums:release": "node scripts/release-checksums.mjs write",
     "verify:checksums": "node scripts/release-checksums.mjs verify",
+    "prepare:mac-universal": "npm install --no-save --package-lock=false --force --include=optional @img/sharp-darwin-arm64@0.34.5 @img/sharp-darwin-x64@0.34.5 @img/sharp-libvips-darwin-arm64@1.2.4 @img/sharp-libvips-darwin-x64@1.2.4",
     "dist:dir": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir",
     "dist": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
-    "dist:mac": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --universal",
+    "dist:mac": "npm run prepare:mac-universal && npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --universal",
     "dist:win": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win --x64",
-    "dist:mac:signed": "npm run build && electron-builder --mac --universal -c.forceCodeSigning=true -c.mac.notarize=true",
-    "dist:win:signed": "npm run build && electron-builder --win --x64 -c.forceCodeSigning=true"
+    "dist:mac:signed": "npm run prepare:mac-universal && npm run build && electron-builder --mac --universal -c.forceCodeSigning=true -c.mac.notarize=true",
+    "dist:win:signed": "npm run build && node scripts/build-windows-signed.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "3.8.1",
     "cheerio": "1.2.0",
+    "electron-updater": "6.8.9",
     "fast-xml-parser": "5.9.3",
     "tldts": "7.4.8"
   },
@@ -59,8 +65,8 @@
     "wait-on": "9.0.10"
   },
   "build": {
-    "appId": "com.mediagen.veille",
-    "productName": "MediaGen Veille",
+    "appId": "com.thevibecompany.vibedeck",
+    "productName": "VibeDeck",
     "afterSign": "scripts/after-sign.mjs",
     "asar": true,
     "asarUnpack": [
@@ -83,18 +89,30 @@
       "!**/*.map",
       "package.json"
     ],
+    "extraResources": [
+      "LICENSE"
+    ],
     "directories": {
       "output": "release"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "The-Vibe-Company",
+      "repo": "VibeDeck",
+      "releaseType": "draft",
+      "tagNamePrefix": "v"
     },
     "mac": {
       "category": "public.app-category.news",
       "icon": "build/icon.icns",
       "hardenedRuntime": true,
+      "x64ArchFiles": "**/node_modules/{@img,onnxruntime-node}/**",
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
       "target": [
         "dir",
-        "dmg"
+        "dmg",
+        "zip"
       ]
     },
     "win": {
@@ -104,8 +122,9 @@
         "nsis"
       ]
     },
-    "nsis": {
-      "oneClick": false,
+  "nsis": {
+    "artifactName": "vibedeck-setup-${version}.${ext}",
+    "oneClick": false,
       "allowToChangeInstallationDirectory": true
     }
   }

@@ -1,4 +1,4 @@
-# MediaGen Veille — runbook du pilote AFP
+# VibeDeck — runbook du pilote AFP
 
 Ce document décrit les vérifications nécessaires avant de remettre une version à un desk AFP. Il ne remplace ni la validation sécurité de la DSI ni la validation juridique des droits attachés aux flux.
 
@@ -65,7 +65,7 @@ Pour la recette AFP, exporter successivement un diagnostic en accès direct, der
 
 ### Durée active locale
 
-Une session pilote est ouverte localement au démarrage. Un battement est enregistré toutes les 60 secondes ainsi que lors des changements de focus, visibilité ou réduction de la fenêtre. Le temps n’est considéré actif que si au moins une fenêtre MediaGen est visible, non réduite et focalisée.
+Une session pilote est ouverte localement au démarrage. Un battement est enregistré toutes les 60 secondes ainsi que lors des changements de focus, visibilité ou réduction de la fenêtre. Le temps n’est considéré actif que si au moins une fenêtre VibeDeck est visible, non réduite et focalisée.
 
 Depuis le schéma SQLite v6, chaque delta actif est découpé exactement aux limites des journées civiles du fuseau local du poste. Un battement retardé de plus de deux minutes reste plafonné à deux minutes avant cette ventilation, afin qu’une veille ou une suspension ne soit jamais comptée comme du temps actif. Une journée peut donc recevoir de la durée sans nouvelle session si l’application est restée ouverte après minuit. Les compteurs quotidiens signifient : session démarrée le jour indiqué, fermeture normale ce jour-là, ou session interrompue dont le dernier battement appartient à ce jour.
 
@@ -77,25 +77,29 @@ Le diagnostic contient uniquement les durées agrégées et le nombre de session
 
 La diffusion directe exige un certificat `Developer ID Application` et des identifiants de notarisation Apple configurés uniquement dans les secrets CI.
 
+Release Please maintient la Release PR, `package.json`, `package-lock.json`, `.release-please-manifest.json` et `CHANGELOG.md`. Après fusion de cette PR, il crée un tag `vX.Y.Z` et une GitHub Release brouillon. Tant que `ENABLE_WINDOWS_RELEASE` vaut `false`, le tag déclenche uniquement le build macOS signé et le brouillon devient public après validation exacte des artefacts macOS et de leurs checksums. Le secret d’organisation `RELEASE_PLEASE_TOKEN` doit être autorisé uniquement pour ce dépôt et disposer des permissions Contents, Pull Requests et Issues en écriture.
+
 Le secret `APPLE_API_KEY` accepte le contenu brut du fichier `.p8` ou sa version encodée en base64. `MAC_CSC_LINK` contient le certificat `.p12` encodé en base64 ; les mots de passe et identifiants ne sont jamais stockés dans le dépôt.
 
 ```bash
 npm run dist:mac:signed
 npm run verify:packaged-fuses
-codesign --verify --deep --strict --verbose=2 "release/mac-universal/MediaGen Veille.app"
-spctl --assess --type execute --verbose=2 "release/mac-universal/MediaGen Veille.app"
-xcrun stapler validate "release/mac-universal/MediaGen Veille.app"
+codesign --verify --deep --strict --verbose=2 "release/mac-universal/VibeDeck.app"
+spctl --assess --type execute --verbose=2 "release/mac-universal/VibeDeck.app"
+xcrun stapler validate "release/mac-universal/VibeDeck.app"
 npm run checksums:release
 npm run verify:checksums
 ```
 
-Le job `pilot-release-signed` refuse de produire une version de diffusion si le certificat est absent. Ses actions tierces sont épinglées par SHA, ses jobs refusent toute référence autre que `main`, et le bundle contenu dans le DMG est monté, vérifié puis réellement lancé avant publication.
+Le job `release-signed` refuse de produire une version de diffusion si le certificat est absent. Ses actions tierces sont épinglées par SHA, le tag doit correspondre exactement à la version de `package.json` et pointer sur l’historique de `main`, et le bundle contenu dans le DMG est monté, vérifié puis réellement lancé avant publication. Le ZIP et `latest-mac.yml` sont publiés avec le DMG pour permettre l’auto-mise à jour.
 
-Les secrets de signature doivent vivre uniquement dans l’environnement GitHub `signed-release`. Le dépôt privé est actuellement sur le plan GitHub Free : GitHub n’autorise pas les reviewers obligatoires d’environnement ni la protection de branche privée sur ce plan. L’environnement existe donc sans règle d’approbation et ne doit recevoir aucun certificat tant que l’organisation n’a pas activé ces protections, ou mis en place une cérémonie de release indépendante équivalente. Seuls les administrateurs de l’organisation disposent actuellement d’un accès en écriture au dépôt.
+Les secrets de signature doivent vivre uniquement dans l’environnement GitHub `signed-release`, protégé par un reviewer obligatoire. Le dépôt doit être public seulement après un scan de secrets de tout son historique ; `main` et les tags `v*` restent protégés. Les certificats ne doivent pas être provisionnés tant que ces règles et le reviewer `StanGirard` ne sont pas en place.
 
 Sur un dossier synchronisé par iCloud/FileProvider, macOS peut réattacher des attributs étendus au bundle et invalider une vérification locale stricte. Construire et vérifier la version de diffusion sur le disque temporaire du runner CI ou dans un dossier local non synchronisé, puis vérifier également l’application réellement contenue dans le DMG. Ce phénomène ne doit jamais être contourné en relâchant les contrôles de signature.
 
 ## Windows
+
+La publication Windows est temporairement désactivée avec la variable GitHub `ENABLE_WINDOWS_RELEASE=false`. Voir [WINDOWS_RELEASE_TODO.md](./WINDOWS_RELEASE_TODO.md) pour le blocage Azure et la procédure de réactivation. Une release déjà publiée en mode macOS uniquement reste immuable : Windows doit être activé avant le tag d’une version SemVer supérieure.
 
 Le build x64 et l’installateur doivent être produits sur une machine Windows ou par le job CI Windows.
 
@@ -103,12 +107,20 @@ Le build x64 et l’installateur doivent être produits sur une machine Windows 
 npm ci
 npm run dist:win:signed
 npm run verify:packaged-fuses
-Get-AuthenticodeSignature "release\MediaGen Veille Setup 0.2.0.exe"
+Get-AuthenticodeSignature "release\vibedeck-setup-0.2.0.exe"
 npm run checksums:release
 npm run verify:checksums
 ```
 
 Vérifier installation, premier lancement, installation d’une version supérieure, désinstallation et absence de données résiduelles non documentées. Tester au moins Windows 11 x64 sur un poste géré AFP.
+
+La variable d’environnement GitHub `WIN_PUBLISHER_NAME` doit contenir exactement le nom juridique validé par Azure Artifact Signing. Le job Windows s’authentifie avec une application Entra limitée au rôle `Artifact Signing Certificate Profile Signer`, puis electron-builder signe l’application et l’installateur avec le profil public configuré. L’installateur, sa blockmap et `latest.yml` sont attachés au même brouillon que les artefacts macOS. La release reste invisible tant que le job final n’a pas validé les deux plateformes.
+
+## Mise à jour automatique
+
+À partir de la version 0.3.0, l’application installée vérifie le canal stable public au démarrage puis toutes les six heures. Une nouvelle version est téléchargée en arrière-plan, mais son installation reste une action explicite « Redémarrer ». Avant de lancer l’installeur, le main process annule les rafraîchissements, attend les mutations actives, ferme les vues web puis SQLite. La version 0.2.0 ne contient pas ce mécanisme et doit donc être remplacée une dernière fois manuellement.
+
+Une release publiée est immuable. En cas de défaut, publier une version SemVer supérieure ; ne jamais remplacer un installateur ou un fichier `latest*.yml` existant. Un workflow manuel peut reprendre un brouillon associé à un tag existant, mais ne peut pas inventer une nouvelle version.
 
 ## Gate du pilote
 

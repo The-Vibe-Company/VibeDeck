@@ -12,7 +12,7 @@ import {
 } from "./local-files.mjs";
 
 async function temporaryDirectory(t) {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "mediagen-local-files-"));
+  const directory = await mkdtemp(path.join(os.tmpdir(), "vibedeck-local-files-"));
   t.after(async () => {
     await import("node:fs/promises").then(({ rm }) =>
       rm(directory, { recursive: true, force: true }),
