@@ -106,10 +106,10 @@ assert.deepEqual(
     provider: "github",
     owner: "The-Vibe-Company",
     repo: "VibeDeck",
-    releaseType: "draft",
+    releaseType: "release",
     tagNamePrefix: "v",
   },
-  "Le provider de mise à jour doit rester le dépôt GitHub public en mode brouillon",
+  "Le provider de mise à jour doit rester le dépôt GitHub public en mode release publiée",
 );
 assert.match(
   afterSignHook,
@@ -312,7 +312,7 @@ assert.ok(
   "Workflow Release Please manquant",
 );
 assert.equal(releasePleaseManifest["."], packageJson.version, "Manifest Release Please désynchronisé");
-assert.equal(releasePleaseConfig.draft, true, "Release Please doit préparer un brouillon");
+assert.equal(releasePleaseConfig.draft, false, "Release Please doit créer une release publiée");
 assert.equal(
   releasePleaseConfig["force-tag-creation"],
   true,
@@ -378,18 +378,33 @@ assert.equal(
 );
 assert.match(
   releaseWorkflow,
+  /macos:[\s\S]*?environment:\s*signed-release\s*\n\s*permissions:\s*\n\s*contents: read/,
+  "Le job macOS ne doit pas garder de permission d’écriture après la désactivation de la publication directe",
+);
+assert.match(
+  releaseWorkflow,
+  /windows:[\s\S]*?environment:\s*signed-release\s*\n\s*permissions:\s*\n\s*contents: read/,
+  "Le job Windows ne doit pas garder de permission d’écriture après la désactivation de la publication directe",
+);
+assert.doesNotMatch(
+  releaseWorkflow,
+  /GITHUB_RELEASE_TOKEN/,
+  "Les jobs plateforme ne doivent plus recevoir de jeton de publication",
+);
+assert.match(
+  releaseWorkflow,
   /tags:\s*\["v\*\.\*\.\*"\]/,
   "Les builds signés doivent être déclenchés par les tags SemVer",
 );
 assert.match(
   releaseWorkflow,
   /workflow_dispatch:[\s\S]*description: Tag SemVer existant/,
-  "Une release brouillon doit pouvoir être reprise explicitement",
+  "Une release publiée doit pouvoir être reprise explicitement",
 );
 assert.match(
   releaseWorkflow,
   /validate:\s*\n\s*runs-on: ubuntu-latest\s*\n\s*permissions:\s*\n(?:\s*#[^\n]*\n)*\s*contents: write/,
-  "Le job de validation doit pouvoir consulter la release brouillon",
+  "Le job de validation doit pouvoir retirer latest avant les artefacts signés",
 );
 assert.match(
   releaseWorkflow,
@@ -403,13 +418,23 @@ assert.match(
 );
 assert.equal(
   (releaseWorkflow.match(/--publish always/g) ?? []).length,
+  0,
+  "Les jobs plateforme ne doivent pas publier avant la validation finale",
+);
+assert.equal(
+  (releaseWorkflow.match(/--publish never/g) ?? []).length,
   2,
-  "Chaque plateforme doit publier ses artefacts dans le brouillon",
+  "Chaque plateforme doit produire ses artefacts sans publication directe",
+);
+assert.match(
+  releaseWorkflow,
+  /make_latest=false/,
+  "La release publiée ne doit pas rester latest avant les artefacts signés",
 );
 assert.match(
   releaseWorkflow,
   /gh release edit "\$RELEASE_TAG" --draft=false --latest/,
-  "La release ne doit devenir visible qu’après validation finale",
+  "La release doit redevenir latest après validation finale",
 );
 assert.match(
   releaseWorkflow,
@@ -468,6 +493,21 @@ assert.equal(
 );
 assert.match(releaseWorkflow, /release\/latest-mac\.yml/, "Métadonnées macOS manquantes");
 assert.match(releaseWorkflow, /release\/latest\.yml/, "Métadonnées Windows manquantes");
+assert.match(
+  releaseWorkflow,
+  /missing_artifact_paths=\(\)[\s\S]*gh release upload "\$RELEASE_TAG" "\$\{missing_artifact_paths\[@\]\}"/,
+  "Le job final doit uploader les artefacts validés manquants, DMG inclus, sans remplacer l’existant",
+);
+assert.match(
+  releaseWorkflow,
+  /gh release download "\$RELEASE_TAG" --pattern "\$asset_name" --dir "\$asset_verify_dir"[\s\S]*cmp -s "\$artifact_path" "\$asset_verify_dir\/\$asset_name"/,
+  "Le job final doit vérifier le contenu des artefacts distants déjà présents avant de les réutiliser",
+);
+assert.doesNotMatch(
+  releaseWorkflow,
+  /gh release upload[^\n]*--clobber/,
+  "Le job final ne doit pas remplacer des artefacts déjà publiés",
+);
 assert.match(releaseWorkflow, /WIN_PUBLISHER_NAME/, "Éditeur Windows de confiance manquant");
 for (const credential of ["AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"]) {
   assert.match(
