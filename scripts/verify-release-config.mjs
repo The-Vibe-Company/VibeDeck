@@ -293,6 +293,11 @@ for (const scriptName of ["dist", "dist:dir", "dist:mac", "dist:win"]) {
     /CSC_IDENTITY_AUTO_DISCOVERY=false/,
     `${scriptName} doit rester explicitement non signé`,
   );
+  assert.match(
+    packageJson.scripts?.[scriptName] ?? "",
+    /--publish never/,
+    `${scriptName} ne doit jamais publier les artefacts du pilote`,
+  );
 }
 assert.ok(
   existsSync(path.join(root, ".github/workflows/pilot-build.yml")),
