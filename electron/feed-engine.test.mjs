@@ -134,7 +134,7 @@ async function importRefreshSources(engine, feedUrls) {
     refreshIntervalSeconds: 60,
   }));
   await engine.importDashboardConfig({
-    format: "mediagen-veille-dashboard",
+    format: "vibedeck-dashboard",
     version: 1,
     layout: { type: "panel", panelId },
     panels: [

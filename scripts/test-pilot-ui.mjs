@@ -40,7 +40,7 @@ function renderFeed(origin, articles) {
   return `<?xml version="1.0" encoding="UTF-8"?>
     <rss version="2.0">
       <channel>
-        <title>Flux contrôlé MediaGen</title>
+        <title>Flux contrôlé VibeDeck</title>
         <link>${escapeXml(origin)}</link>
         <description>Flux local du test pilote</description>
         ${items}
@@ -156,11 +156,11 @@ const server = createServer((request, response) => {
 });
 
 let electronApp;
-const temporaryDirectory = await mkdtemp(path.join(tmpdir(), "mediagen-pilot-ui-"));
+const temporaryDirectory = await mkdtemp(path.join(tmpdir(), "vibedeck-pilot-ui-"));
 
 try {
   origin = await listen(server);
-  const databasePath = path.join(temporaryDirectory, "veille.sqlite3");
+  const databasePath = path.join(temporaryDirectory, "vibedeck.sqlite3");
   electronApp = await electron.launch({
     executablePath: electronExecutable,
     args: [`--user-data-dir=${path.join(temporaryDirectory, "profile")}`, projectRoot],
@@ -168,8 +168,8 @@ try {
     env: {
       ...process.env,
       ELECTRON_DISABLE_SECURITY_WARNINGS: "true",
-      MEDIAGEN_ALLOW_PRIVATE_NETWORK: "true",
-      MEDIAGEN_DB_PATH: databasePath,
+      VIBEDECK_ALLOW_PRIVATE_NETWORK: "true",
+      VIBEDECK_DB_PATH: databasePath,
       VITE_DEV_SERVER_URL: "",
     },
     timeout: 30_000,
@@ -178,17 +178,21 @@ try {
   const page = await electronApp.firstWindow({ timeout: 30_000 });
   page.setDefaultTimeout(20_000);
   await page.bringToFront();
-  await page.waitForFunction(() => Boolean(window.mediagen?.getState));
-  await page.evaluate(() => window.mediagen.focusDashboard());
+  await page.waitForFunction(() => Boolean(window.vibedeck?.getState));
+  await page.evaluate(() => window.vibedeck.focusDashboard());
+  const updateAnnouncement = page.locator(".update-announcement");
+  assert.equal(await updateAnnouncement.getAttribute("role"), "status");
+  assert.equal(await updateAnnouncement.getAttribute("aria-live"), "polite");
+  assert.equal(await updateAnnouncement.getAttribute("aria-atomic"), "true");
 
   const browserWindow = await electronApp.browserWindow(page);
   await browserWindow.evaluate((window) => window.setSize(1280, 820));
   await browserWindow.dispose();
 
   const panelId = await page.evaluate(async () => {
-    const before = await window.mediagen.getState();
+    const before = await window.vibedeck.getState();
     const existingIds = new Set(before.panels.map(({ id }) => id));
-    const next = await window.mediagen.createPanel({
+    const next = await window.vibedeck.createPanel({
       kind: "feed",
       name: "Preuve viewport",
       defaultRefreshIntervalSeconds: 1_800,
@@ -200,7 +204,7 @@ try {
 
   const sourceId = await page.evaluate(
     async ({ targetPanelId, feedUrl }) => {
-      const result = await window.mediagen.addSource(targetPanelId, {
+      const result = await window.vibedeck.addSource(targetPanelId, {
         url: feedUrl,
         connectorKind: "rss",
         refreshIntervalSeconds: 1_800,
@@ -217,7 +221,7 @@ try {
   assert.equal(primaryRequestCount, 1, "Le flux principal doit être chargé une seule fois.");
 
   await page.evaluate(
-    async ({ targetPanelId, feedUrl }) => window.mediagen.addSource(targetPanelId, {
+    async ({ targetPanelId, feedUrl }) => window.vibedeck.addSource(targetPanelId, {
       url: feedUrl,
       connectorKind: "rss",
       refreshIntervalSeconds: 1_800,
@@ -418,7 +422,7 @@ try {
     },
     ...articles,
   ];
-  await page.evaluate((id) => window.mediagen.refreshSource(id), sourceId);
+  await page.evaluate((id) => window.vibedeck.refreshSource(id), sourceId);
   await page.locator(".article-row").filter({ hasText: topArrivalTitle }).waitFor({ state: "visible" });
   assert.equal(
     await page.locator(".article-list").evaluate((list) => list.scrollTop),
@@ -456,9 +460,9 @@ try {
   );
 
   const narrowPanelId = await page.evaluate(async (targetPanelId) => {
-    const before = await window.mediagen.getState();
+    const before = await window.vibedeck.getState();
     const existingIds = new Set(before.panels.map(({ id }) => id));
-    const next = await window.mediagen.createPanel(
+    const next = await window.vibedeck.createPanel(
       {
         kind: "feed",
         name: "Panel étroit témoin",
@@ -470,7 +474,7 @@ try {
   }, panelId);
   assert.ok(narrowPanelId, "Le panel témoin étroit doit être créé.");
   await page.evaluate(
-    async ({ targetPanelId, feedUrl }) => window.mediagen.addSource(targetPanelId, {
+    async ({ targetPanelId, feedUrl }) => window.vibedeck.addSource(targetPanelId, {
       url: feedUrl,
       connectorKind: "rss",
       refreshIntervalSeconds: 1_800,
@@ -704,7 +708,7 @@ try {
   );
 
   primaryShouldFail = false;
-  await page.evaluate((id) => window.mediagen.refreshSource(id), sourceId);
+  await page.evaluate((id) => window.vibedeck.refreshSource(id), sourceId);
   await errorNotice.waitFor({ state: "detached" });
   const sharedViewportBefore = await page.evaluate(({ firstPanelId, secondPanelId }) => {
     const measure = (panelId) => {
@@ -740,7 +744,7 @@ try {
     },
     ...articles,
   ];
-  await page.evaluate((id) => window.mediagen.refreshSource(id), sourceId);
+  await page.evaluate((id) => window.vibedeck.refreshSource(id), sourceId);
   const sharedRows = panelLeaf.locator(".article-row").filter({ hasText: sharedArrivalTitle });
   const sharedSiblingRow = narrowLeaf.locator(".article-row").filter({ hasText: sharedArrivalTitle });
   await sharedRows.waitFor({ state: "visible" });
@@ -773,9 +777,9 @@ try {
   await sharedSiblingRow.waitFor({ state: "visible" });
 
   const temporaryPanelId = await page.evaluate(async (targetPanelId) => {
-    const before = await window.mediagen.getState();
+    const before = await window.vibedeck.getState();
     const knownIds = new Set(before.panels.map(({ id }) => id));
-    const next = await window.mediagen.createPanel(
+    const next = await window.vibedeck.createPanel(
       { kind: "feed", name: "Panel temporaire", defaultRefreshIntervalSeconds: 1_800 },
       { targetPanelId, side: "bottom" },
     );
@@ -792,10 +796,10 @@ try {
   await sharedSiblingRow.waitFor({ state: "visible" });
 
   const sharedItemId = await page.evaluate(async (title) => {
-    const state = await window.mediagen.getState();
+    const state = await window.vibedeck.getState();
     const item = state.items.find((candidate) => candidate.title === title);
     if (!item) throw new Error("L’arrivée partagée est introuvable.");
-    await window.mediagen.markItemOpened(item.id);
+    await window.vibedeck.markItemOpened(item.id);
     return item.id;
   }, sharedArrivalTitle);
   assert.ok(sharedItemId, "L’arrivée partagée doit posséder un identifiant.");
@@ -832,7 +836,7 @@ try {
     const plainTransfer = new DataTransfer();
     plainTransfer.setData("text/plain", "https://external.test/article");
     const forgedTransfer = new DataTransfer();
-    forgedTransfer.setData("application/x-mediagen-panel", "panel-inconnu");
+    forgedTransfer.setData("application/x-vibedeck-panel", "panel-inconnu");
     return {
       plain: dispatch(plainTransfer),
       forgedWithoutActiveDrag: dispatch(forgedTransfer),

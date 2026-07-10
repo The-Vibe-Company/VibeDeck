@@ -2,7 +2,7 @@ import type {
   AppState,
   FeedPanel,
   FeedPanelConfigurationDraft,
-  MediaGenApi,
+  VibeDeckApi,
 } from "./types";
 
 export type {
@@ -11,7 +11,7 @@ export type {
 } from "./types";
 
 type FeedConfigurationApi = Pick<
-  MediaGenApi,
+  VibeDeckApi,
   "saveFeedPanelConfiguration"
 >;
 

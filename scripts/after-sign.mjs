@@ -97,7 +97,7 @@ export default async function afterSign(context) {
 
   const appName = `${context.packager.appInfo.productFilename}.app`;
   const appPath = path.join(context.appOutDir, appName);
-  const signingDirectory = await mkdtemp(path.join(os.tmpdir(), "mediagen-adhoc-sign-"));
+  const signingDirectory = await mkdtemp(path.join(os.tmpdir(), "vibedeck-adhoc-sign-"));
   const stagedAppPath = path.join(signingDirectory, appName);
   let appIsStaged = false;
   let operationError = null;

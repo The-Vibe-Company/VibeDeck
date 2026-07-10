@@ -1,8 +1,8 @@
-import type { MediaGenApi } from "./types";
+import type { VibeDeckApi } from "./types";
 
 declare global {
   interface Window {
-    mediagen: MediaGenApi;
+    vibedeck: VibeDeckApi;
   }
 }
 

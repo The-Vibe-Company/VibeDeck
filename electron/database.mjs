@@ -30,7 +30,7 @@ const MIN_REFRESH_INTERVAL_SECONDS = 30;
 const MAX_REFRESH_INTERVAL_SECONDS = 3_600;
 const DEFAULT_REFRESH_INTERVAL_SECONDS = 60;
 const SCHEMA_VERSION = 6;
-const CONFIGURATION_FORMAT = "mediagen-veille-dashboard";
+const CONFIGURATION_FORMAT = "vibedeck-dashboard";
 const CONFIGURATION_VERSION = 1;
 
 const LEGACY_CONNECTOR_BACKFILLS = Object.freeze([
@@ -669,7 +669,7 @@ export class LocalFeedDatabase {
     const previousVersion = this.database.prepare("PRAGMA user_version").get().user_version;
     if (previousVersion > SCHEMA_VERSION) {
       throw new Error(
-        `Cette base MediaGen utilise un schéma plus récent (${previousVersion}).`,
+        `Cette base VibeDeck utilise un schéma plus récent (${previousVersion}).`,
       );
     }
     this.database.exec("BEGIN IMMEDIATE;");

@@ -172,8 +172,29 @@ export interface LocalImportResult extends LocalFileActionResult {
   backupFilePath: string | null;
 }
 
-export interface MediaGenApi {
+export type UpdateStatus =
+  | "disabled"
+  | "idle"
+  | "checking"
+  | "downloading"
+  | "ready"
+  | "up-to-date"
+  | "error";
+
+export interface UpdateState {
+  status: UpdateStatus;
+  currentVersion: string;
+  availableVersion: string | null;
+  progressPercent: number | null;
+  checkedAt: string | null;
+  message: string | null;
+}
+
+export interface VibeDeckApi {
   getState: () => Promise<AppState>;
+  getUpdateState: () => Promise<UpdateState>;
+  checkForUpdates: () => Promise<UpdateState>;
+  restartForUpdate: () => Promise<void>;
   createPanel: (
     input: string | CreatePanelInput,
     placement?: PanelPlacement,
@@ -220,6 +241,7 @@ export interface MediaGenApi {
   openExternalWebPanel: (panelId: string) => Promise<void>;
   setWebPanelMuted: (panelId: string, muted: boolean) => Promise<void>;
   onStateChanged: (callback: (state: AppState) => void) => () => void;
+  onUpdateStateChanged: (callback: (state: UpdateState) => void) => () => void;
   onWebPanelStateChanged: (
     callback: (state: WebPanelRuntimeState) => void,
   ) => () => void;

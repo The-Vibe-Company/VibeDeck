@@ -10,7 +10,7 @@ const launchSources = [
   ["Le Parisien", "leparisien.fr/actualites-en-continu"],
 ];
 
-const directory = mkdtempSync(path.join(tmpdir(), "mediagen-live-"));
+const directory = mkdtempSync(path.join(tmpdir(), "vibedeck-live-"));
 const engine = createFeedEngine({ dbPath: path.join(directory, "smoke.sqlite3") });
 
 try {

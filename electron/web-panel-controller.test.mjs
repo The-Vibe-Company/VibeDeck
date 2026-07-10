@@ -421,7 +421,7 @@ test("documents the persistent web session while clearing background workers on 
   controller.sync([descriptor("news")]);
   const webSession = views[0].webContents.session;
 
-  assert.equal(WEB_PANEL_SESSION_STRATEGY.partition, "persist:mediagen-web-panels");
+  assert.equal(WEB_PANEL_SESSION_STRATEGY.partition, "persist:vibedeck-web-panels");
   assert.equal(WEB_PANEL_SESSION_STRATEGY.persistent, true);
   assert.deepEqual(WEB_PANEL_SESSION_STRATEGY.retainedWhenClosed, [
     "cookies",

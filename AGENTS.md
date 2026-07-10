@@ -163,7 +163,7 @@ Les signatures macOS/Windows, la notarisation Apple et la recette réseau AFP so
 - Tester les courses dans les deux sens, ainsi que l’annulation et la libération des verrous.
 - Utiliser une base et un profil temporaires ; ne jamais dépendre des données locales du développeur.
 - Séparer le contrat multiplateforme des garanties POSIX. Les bits de permission Unix ne se testent pas sur Windows.
-- Un test du paquet doit utiliser l’application réellement empaquetée et son protocole `mediagen-app://`, pas seulement le serveur Vite.
+- Un test du paquet doit utiliser l’application réellement empaquetée et son protocole `vibedeck-app://`, pas seulement le serveur Vite.
 
 ## Git, PR et release
 

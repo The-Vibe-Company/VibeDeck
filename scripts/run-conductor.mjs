@@ -21,15 +21,15 @@ function quoteForShell(value) {
 async function run() {
   const port = parseDevelopmentPort(process.env.CONDUCTOR_PORT);
   const workspacePath = requireWorkspacePath(process.env.CONDUCTOR_WORKSPACE_PATH);
-  const userDataPath = path.join(workspacePath, ".context", "mediagen-dev", "user-data");
+  const userDataPath = path.join(workspacePath, ".context", "vibedeck-dev", "user-data");
   await mkdir(userDataPath, { recursive: true });
 
   const env = {
     ...process.env,
-    MEDIAGEN_DEV_SERVER_PORT: String(port),
+    VIBEDECK_DEV_SERVER_PORT: String(port),
     VITE_DEV_SERVER_URL: createDevelopmentServerUrl(port),
   };
-  delete env.MEDIAGEN_DB_PATH;
+  delete env.VIBEDECK_DB_PATH;
 
   const viteCommand = "vite --host 127.0.0.1";
   const electronCommand = [

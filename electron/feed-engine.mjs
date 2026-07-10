@@ -1685,7 +1685,7 @@ export class FeedEngine {
       Accept:
         accept ??
         "application/rss+xml, application/atom+xml, application/xml, text/xml, text/html;q=0.8, */*;q=0.2",
-      "User-Agent": "MediaGen-Veille/0.1 (local feed reader)",
+      "User-Agent": "VibeDeck/0.1 (local feed reader)",
     };
     if (cache?.etag) headers["If-None-Match"] = cache.etag;
     if (cache?.lastModified) headers["If-Modified-Since"] = cache.lastModified;

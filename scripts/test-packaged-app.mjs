@@ -134,7 +134,7 @@ async function waitForApplicationPage(browser) {
   const deadline = Date.now() + STARTUP_TIMEOUT_MS;
   while (Date.now() < deadline) {
     for (const context of browser.contexts()) {
-      const page = context.pages().find((candidate) => candidate.url().startsWith("mediagen-app:"));
+      const page = context.pages().find((candidate) => candidate.url().startsWith("vibedeck-app:"));
       if (page) return page;
     }
     await delay(100);
@@ -169,7 +169,7 @@ async function terminateProcessTree(child) {
 
 const executablePath = await discoverExecutable();
 assert.ok(await exists(executablePath), `Binaire empaqueté introuvable : ${executablePath}`);
-const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "mediagen-packaged-smoke-"));
+const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "vibedeck-packaged-smoke-"));
 const profileDirectory = path.join(temporaryDirectory, "profile");
 const debugPort = await reserveLoopbackPort();
 let child;
@@ -178,8 +178,8 @@ try {
   const env = { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: "true" };
   for (const key of [
     "ELECTRON_RUN_AS_NODE",
-    "MEDIAGEN_ALLOW_PRIVATE_NETWORK",
-    "MEDIAGEN_DB_PATH",
+    "VIBEDECK_ALLOW_PRIVATE_NETWORK",
+    "VIBEDECK_DB_PATH",
     "NODE_OPTIONS",
     "VITE_DEV_SERVER_URL",
   ]) {
@@ -205,19 +205,19 @@ try {
   browser = await chromium.connectOverCDP(endpoint, { timeout: STARTUP_TIMEOUT_MS });
   const page = await waitForApplicationPage(browser);
   page.setDefaultTimeout(20_000);
-  await page.waitForFunction(() => Boolean(window.mediagen?.getState));
+  await page.waitForFunction(() => Boolean(window.vibedeck?.getState));
   const proof = await page.evaluate(async () => ({
     protocol: window.location.protocol,
     title: document.title,
     hasRoot: Boolean(document.getElementById("root")),
-    panelCount: (await window.mediagen.getState()).panels.length,
+    panelCount: (await window.vibedeck.getState()).panels.length,
   }));
-  assert.equal(proof.protocol, "mediagen-app:");
+  assert.equal(proof.protocol, "vibedeck-app:");
   assert.equal(proof.hasRoot, true);
   assert.ok(proof.title.trim().length > 0, "Le document empaqueté doit avoir un titre.");
   assert.equal(Number.isInteger(proof.panelCount), true);
   assert.ok(
-    await exists(path.join(profileDirectory, "veille.sqlite3")),
+    await exists(path.join(profileDirectory, "vibedeck.sqlite3")),
     "La base SQLite de test n’a pas été créée dans le profil temporaire.",
   );
   console.log(

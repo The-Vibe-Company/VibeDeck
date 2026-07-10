@@ -7,7 +7,7 @@ import {
 
 export default defineConfig(({ command }) => {
   const developmentPort = command === "serve"
-    ? parseDevelopmentPort(process.env.MEDIAGEN_DEV_SERVER_PORT, { fallback: 5173 })
+    ? parseDevelopmentPort(process.env.VIBEDECK_DEV_SERVER_PORT, { fallback: 5173 })
     : 5173;
   const developmentUrl = createDevelopmentServerUrl(developmentPort);
   const developmentWebSocketUrl = developmentUrl.replace("http://", "ws://");
@@ -19,7 +19,7 @@ export default defineConfig(({ command }) => {
       ...(command === "serve"
         ? [
             {
-              name: "mediagen-local-dev-csp",
+              name: "vibedeck-local-dev-csp",
               transformIndexHtml(html: string) {
                 return html.replace(
                   "connect-src 'self'",

@@ -22,7 +22,7 @@ const DEFAULT_RATIO = 0.5;
 export const SPLIT_DIVIDER_SIZE = 8;
 export const MIN_PANEL_WIDTH = 256;
 export const MIN_PANEL_HEIGHT = 176;
-const PANEL_DRAG_MIME = "application/x-mediagen-panel";
+const PANEL_DRAG_MIME = "application/x-vibedeck-panel";
 
 export interface SplitLayoutProps {
   layout: LayoutNode | null;

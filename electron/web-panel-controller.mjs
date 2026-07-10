@@ -11,7 +11,7 @@ const MAX_URL_LENGTH = 4_096;
 const MAX_TEXT_LENGTH = 512;
 const MAX_COORDINATE = 10_000_000;
 export const WEB_PANEL_SESSION_STRATEGY = Object.freeze({
-  partition: "persist:mediagen-web-panels",
+  partition: "persist:vibedeck-web-panels",
   persistent: true,
   sharedAcrossPanels: true,
   retainedWhenClosed: Object.freeze(["cookies", "local-storage", "http-cache"]),

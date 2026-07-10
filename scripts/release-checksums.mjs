@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const releaseDirectory = path.join(root, "release");
 const checksumPath = path.join(releaseDirectory, "SHA256SUMS.txt");
-const artifactExtensions = new Set([".dmg", ".exe"]);
+const artifactExtensions = new Set([".dmg", ".exe", ".zip", ".blockmap", ".yml"]);
 
 async function sha256(filePath) {
   const hash = createHash("sha256");
@@ -47,7 +47,7 @@ function parseChecksums(source) {
 
 async function writeChecksums() {
   const artifacts = await releaseArtifacts();
-  assert.ok(artifacts.length > 0, "Aucun DMG ou installateur EXE trouvé dans release/.");
+  assert.ok(artifacts.length > 0, "Aucun artefact de release trouvé dans release/.");
   const lines = [];
   for (const fileName of artifacts) {
     lines.push(`${await sha256(path.join(releaseDirectory, fileName))}  ${fileName}`);
@@ -69,7 +69,7 @@ async function verifyChecksums() {
   assert.deepEqual(
     [...records.keys()].sort((left, right) => left.localeCompare(right, "en")),
     artifacts,
-    "SHA256SUMS.txt doit couvrir exactement tous les DMG et EXE présents dans release/.",
+    "SHA256SUMS.txt doit couvrir exactement tous les artefacts distribués présents dans release/.",
   );
 
   for (const [fileName, expected] of records) {
