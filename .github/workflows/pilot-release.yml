@@ -1,0 +1,123 @@
+name: pilot-release-signed
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+
+jobs:
+  macos:
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-latest
+    environment: signed-release
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run test:pilot-ui
+      - run: npm run verify:release
+      - name: Prepare Apple notarization API key
+        shell: bash
+        env:
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID_VALUE: ${{ secrets.APPLE_API_KEY_ID }}
+        run: |
+          test -n "$APPLE_API_KEY_CONTENT"
+          test -n "$APPLE_API_KEY_ID_VALUE"
+          key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID_VALUE}.p8"
+          if [[ "$APPLE_API_KEY_CONTENT" == *"BEGIN PRIVATE KEY"* ]]; then
+            printf '%s' "$APPLE_API_KEY_CONTENT" > "$key_path"
+          else
+            printf '%s' "$APPLE_API_KEY_CONTENT" | /usr/bin/base64 -D > "$key_path"
+          fi
+          grep -q "BEGIN PRIVATE KEY" "$key_path"
+          chmod 600 "$key_path"
+          echo "APPLE_API_KEY=$key_path" >> "$GITHUB_ENV"
+      - name: Build, sign and notarize macOS
+        run: npm run dist:mac:signed
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Verify packaged Electron fuses
+        run: npm run verify:packaged-fuses
+      - name: Verify the distributed DMG application
+        shell: bash
+        run: |
+          dmg_path="$(find release -maxdepth 1 -type f -name '*.dmg' -print -quit)"
+          test -n "$dmg_path"
+          mount_path="$RUNNER_TEMP/mediagen-release-volume"
+          mkdir -p "$mount_path"
+          cleanup() { hdiutil detach "$mount_path" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          hdiutil verify "$dmg_path"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount_path" "$dmg_path" >/dev/null
+          app_path="$mount_path/MediaGen Veille.app"
+          test -n "$app_path"
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          spctl --assess --type execute --verbose=2 "$app_path"
+          xcrun stapler validate "$app_path"
+          npm run verify:packaged-fuses -- "$app_path"
+          npm run test:packaged -- "$app_path"
+      - name: Generate and validate signed artifact checksums
+        run: |
+          npm run checksums:release
+          npm run verify:checksums
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mediagen-macOS-signed
+          path: |
+            release/*.dmg
+            release/SHA256SUMS.txt
+          if-no-files-found: error
+
+  windows:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    environment: signed-release
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run test:pilot-ui
+      - run: npm run verify:release
+      - name: Build and sign Windows
+        run: npm run dist:win:signed
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+      - name: Verify packaged Electron fuses
+        run: npm run verify:packaged-fuses
+      - name: Smoke packaged application
+        run: npm run test:packaged
+      - name: Verify Windows Authenticode signature
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem release -Filter *.exe | Select-Object -First 1
+          if (-not $installer) { throw "Installateur Windows introuvable" }
+          $signature = Get-AuthenticodeSignature $installer.FullName
+          if ($signature.Status -ne "Valid") {
+            throw "Signature Authenticode invalide: $($signature.Status)"
+          }
+      - name: Generate and validate signed artifact checksums
+        run: |
+          npm run checksums:release
+          npm run verify:checksums
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mediagen-Windows-signed
+          path: |
+            release/*.exe
+            release/SHA256SUMS.txt
+          if-no-files-found: error

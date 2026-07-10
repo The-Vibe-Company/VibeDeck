@@ -1,0 +1,106 @@
+{
+  "name": "mediagen-veille",
+  "version": "0.2.0",
+  "private": true,
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "description": "Agrégateur local de flux d'actualité pour MediaGen",
+  "author": "MediaGen",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "electron/main.mjs",
+  "scripts": {
+    "dev": "concurrently -k -s first \"vite --host 127.0.0.1\" \"wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+    "start": "electron .",
+    "build": "tsc --noEmit && vite build",
+    "test": "node --test electron/*.test.mjs",
+    "test:pilot-ui": "npm run build && node scripts/test-pilot-ui.mjs",
+    "test:packaged": "node scripts/test-packaged-app.mjs",
+    "test:live": "cross-env NODE_NO_WARNINGS=1 node electron/live-connectors.mjs",
+    "verify:release": "node scripts/verify-release-config.mjs",
+    "verify:packaged-fuses": "node scripts/verify-packaged-fuses.mjs",
+    "checksums:release": "node scripts/release-checksums.mjs write",
+    "verify:checksums": "node scripts/release-checksums.mjs verify",
+    "dist:dir": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir",
+    "dist": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
+    "dist:mac": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --universal",
+    "dist:win": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win --x64",
+    "dist:mac:signed": "npm run build && electron-builder --mac --universal -c.forceCodeSigning=true -c.mac.notarize=true",
+    "dist:win:signed": "npm run build && electron-builder --win --x64 -c.forceCodeSigning=true"
+  },
+  "dependencies": {
+    "cheerio": "1.2.0",
+    "fast-xml-parser": "5.9.3",
+    "tldts": "7.4.8"
+  },
+  "devDependencies": {
+    "@electron/fuses": "1.8.0",
+    "@fontsource-variable/libre-franklin": "5.2.8",
+    "@fontsource/ibm-plex-mono": "5.2.7",
+    "@types/node": "26.1.1",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.3",
+    "concurrently": "10.0.3",
+    "cross-env": "10.1.0",
+    "electron": "43.1.0",
+    "electron-builder": "26.15.3",
+    "js-yaml": "4.3.0",
+    "lucide-react": "1.24.0",
+    "playwright-core": "1.61.1",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "typescript": "7.0.2",
+    "vite": "8.1.4",
+    "wait-on": "9.0.10"
+  },
+  "build": {
+    "appId": "com.mediagen.veille",
+    "productName": "MediaGen Veille",
+    "afterSign": "scripts/after-sign.mjs",
+    "asar": true,
+    "electronFuses": {
+      "runAsNode": false,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true,
+      "grantFileProtocolExtraPrivileges": false
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "!electron/**/*.test.mjs",
+      "!electron/live-connectors.mjs",
+      "!**/*.map",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "mac": {
+      "category": "public.app-category.news",
+      "icon": "build/icon.icns",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "target": [
+        "dir",
+        "dmg"
+      ]
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "signAndEditExecutable": true,
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}
