@@ -1,0 +1,19 @@
+src/styles.css
+  s_0e1474e5eff4ac::t_d1e697f1bd64c9 768-771
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e983fc7537b0a42c1c9a475436b2f42e6d552895",
+  "prompts": {},
+  "sessions": {
+    "s_0e1474e5eff4ac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07aae6db-cd63-4e39-bcdd-ea9b04e4e3c0",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
