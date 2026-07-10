@@ -1,0 +1,24 @@
+scripts/verify-release-config.mjs
+  s_9d5e69e631ee3b::t_a25cf80a29fa43 73-76
+  s_9d5e69e631ee3b::t_b6390194f11c09 72
+package.json
+  s_9d5e69e631ee3b::t_a25cf80a29fa43 125-127
+PILOT_RELEASE.md
+  s_9d5e69e631ee3b::t_a25cf80a29fa43 110
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e3c7da504d8ff7e9d09a702f611e44b3a060214a",
+  "prompts": {},
+  "sessions": {
+    "s_9d5e69e631ee3b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4c38-9ede-7711-8347-5ed45e3b5cff",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
