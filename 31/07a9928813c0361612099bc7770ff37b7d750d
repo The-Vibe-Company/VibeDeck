@@ -1,0 +1,23 @@
+README.md
+  s_423bb963c430be::t_3954acbc9346b2 82
+AGENTS.md
+  s_423bb963c430be::t_a37f93a60bfc7b 139
+electron/main.mjs
+  s_423bb963c430be::t_ae31a5fc16ef99 1058-1067
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3107a9928813c0361612099bc7770ff37b7d750d",
+  "prompts": {},
+  "sessions": {
+    "s_423bb963c430be": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "52f0459c-999b-4b5a-8a62-c6773a3c0cb1",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
