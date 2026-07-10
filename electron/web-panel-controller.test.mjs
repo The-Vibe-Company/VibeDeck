@@ -12,6 +12,7 @@ import {
   stopWebPanelSessionActivity,
   WEB_PANEL_SESSION_STRATEGY,
 } from "./web-panel-controller.mjs";
+import { normalizeExtractedArticle } from "./article-reader.mjs";
 
 class FakeSession extends EventEmitter {
   constructor() {
@@ -133,13 +134,18 @@ class FakeWebContents extends EventEmitter {
   }
 }
 
-function createHarness({ contentSize = [800, 600], sharedWebSession = null } = {}) {
+function createHarness({
+  contentSize = [800, 600],
+  sharedWebSession = null,
+  readerExtractionResult = null,
+} = {}) {
   const views = [];
   const addedViews = [];
   const removedViews = [];
   const states = [];
   const externalCalls = [];
   const escapeCalls = [];
+  const readerExtractionCalls = [];
   const windowEvents = new Map();
 
   class FakeWebContentsView {
@@ -186,6 +192,13 @@ function createHarness({ contentSize = [800, 600], sharedWebSession = null } = {
   const controller = createWebPanelController({
     window,
     shell,
+    extractArticle: async (input) => {
+      readerExtractionCalls.push(input);
+      const result = await (typeof readerExtractionResult === "function"
+        ? readerExtractionResult(input)
+        : readerExtractionResult);
+      return typeof result?.ok === "boolean" ? result : normalizeExtractedArticle(result);
+    },
     onState: (state) => states.push(state),
     onEscape: (panelId) => escapeCalls.push(panelId),
     WebContentsViewClass: FakeWebContentsView,
@@ -197,6 +210,7 @@ function createHarness({ contentSize = [800, 600], sharedWebSession = null } = {
     externalCalls,
     escapeCalls,
     removedViews,
+    readerExtractionCalls,
     states,
     views,
     windowEvents,
@@ -335,7 +349,14 @@ test("starts muted and updates audio state explicitly", () => {
 test("installs fast arrow scrolling and focuses only the dedicated article reader", () => {
   const { controller, views } = createHarness();
   controller.sync([
-    descriptor("reader:article"),
+    {
+      ...descriptor("reader:article"),
+      url: "https://www.lemonde.fr/article",
+      kind: "reader",
+      itemId: "article-1",
+      connectorId: "le-monde",
+      readerMode: "extracting",
+    },
     descriptor("ordinary-browser", { url: "https://example.org/" }),
   ]);
 
@@ -343,9 +364,163 @@ test("installs fast arrow scrolling and focuses only the dedicated article reade
     views[0].options.webPreferences.preload,
     /article-reader-preload\.cjs$/,
   );
-  assert.equal(views[0].webContents.focusCalls, 1);
+  assert.equal(views[0].webContents.focusCalls, 0, "the public page remains hidden while extracting");
   assert.equal(views[1].options.webPreferences.preload, undefined);
   assert.equal(views[1].webContents.focusCalls, 0);
+});
+
+test("rejects reader fallback reasons outside the closed runtime vocabulary", () => {
+  const { controller, views } = createHarness();
+  assert.throws(() => controller.sync([{
+    ...descriptor("reader:article"),
+    url: "https://www.lemonde.fr/article",
+    kind: "reader",
+    itemId: "article-1",
+    connectorId: null,
+    readerMode: "original",
+    readerFallback: "publisher-secret",
+  }]), /Motif de repli/);
+  assert.equal(views.length, 0);
+});
+
+test("keeps the public reader invisible until a bounded extraction becomes static", async () => {
+  const articleText = "Contenu public structuré. ".repeat(30);
+  const { controller, states, views } = createHarness({
+    readerExtractionResult: {
+      elementCount: 120,
+      title: "Article public",
+      blocks: [
+        { kind: "paragraph", text: articleText },
+        { kind: "heading", text: "Le contexte" },
+        { kind: "paragraph", text: articleText },
+      ],
+    },
+  });
+  controller.sync([
+    {
+      ...descriptor("reader:article"),
+      url: "https://www.lemonde.fr/article",
+      kind: "reader",
+      itemId: "article-1",
+      connectorId: "le-monde",
+      readerMode: "extracting",
+    },
+  ]);
+
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(views[0].options.webPreferences.partition, "mediagen-reader-static");
+  assert.equal(views[0].webContents.loadCalls.length, 1);
+  assert.match(views[0].webContents.loadCalls[0], /^data:text\/html/);
+  assert.equal(views[0].visible, true);
+  assert.equal(states.at(-1).readerMode, "simplified");
+  assert.equal(states.at(-1).readerFallback, null);
+});
+
+test("recreates a persistent original reader after an extraction fallback", async () => {
+  const { controller, states, views } = createHarness({
+    readerExtractionResult: { reason: "paywalled" },
+  });
+  controller.sync([
+    {
+      ...descriptor("reader:article"),
+      url: "https://www.lemonde.fr/article",
+      kind: "reader",
+      itemId: "article-1",
+      connectorId: "le-monde",
+      readerMode: "extracting",
+    },
+  ]);
+
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(views.length, 2);
+  assert.equal(views[0].options.webPreferences.partition, "mediagen-reader-static");
+  assert.equal(views[1].options.webPreferences.partition, WEB_PANEL_SESSION_STRATEGY.partition);
+  assert.equal(states.at(-1).readerMode, "original");
+  assert.equal(states.at(-1).readerFallback, "paywalled");
+});
+
+test("manual original mode replaces simplified content without accepting a renderer URL", async () => {
+  const articleText = "Contenu public structuré. ".repeat(30);
+  const { controller, views } = createHarness({
+    readerExtractionResult: {
+      elementCount: 120,
+      title: "Article public",
+      blocks: [
+        { kind: "paragraph", text: articleText },
+        { kind: "heading", text: "Le contexte" },
+        { kind: "paragraph", text: articleText },
+      ],
+    },
+  });
+  controller.sync([
+    {
+      ...descriptor("reader:article"),
+      url: "https://www.lemonde.fr/article",
+      kind: "reader",
+      itemId: "article-1",
+      connectorId: "le-monde",
+      readerMode: "extracting",
+    },
+  ]);
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  controller.showOriginalArticle({ itemId: "article-1", url: "https://www.lemonde.fr/article" });
+  assert.equal(views.length, 2);
+  assert.equal(views[1].options.webPreferences.partition, WEB_PANEL_SESSION_STRATEGY.partition);
+  assert.throws(
+    () => controller.showOriginalArticle({ itemId: "article-1", url: "https://attacker.test/" }),
+    /correspond pas/,
+  );
+});
+
+test("keeps the extracting view inert and aborts a stale extraction after close", async () => {
+  let finishExtraction;
+  const extraction = new Promise((resolve) => {
+    finishExtraction = resolve;
+  });
+  let extractionSignal;
+  const { controller, views } = createHarness({
+    readerExtractionResult: ({ signal }) => {
+      extractionSignal = signal;
+      return extraction;
+    },
+  });
+  controller.sync([
+    {
+      ...descriptor("reader:article"),
+      url: "https://www.lemonde.fr/article",
+      kind: "reader",
+      itemId: "article-1",
+      connectorId: "le-monde",
+      readerMode: "extracting",
+    },
+  ]);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  let prevented = false;
+  views[0].webContents.emit("will-redirect", {
+    preventDefault: () => (prevented = true),
+  }, "https://attacker.test/article");
+  assert.equal(prevented, true);
+
+  controller.sync([]);
+  assert.equal(extractionSignal.aborted, true);
+  finishExtraction({
+    elementCount: 120,
+    title: "Article public",
+    blocks: [
+      { kind: "paragraph", text: "Contenu public structuré. ".repeat(30) },
+      { kind: "heading", text: "Le contexte" },
+      { kind: "paragraph", text: "Contenu public structuré. ".repeat(30) },
+    ],
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(views[0].webContents.loadCalls.some((url) => url.startsWith("data:text/html")), false);
 });
 
 test("destroys omitted views and destroyAll closes every remaining WebContents", () => {

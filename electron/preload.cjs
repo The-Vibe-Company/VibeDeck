@@ -62,6 +62,8 @@ contextBridge.exposeInMainWorld("mediagen", {
     ipcRenderer.invoke("web-panels:home", panelId).then(() => undefined),
   openExternalWebPanel: (panelId) =>
     ipcRenderer.invoke("web-panels:open-external", panelId).then(() => undefined),
+  showOriginalArticle: (itemId) =>
+    ipcRenderer.invoke("reader:show-original", itemId).then(() => undefined),
   setWebPanelMuted: (panelId, muted) =>
     ipcRenderer.invoke("web-panels:set-muted", panelId, muted).then(() => undefined),
   onStateChanged: (callback) => {

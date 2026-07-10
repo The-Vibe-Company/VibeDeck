@@ -1,5 +1,9 @@
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import {
+  ARTICLE_READER_FALLBACK_REASONS,
+  createStaticReaderDocument,
+} from "./article-reader.mjs";
 
 const require = createRequire(import.meta.url);
 const electronRuntime = require("electron");
@@ -22,6 +26,8 @@ const ARTICLE_READER_PANEL_ID = "reader:article";
 const ARTICLE_READER_PRELOAD = fileURLToPath(
   new URL("./article-reader-preload.cjs", import.meta.url),
 );
+const ARTICLE_READER_STATIC_PARTITION = "mediagen-reader-static";
+const READER_FALLBACK_REASONS = new Set(ARTICLE_READER_FALLBACK_REASONS);
 const securedSessions = new WeakSet();
 const WEB_DATA_SCOPES = new Set(["cache", "site-data", "all"]);
 const sessionRedirectTrackers = new WeakMap();
@@ -493,11 +499,39 @@ function normalizeDescriptor(window, descriptor) {
     throw new TypeError("La visibilité du panel web doit être un booléen.");
   }
 
-  return {
+  const kind = descriptor.kind ?? "web";
+  if (kind !== "web" && kind !== "reader") {
+    throw new TypeError("Type de panel web invalide.");
+  }
+  const normalized = {
+    kind,
     panelId: cleanPanelId(descriptor.panelId),
     url: cleanHttpUrl(descriptor.url),
     bounds: clipBounds(window, cleanBounds(descriptor.bounds)),
     visible: descriptor.visible,
+  };
+  if (kind === "web") return normalized;
+  if (normalized.panelId !== ARTICLE_READER_PANEL_ID) {
+    throw new TypeError("Identifiant du lecteur d’article invalide.");
+  }
+  if (typeof descriptor.itemId !== "string" || !descriptor.itemId.trim() || descriptor.itemId.length > 128) {
+    throw new TypeError("Identifiant d’article invalide.");
+  }
+  if (descriptor.readerMode !== "extracting" && descriptor.readerMode !== "original") {
+    throw new TypeError("Mode du lecteur d’article invalide.");
+  }
+  if (
+    descriptor.readerMode === "extracting" &&
+    (typeof descriptor.connectorId !== "string" || !descriptor.connectorId.trim())
+  ) {
+    throw new TypeError("Connecteur du lecteur d’article invalide.");
+  }
+  return {
+    ...normalized,
+    itemId: descriptor.itemId.trim(),
+    connectorId: descriptor.connectorId ?? null,
+    readerMode: descriptor.readerMode,
+    readerFallback: normalizeReaderFallbackReason(descriptor.readerFallback),
   };
 }
 
@@ -533,6 +567,12 @@ function requireMethod(object, method, label) {
   }
 }
 
+function normalizeReaderFallbackReason(value) {
+  if (value == null) return null;
+  if (READER_FALLBACK_REASONS.has(value)) return value;
+  throw new TypeError("Motif de repli du lecteur invalide.");
+}
+
 /**
  * Owns the native WebContentsView instances displayed over the React dashboard.
  * `sync()` is authoritative: views omitted from its descriptor list are destroyed.
@@ -540,6 +580,7 @@ function requireMethod(object, method, label) {
 export function createWebPanelController({
   window,
   shell,
+  extractArticle,
   onState = () => {},
   onEscape = () => {},
   WebContentsViewClass = electronRuntime?.WebContentsView,
@@ -551,6 +592,9 @@ export function createWebPanelController({
   requireMethod(window.contentView, "removeChildView", "La contentView");
   if (!shell || typeof shell.openExternal !== "function") {
     throw new TypeError("Le module shell Electron est requis.");
+  }
+  if (typeof extractArticle !== "function") {
+    throw new TypeError("Le service d’extraction d’article est requis.");
   }
   if (typeof onState !== "function") {
     throw new TypeError("onState doit être une fonction.");
@@ -630,6 +674,8 @@ export function createWebPanelController({
       crashed: destroyed ? false : record.crashed,
       unresponsive: destroyed ? false : record.unresponsive,
       destroyed,
+      readerMode: record.kind === "reader" ? record.readerMode : null,
+      readerFallback: record.kind === "reader" ? record.readerFallback : null,
       ...overrides,
     };
 
@@ -675,14 +721,20 @@ export function createWebPanelController({
   function applyBounds(record, descriptor) {
     record.bounds = descriptor.bounds;
     record.requestedVisible = descriptor.visible;
-    record.visible =
-      !record.crashed &&
-      descriptor.visible &&
-      descriptor.bounds.width > 0 &&
-      descriptor.bounds.height > 0;
+    record.visible = shouldDisplay(record);
 
     record.view.setBounds(descriptor.bounds);
     record.view.setVisible(record.visible);
+  }
+
+  function shouldDisplay(record) {
+    return (
+      !record.crashed &&
+      record.requestedVisible &&
+      record.bounds.width > 0 &&
+      record.bounds.height > 0 &&
+      (record.kind !== "reader" || record.readerMode !== "extracting")
+    );
   }
 
   function navigationTarget(event, legacyUrl) {
@@ -690,8 +742,15 @@ export function createWebPanelController({
     return legacyUrl;
   }
 
-  function preventUnsafeNavigation(event, legacyUrl) {
+  function preventUnsafeNavigation(record, event, legacyUrl) {
     const target = navigationTarget(event, legacyUrl);
+    if (record.allowStaticNavigation && typeof target === "string" && target.startsWith("data:text/html")) {
+      return;
+    }
+    if (record.kind === "reader" && record.readerMode === "extracting") {
+      event.preventDefault?.();
+      return;
+    }
     if (!safeHttpUrl(target)) event.preventDefault?.();
   }
 
@@ -713,8 +772,10 @@ export function createWebPanelController({
       return { action: "deny" };
     });
 
-    listen(record, "will-navigate", preventUnsafeNavigation);
-    listen(record, "will-redirect", preventUnsafeNavigation);
+    listen(record, "will-navigate", (event, legacyUrl) =>
+      preventUnsafeNavigation(record, event, legacyUrl));
+    listen(record, "will-redirect", (event, legacyUrl) =>
+      preventUnsafeNavigation(record, event, legacyUrl));
     listen(record, "will-attach-webview", (event) => event.preventDefault?.());
     listen(record, "before-input-event", (_event, input) => {
       if (input?.type === "keyDown" && input.key === "Escape" && !input.isAutoRepeat) {
@@ -819,7 +880,7 @@ export function createWebPanelController({
     });
   }
 
-  function load(record, targetUrl) {
+  function load(record, targetUrl, { visible = shouldDisplay(record) } = {}) {
     const url = cleanHttpUrl(targetUrl);
     fullCleanupScheduled = false;
     record.visitedOrigins.add(new URL(url).origin);
@@ -830,8 +891,7 @@ export function createWebPanelController({
     record.errorCode = null;
     record.crashed = false;
     record.unresponsive = false;
-    record.visible =
-      record.requestedVisible && record.bounds.width > 0 && record.bounds.height > 0;
+    record.visible = visible && shouldDisplay(record);
     record.view.setVisible(record.visible);
     emit(record);
 
@@ -866,6 +926,128 @@ export function createWebPanelController({
     );
   }
 
+  function isCurrentRecord(record) {
+    return (
+      !record.destroyed &&
+      !record.closing &&
+      records.get(record.panelId) === record
+    );
+  }
+
+  async function loadStaticReaderDocument(record, document) {
+    const url = `data:text/html;charset=utf-8,${encodeURIComponent(document)}`;
+    const generation = ++record.loadGeneration;
+    record.allowStaticNavigation = true;
+    record.loading = true;
+    record.error = null;
+    record.errorCode = null;
+    record.visible = false;
+    record.view.setVisible(false);
+    emit(record);
+    try {
+      await record.contents.loadURL(url);
+      if (!isCurrentRecord(record) || generation !== record.loadGeneration) {
+        throw new Error("Lecture simplifiée annulée.");
+      }
+    } finally {
+      record.allowStaticNavigation = false;
+    }
+  }
+
+  async function fallbackToOriginal(record, reason) {
+    if (!isCurrentRecord(record) || record.kind !== "reader") return;
+    const descriptor = {
+      kind: "reader",
+      panelId: record.panelId,
+      itemId: record.itemId,
+      url: record.originalUrl,
+      bounds: { ...record.bounds },
+      visible: record.requestedVisible,
+      connectorId: null,
+      readerMode: "original",
+      readerFallback: reason,
+    };
+    destroyRecord(record);
+    createRecord(descriptor);
+  }
+
+  function showOriginalArticle(article) {
+    if (!article || typeof article !== "object" || Array.isArray(article)) {
+      throw new TypeError("Article original invalide.");
+    }
+    const record = requireRecord(ARTICLE_READER_PANEL_ID);
+    if (
+      record.kind !== "reader" ||
+      record.itemId !== article.itemId ||
+      record.originalUrl !== cleanHttpUrl(article.url)
+    ) {
+      throw new Error("Le lecteur ne correspond pas à cet article.");
+    }
+    if (record.readerMode === "original") return snapshot(record);
+    const descriptor = {
+      kind: "reader",
+      panelId: record.panelId,
+      itemId: record.itemId,
+      url: record.originalUrl,
+      bounds: { ...record.bounds },
+      visible: record.requestedVisible,
+      connectorId: null,
+      readerMode: "original",
+      readerFallback: null,
+    };
+    destroyRecord(record);
+    return snapshot(createRecord(descriptor));
+  }
+
+  async function beginReaderExtraction(record) {
+    if (!isCurrentRecord(record) || record.kind !== "reader") return;
+    const extractionGeneration = ++record.readerGeneration;
+    const abortController = new AbortController();
+    record.readerAbortController?.abort();
+    record.readerAbortController = abortController;
+    record.readerMode = "extracting";
+    record.readerFallback = null;
+    record.visible = false;
+    record.view.setVisible(false);
+    emit(record);
+    try {
+      const normalized = await extractArticle({
+        connectorId: record.connectorId,
+        url: record.originalUrl,
+        signal: abortController.signal,
+      });
+      if (!isCurrentRecord(record) || extractionGeneration !== record.readerGeneration) return;
+      if (!normalized.ok) {
+        await fallbackToOriginal(
+          record,
+          READER_FALLBACK_REASONS.has(normalized.reason)
+            ? normalized.reason
+            : "extraction-failed",
+        );
+        return;
+      }
+      await loadStaticReaderDocument(record, createStaticReaderDocument(normalized.article));
+      if (!isCurrentRecord(record) || extractionGeneration !== record.readerGeneration) return;
+      record.readerMode = "simplified";
+      record.readerFallback = null;
+      record.title = normalized.article.title;
+      record.loading = false;
+      record.visible = shouldDisplay(record);
+      record.view.setVisible(record.visible);
+      if (record.visible && typeof record.contents.focus === "function") record.contents.focus();
+      emit(record);
+    } catch (error) {
+      if (!isCurrentRecord(record) || extractionGeneration !== record.readerGeneration) return;
+      if (abortController.signal.aborted) return;
+      const reason = error?.name === "AbortError" ? "timeout" : "extraction-failed";
+      await fallbackToOriginal(record, reason);
+    } finally {
+      if (record.readerAbortController === abortController) {
+        record.readerAbortController = null;
+      }
+    }
+  }
+
   function createRecord(descriptor) {
     assertWindowOpen();
     let view;
@@ -873,8 +1055,11 @@ export function createWebPanelController({
 
     try {
       const webPreferences = { ...WEB_PREFERENCES };
-      if (descriptor.panelId === ARTICLE_READER_PANEL_ID) {
+      if (descriptor.kind === "reader") {
         webPreferences.preload = ARTICLE_READER_PRELOAD;
+        if (descriptor.readerMode === "extracting") {
+          webPreferences.partition = ARTICLE_READER_STATIC_PARTITION;
+        }
       }
       view = new WebContentsViewClass({ webPreferences });
       requireMethod(view, "setBounds", "La WebContentsView");
@@ -882,10 +1067,13 @@ export function createWebPanelController({
       if (!view.webContents) throw new TypeError("La WebContentsView ne fournit pas de WebContents.");
 
       const record = {
+        kind: descriptor.kind,
         panelId: descriptor.panelId,
+        itemId: descriptor.itemId ?? null,
         view,
         contents: view.webContents,
         homeUrl: descriptor.url,
+        originalUrl: descriptor.url,
         url: descriptor.url,
         title: "",
         loading: false,
@@ -900,8 +1088,16 @@ export function createWebPanelController({
         destroyed: false,
         closing: false,
         loadGeneration: 0,
+        readerGeneration: 0,
+        readerMode: descriptor.kind === "reader" ? descriptor.readerMode : null,
+        readerFallback: descriptor.kind === "reader" ? descriptor.readerFallback : null,
+        connectorId: descriptor.kind === "reader" ? descriptor.connectorId : null,
+        readerAbortController: null,
+        allowStaticNavigation: false,
         listeners: [],
-        visitedOrigins: new Set([new URL(descriptor.url).origin]),
+        visitedOrigins: descriptor.kind === "reader" && descriptor.readerMode === "extracting"
+          ? new Set()
+          : new Set([new URL(descriptor.url).origin]),
       };
 
       configureContents(record);
@@ -911,11 +1107,7 @@ export function createWebPanelController({
       added = true;
       records.set(record.panelId, record);
       applyBounds(record, descriptor);
-      if (
-        record.panelId === ARTICLE_READER_PANEL_ID &&
-        record.visible &&
-        typeof record.contents.focus === "function"
-      ) {
+      if (record.kind === "reader" && record.visible && typeof record.contents.focus === "function") {
         record.contents.focus();
       }
       emit(record);
@@ -930,6 +1122,9 @@ export function createWebPanelController({
           record.loadGeneration === initialLoadGeneration &&
           records.get(record.panelId) === record
         ) {
+          if (record.kind === "reader" && record.readerMode === "extracting") {
+            return beginReaderExtraction(record);
+          }
           return load(record, descriptor.url);
         }
         return undefined;
@@ -968,6 +1163,9 @@ export function createWebPanelController({
     if (!record || record.destroyed || record.closing) return false;
     record.closing = true;
     record.loadGeneration += 1;
+    record.readerGeneration += 1;
+    record.readerAbortController?.abort();
+    record.readerAbortController = null;
     records.delete(record.panelId);
 
     try {
@@ -1067,9 +1265,20 @@ export function createWebPanelController({
         continue;
       }
 
+      if (
+        record.kind !== descriptor.kind ||
+        (record.kind === "reader" &&
+          (record.itemId !== descriptor.itemId || record.originalUrl !== descriptor.url))
+      ) {
+        destroyRecord(record);
+        createRecord(descriptor);
+        continue;
+      }
+
       applyBounds(record, descriptor);
       if (record.homeUrl !== descriptor.url) {
         record.homeUrl = descriptor.url;
+        record.originalUrl = descriptor.url;
         void load(record, descriptor.url).catch(() => {});
       } else {
         emit(record);
@@ -1087,14 +1296,16 @@ export function createWebPanelController({
 
   function reload(panelId) {
     const record = requireRecord(panelId);
+    if (record.kind === "reader" && record.readerMode === "simplified") {
+      return emit(record);
+    }
     record.loadGeneration += 1;
     record.error = null;
     record.errorCode = null;
     record.crashed = false;
     record.unresponsive = false;
     record.loading = true;
-    record.visible =
-      record.requestedVisible && record.bounds.width > 0 && record.bounds.height > 0;
+    record.visible = shouldDisplay(record);
     record.view.setVisible(record.visible);
     record.contents.reload();
     return emit(record);
@@ -1128,7 +1339,7 @@ export function createWebPanelController({
 
   async function openExternal(panelId) {
     const record = requireRecord(panelId);
-    let currentUrl = record.url;
+    let currentUrl = record.kind === "reader" ? record.originalUrl : record.url;
     try {
       const loadedUrl = record.contents.getURL?.();
       if (safeHttpUrl(loadedUrl)) currentUrl = loadedUrl;
@@ -1165,12 +1376,23 @@ export function createWebPanelController({
   }
 
   function getDescriptors() {
-    return [...records.values()].map((record) => ({
-      panelId: record.panelId,
-      url: record.homeUrl,
-      bounds: { ...record.bounds },
-      visible: record.requestedVisible,
-    }));
+    return [...records.values()].map((record) => {
+      const descriptor = {
+        panelId: record.panelId,
+        url: record.homeUrl,
+        bounds: { ...record.bounds },
+        visible: record.requestedVisible,
+      };
+      if (record.kind === "web") return descriptor;
+      return {
+        ...descriptor,
+        kind: "reader",
+        itemId: record.itemId,
+        connectorId: record.connectorId,
+        readerMode: record.readerMode === "original" ? "original" : "extracting",
+        readerFallback: record.readerFallback,
+      };
+    });
   }
 
   async function shutdown() {
@@ -1194,6 +1416,7 @@ export function createWebPanelController({
     goForward,
     home,
     openExternal,
+    showOriginalArticle,
     setMuted,
     destroy,
     destroyAll,

@@ -142,7 +142,7 @@ type FeedPanelUi = {
 };
 
 type LinkPreview = {
-  url: string;
+  itemId: string;
   title: string;
 };
 
@@ -511,6 +511,7 @@ export default function App() {
           !failedPanelIds.has(panel.id);
         const rect = surface?.getBoundingClientRect();
         return {
+          kind: "web",
           panelId: panel.id,
           url: panel.url,
           bounds: rect
@@ -525,8 +526,9 @@ export default function App() {
       );
       const rect = surface?.getBoundingClientRect();
       descriptors.push({
+        kind: "reader",
         panelId: LINK_READER_ID,
-        url: linkPreview.url,
+        itemId: linkPreview.itemId,
         bounds: rect
           ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
           : { x: 0, y: 0, width: 0, height: 0 },
@@ -885,7 +887,7 @@ export default function App() {
   }
 
   function openItem(item: FeedItem) {
-    setLinkPreview({ url: item.canonicalUrl, title: item.title });
+    setLinkPreview({ itemId: item.id, title: item.title });
     void window.mediagen
       .markItemOpened(item.id)
       .then((nextState) => applyServerState(nextState))
@@ -1990,7 +1992,15 @@ function LinkPreviewView({
   onClose: () => void;
 }) {
   const failed = ["error", "crashed", "unresponsive"].includes(runtime?.status ?? "");
-  const currentUrl = runtime?.url || preview.url;
+  const readerMode = runtime?.readerMode ?? "extracting";
+  const readerStatus =
+    readerMode === "extracting"
+      ? "Préparation de la lecture…"
+      : readerMode === "simplified"
+        ? "Lecture simplifiée"
+        : runtime?.readerFallback
+          ? "Page originale · lecture simplifiée indisponible"
+          : "Page originale";
 
   return (
     <section className="dashboard-panel link-reader" aria-label={`Lecture — ${preview.title}`}>
@@ -2011,47 +2021,18 @@ function LinkPreviewView({
       </header>
       <div className="panel-content">
         <div className="web-toolbar link-reader__toolbar">
-          <IconButton
-            label="Page précédente"
-            disabled={!runtime?.canGoBack}
-            onClick={() => void window.mediagen.goBackWebPanel(LINK_READER_ID)}
-          >
-            <ArrowLeft size={12} />
-          </IconButton>
-          <IconButton
-            label="Page suivante"
-            disabled={!runtime?.canGoForward}
-            onClick={() => void window.mediagen.goForwardWebPanel(LINK_READER_ID)}
-          >
-            <ArrowRight size={12} />
-          </IconButton>
-          <IconButton
-            label={runtime?.loading ? "Arrêter" : "Recharger"}
-            disabled={!runtime}
-            onClick={() =>
-              void (runtime?.loading
-                ? window.mediagen.stopWebPanel(LINK_READER_ID)
-                : window.mediagen.reloadWebPanel(LINK_READER_ID))
-            }
-          >
-            {runtime?.loading ? <X size={12} /> : <RefreshCw size={12} />}
-          </IconButton>
-          <span className="web-address" title={currentUrl}>
-            {currentUrl}
+          <span className="web-address" aria-live="polite">
+            {readerStatus}
           </span>
-          <IconButton
-            label={runtime?.muted === false ? "Couper le son" : "Activer le son"}
-            disabled={!runtime}
-            active={runtime?.muted === false}
-            onClick={() =>
-              void window.mediagen.setWebPanelMuted(
-                LINK_READER_ID,
-                runtime?.muted === false,
-              )
-            }
-          >
-            {runtime?.muted === false ? <Volume2 size={12} /> : <VolumeX size={12} />}
-          </IconButton>
+          {readerMode === "simplified" && (
+            <button
+              type="button"
+              className="quiet-button"
+              onClick={() => void window.mediagen.showOriginalArticle(preview.itemId)}
+            >
+              Page originale
+            </button>
+          )}
           <button
             type="button"
             className="quiet-button link-reader__external"

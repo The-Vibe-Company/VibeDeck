@@ -23,6 +23,10 @@ import {
 } from "./web-panel-controller.mjs";
 import { runWithFinalStateBroadcast } from "./final-state-operation.mjs";
 import { closePersistenceAfterPending } from "./shutdown.mjs";
+import {
+  createArticleReaderService,
+  resolveReaderArticle,
+} from "./article-reader.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REFRESH_TICK_MS = 15_000;
@@ -61,6 +65,7 @@ protocol.registerSchemesAsPrivileged([
 let mainWindow = null;
 let engine = null;
 let feedNetworkSession = null;
+let articleReaderService = null;
 let refreshTimer = null;
 let refreshScheduler = null;
 let pilotHeartbeatTimer = null;
@@ -288,6 +293,54 @@ function cleanWebDataRequest(value) {
     throw new TypeError("Type d’effacement des données web invalide.");
   }
   return { scope: value.scope };
+}
+
+function resolveWebPanelDescriptors(value) {
+  if (!Array.isArray(value)) throw new TypeError("La liste des panels web doit être un tableau.");
+  const state = engine.getState();
+  const webPanels = new Map(
+    state.panels
+      .filter((panel) => panel.kind === "web")
+      .map((panel) => [panel.id, panel]),
+  );
+  return value.map((descriptor) => {
+    if (!descriptor || typeof descriptor !== "object" || Array.isArray(descriptor)) {
+      throw new TypeError("Descripteur de panel web invalide.");
+    }
+    if (descriptor.kind === "reader") {
+      if (descriptor.panelId !== "reader:article") {
+        throw new TypeError("Identifiant du lecteur d’article invalide.");
+      }
+      const article = resolveReaderArticle(cleanId(descriptor.itemId), state);
+      return {
+        kind: "reader",
+        panelId: "reader:article",
+        itemId: article.itemId,
+        url: article.url,
+        bounds: descriptor.bounds,
+        visible: descriptor.visible,
+        connectorId: article.connectorId,
+        readerMode: article.readerMode,
+        readerFallback: article.readerFallback,
+      };
+    }
+    if (descriptor.kind !== "web") throw new TypeError("Type de panel web invalide.");
+    const panel = webPanels.get(cleanId(descriptor.panelId));
+    if (!panel) throw new Error("Panel web introuvable.");
+    // The stored URL wins over any stale or forged renderer value.
+    return {
+      kind: "web",
+      panelId: panel.id,
+      url: panel.url,
+      bounds: descriptor.bounds,
+      visible: descriptor.visible,
+    };
+  });
+}
+
+function resolveOriginalReaderArticle(itemId) {
+  const article = resolveReaderArticle(cleanId(itemId), engine.getState());
+  return { itemId: article.itemId, url: article.url };
 }
 
 function assertNoArguments(args) {
@@ -770,7 +823,9 @@ function registerIpcHandlers() {
   ipcMain.on("web-panels:sync", (event, descriptors) => {
     try {
       const controller = controllerForEvent(event);
-      if (!resettingWebPanelControllers.has(controller)) controller.sync(descriptors);
+      if (!resettingWebPanelControllers.has(controller)) {
+        controller.sync(resolveWebPanelDescriptors(descriptors));
+      }
     } catch (error) {
       // This one-way channel intentionally cannot mutate anything after a
       // validation failure. Navigation commands use invoke and reject instead.
@@ -791,6 +846,8 @@ function registerIpcHandlers() {
     controllerForEvent(event).home(cleanId(panelId)));
   registerHandle("web-panels:open-external", (event, panelId) =>
     controllerForEvent(event).openExternal(cleanId(panelId)));
+  registerHandle("reader:show-original", (event, itemId) =>
+    controllerForEvent(event).showOriginalArticle(resolveOriginalReaderArticle(itemId)));
   registerHandle("web-panels:set-muted", (event, panelId, muted) => {
     if (typeof muted !== "boolean") throw new TypeError("L’état audio doit être un booléen.");
     return controllerForEvent(event).setMuted(cleanId(panelId), muted);
@@ -821,6 +878,7 @@ function createWindow() {
   const webPanelController = createWebPanelController({
     window,
     shell,
+    extractArticle: (input) => articleReaderService.extract(input),
     onState: (state) => {
       sendToWindow(window, "web-panels:state-changed", state);
     },
@@ -890,6 +948,7 @@ async function handleStartupFailure(error) {
   refreshScheduler?.stop();
   engine?.cancelPending();
   await destroyAllWebPanelControllers();
+  await articleReaderService?.shutdown();
   const pendingRefresh = refreshScheduler?.pending();
   if (pendingRefresh) await Promise.allSettled([pendingRefresh]);
   try {
@@ -900,6 +959,7 @@ async function handleStartupFailure(error) {
   }
   engine = null;
   feedNetworkSession = null;
+  articleReaderService = null;
   refreshScheduler = null;
   const detail = error instanceof Error ? error.message : "Erreur de démarrage inconnue.";
   dialog.showErrorBox(
@@ -935,6 +995,10 @@ if (!hasSingleInstanceLock) {
       : null;
     feedNetworkSession = session.fromPartition(FEED_NETWORK_PARTITION, {
       cache: false,
+    });
+    articleReaderService = createArticleReaderService({
+      sessionForConnector: (connectorId) =>
+        session.fromPartition(`mediagen-reader-${connectorId}`, { cache: false }),
     });
     engine = createFeedEngine({
       dbPath: developmentDatabasePath
@@ -982,6 +1046,7 @@ app.on("before-quit", (event) => {
   pilotHeartbeatTimer = null;
   const pendingPersistence = [...activeOperations];
   const webCleanup = destroyAllWebPanelControllers();
+  const readerCleanup = articleReaderService?.shutdown() ?? Promise.resolve();
   if (refreshTimer) clearInterval(refreshTimer);
   refreshTimer = null;
   refreshScheduler?.stop();
@@ -989,6 +1054,7 @@ app.on("before-quit", (event) => {
   const pendingRefresh = refreshScheduler?.pending();
   if (pendingRefresh) pendingPersistence.push(pendingRefresh);
   if (!conductorShutdownRequested) pendingPersistence.push(webCleanup);
+  pendingPersistence.push(readerCleanup);
 
   void closePersistenceAfterPending({
     pending: pendingPersistence,
@@ -1002,6 +1068,7 @@ app.on("before-quit", (event) => {
       } finally {
         engine = null;
         feedNetworkSession = null;
+        articleReaderService = null;
         refreshScheduler = null;
       }
     },
