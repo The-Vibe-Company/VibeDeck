@@ -1,0 +1,19 @@
+PILOT_RELEASE.md
+  s_e5bf0e0c26abeb::t_df9485d717879e 96
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "16d59b1fe73c7c0b0d34a5a12ac2542f541d0c2a",
+  "prompts": {},
+  "sessions": {
+    "s_e5bf0e0c26abeb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4d48-59ee-78b2-b6e2-c4d2244ab236",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
