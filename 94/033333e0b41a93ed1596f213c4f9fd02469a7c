@@ -1,0 +1,28 @@
+scripts/test-pilot-ui.mjs
+  s_779289b327c9f1::t_af63ab07ff8f14 302
+  s_779289b327c9f1::t_cf1f0eb11954f4 280-288
+  s_779289b327c9f1::t_fa340e3d7046d5 243-251
+  s_779289b327c9f1::t_f39f6d729ebd02 314
+  s_779289b327c9f1::t_5cb347e6a77880 259-267
+src/App.tsx
+  s_779289b327c9f1::t_7e9d6b6f86a5e1 340,357,360,364,384-393,1781
+  s_779289b327c9f1::t_d0379dc1c86258 1748,1752-1756,3733,3743,3803
+  s_779289b327c9f1::t_3f4cc8c6f4d082 1629
+  s_779289b327c9f1::t_e980b853722130 339,363,371-383
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "94033333e0b41a93ed1596f213c4f9fd02469a7c",
+  "prompts": {},
+  "sessions": {
+    "s_779289b327c9f1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4d66-d476-7d00-a5ff-824663f1e596",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
