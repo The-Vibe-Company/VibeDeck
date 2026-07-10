@@ -843,6 +843,13 @@ export function createWebPanelController({
     listen(record, "will-attach-webview", (event) => event.preventDefault?.());
     listen(record, "before-input-event", (event, input) => {
       if (input?.type === "keyDown" && input.key === "Escape" && !input.isAutoRepeat) {
+        if (record.kind === "reader" && !isDestroyed(window.webContents)) {
+          try {
+            window.webContents.focus();
+          } catch {
+            // The owning renderer may already be closing with the window.
+          }
+        }
         onEscape(record.panelId);
       }
       if (

@@ -185,6 +185,13 @@ function createHarness({
     },
     getContentSize: () => contentSize,
     isDestroyed: () => false,
+    webContents: {
+      focusCalls: 0,
+      focus() {
+        this.focusCalls += 1;
+      },
+      isDestroyed: () => false,
+    },
     once(event, listener) {
       windowEvents.set(event, listener);
     },
@@ -224,6 +231,7 @@ function createHarness({
     searchCalls,
     states,
     views,
+    window,
     windowEvents,
   };
 }
@@ -395,7 +403,7 @@ test("rejects reader fallback reasons outside the closed runtime vocabulary", ()
 });
 
 test("publishes an original-reader decision before allocating its native view", () => {
-  const { controller, creationEvents, searchCalls, states, views } = createHarness();
+  const { controller, creationEvents, searchCalls, states, views, window } = createHarness();
   controller.sync([{
     ...descriptor("reader:article"),
     url: "https://example.org/article",
@@ -420,6 +428,10 @@ test("publishes an original-reader decision before allocating its native view", 
   const hiddenFocusCalls = views[0].webContents.focusCalls;
   views[0].webContents.emit("dom-ready");
   assert.equal(views[0].webContents.focusCalls, hiddenFocusCalls);
+  views[0].webContents.emit("before-input-event", {}, {
+    type: "keyDown", key: "Escape",
+  });
+  assert.equal(window.webContents.focusCalls, 1);
 });
 
 test("clears a provisional original-reader decision when native allocation fails", () => {
