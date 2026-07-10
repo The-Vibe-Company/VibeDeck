@@ -1,0 +1,19 @@
+electron/article-reader.test.mjs
+  s_c7dbcf25944687::t_8e7240bc147196 230
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "bfedf158dbdf384a1d040f2b86c123c1715679ab",
+  "prompts": {},
+  "sessions": {
+    "s_c7dbcf25944687": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4d5b-4edb-7c53-af2e-c3422c1a44d0",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
