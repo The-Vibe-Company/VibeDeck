@@ -26,7 +26,12 @@ test("writes a private JSON file that can be read back", async (t) => {
   const filePath = path.join(directory, "dashboard.json");
   await writeJson(filePath, { format: "test", panels: [] });
   assert.deepEqual(await readImportedJson(filePath), { format: "test", panels: [] });
-  assert.equal((await stat(filePath)).mode & 0o077, 0);
+  const metadata = await stat(filePath);
+  assert.equal(metadata.isFile(), true);
+  // POSIX permission bits are not an access-control primitive on Windows and
+  // Node deliberately ignores `mode` there. The write/read assertion remains
+  // cross-platform; the private 0600 contract is verified where it applies.
+  if (process.platform !== "win32") assert.equal(metadata.mode & 0o077, 0);
 });
 
 test("rejects invalid and oversized dashboard files before parsing", async (t) => {

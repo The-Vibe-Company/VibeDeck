@@ -225,6 +225,15 @@ function initialFeedUi(panel: FeedPanel, state: AppState): FeedPanelUi {
   };
 }
 
+function focusDashboardPanelRoot(panelId: string) {
+  const panel = document.querySelector<HTMLElement>(
+    `.split-layout__leaf[data-panel-id="${CSS.escape(panelId)}"] .dashboard-panel`,
+  );
+  if (!panel) return false;
+  panel.focus({ preventScroll: true });
+  return document.activeElement === panel;
+}
+
 export default function App() {
   const [state, setState] = useState<AppState | null>(null);
   const [layout, setLayout] = useState<LayoutNode | null>(null);
@@ -256,6 +265,7 @@ export default function App() {
     panelId: string;
     identity: PanelFocusIdentity;
   } | null>(null);
+  const pendingKeyboardPanelFocusRef = useRef<string | null>(null);
 
   layoutRef.current = layout;
   draftsRef.current = drafts;
@@ -301,6 +311,14 @@ export default function App() {
     target.focus({ preventScroll: true });
     if (document.activeElement !== target) panel.focus({ preventScroll: true });
   }, [layout]);
+
+  useLayoutEffect(() => {
+    const pendingPanelId = pendingKeyboardPanelFocusRef.current;
+    if (!pendingPanelId) return;
+    if (focusDashboardPanelRoot(pendingPanelId)) {
+      pendingKeyboardPanelFocusRef.current = null;
+    }
+  }, [focusedPanelId, layout, maximizedPanelId]);
 
   const panelById = useMemo(
     () => new Map(state?.panels.map((panel) => [panel.id, panel]) ?? []),
@@ -872,11 +890,19 @@ export default function App() {
       if (
         isTypingTarget(event.target) ||
         isKeyboardShortcutBlockedTarget(event.target) ||
-        !state ||
-        !focusedPanelId
+        !state
       ) {
         return;
       }
+      const eventPanelId =
+        event.target instanceof HTMLElement
+          ? event.target
+              .closest<HTMLElement>(".split-layout__leaf[data-panel-id]")
+              ?.getAttribute("data-panel-id") ?? null
+          : null;
+      const keyboardPanelId =
+        eventPanelId && panelById.has(eventPanelId) ? eventPanelId : focusedPanelId;
+      if (!keyboardPanelId) return;
 
       if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
         event.preventDefault();
@@ -886,13 +912,17 @@ export default function App() {
         if (previous?.key === event.key && now - previous.at <= 360) {
           lastPanelArrowRef.current = null;
           const panelIds = layoutPanelIds(layoutRef.current);
-          const currentIndex = panelIds.indexOf(focusedPanelId);
+          const currentIndex = panelIds.indexOf(keyboardPanelId);
           if (panelIds.length > 1 && currentIndex >= 0) {
             const offset = event.key === "ArrowRight" ? 1 : -1;
             const nextIndex = (currentIndex + offset + panelIds.length) % panelIds.length;
             const nextPanelId = panelIds[nextIndex];
+            pendingKeyboardPanelFocusRef.current = nextPanelId;
             setFocusedPanelId(nextPanelId);
             if (maximizedPanelId) setMaximizedPanelId(nextPanelId);
+            if (focusDashboardPanelRoot(nextPanelId)) {
+              pendingKeyboardPanelFocusRef.current = null;
+            }
           }
         } else {
           lastPanelArrowRef.current = { key: event.key, at: now };
@@ -900,7 +930,7 @@ export default function App() {
         return;
       }
 
-      const panel = panelById.get(focusedPanelId);
+      const panel = panelById.get(keyboardPanelId);
       if (!panel || panel.kind !== "feed") return;
       const ui = feedUi[panel.id] ?? initialFeedUi(panel, state);
       const items = panelItems(panel, state, {
@@ -922,7 +952,16 @@ export default function App() {
         event.key === "ArrowUp"
       ) {
         event.preventDefault();
-        const currentIndex = items.findIndex(({ id }) => id === ui.focusedItemId);
+        const activeArticleId =
+          event.target instanceof HTMLElement
+            ? event.target.closest<HTMLElement>(".article-row")?.id ?? null
+            : null;
+        const activeArticleIndex = activeArticleId
+          ? items.findIndex(({ id }) => activeArticleId === `article-${panel.id}-${id}`)
+          : -1;
+        const currentIndex = activeArticleIndex >= 0
+          ? activeArticleIndex
+          : items.findIndex(({ id }) => id === ui.focusedItemId);
         const direction =
           event.key.toLowerCase() === "j" || event.key === "ArrowDown" ? 1 : -1;
         const nextIndex = Math.max(
@@ -932,11 +971,9 @@ export default function App() {
         const item = items[nextIndex];
         if (item) {
           patchFeedUi(panel.id, { focusedItemId: item.id });
-          requestAnimationFrame(() => {
-            const article = document.getElementById(`article-${panel.id}-${item.id}`);
-            article?.focus({ preventScroll: true });
-            article?.scrollIntoView({ block: "nearest" });
-          });
+          const article = document.getElementById(`article-${panel.id}-${item.id}`);
+          article?.focus({ preventScroll: true });
+          article?.scrollIntoView({ block: "nearest" });
         }
         return;
       }

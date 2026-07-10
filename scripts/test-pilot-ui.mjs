@@ -250,8 +250,23 @@ try {
     await page.locator('.article-row[tabindex="-1"]').count(),
     baselineArticleCount - 1,
   );
-  await page.locator(".article-row").first().focus();
-  await page.keyboard.press("ArrowDown");
+  const secondArticleId = await page.locator(".article-row").nth(1).getAttribute("id");
+  assert.ok(secondArticleId, "Le deuxième article doit avoir un identifiant stable.");
+  const activeArticleIdAfterKeyDown = await page.locator(".article-row").first().evaluate((row) => {
+    row.focus();
+    row.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    return document.activeElement?.id ?? null;
+  });
+  assert.equal(
+    activeArticleIdAfterKeyDown,
+    secondArticleId,
+    "La navigation doit déplacer le focus dans le même tour d’événement.",
+  );
+  await page.waitForFunction(
+    (articleId) => document.getElementById(articleId)?.getAttribute("tabindex") === "0",
+    secondArticleId,
+    { polling: 20 },
+  );
   assert.equal(
     await page.locator(".article-row").nth(1).getAttribute("tabindex"),
     "0",
@@ -502,7 +517,7 @@ try {
     "L’état de lecture doit rester explicite dans le panel le plus étroit.",
   );
 
-  await panelLeaf.locator(".dashboard-panel").hover();
+  await panelLeaf.locator(".dashboard-panel").focus();
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("ArrowRight");
   await page.waitForFunction(
@@ -511,6 +526,51 @@ try {
         .querySelector(`.split-layout__leaf[data-panel-id="${targetPanelId}"] .dashboard-panel`)
         ?.classList.contains("dashboard-panel--focused"),
     narrowPanelId,
+  );
+  assert.equal(
+    await narrowLeaf.locator(".dashboard-panel").evaluate(
+      (panel) => document.activeElement === panel,
+    ),
+    true,
+    "Changer de panel au clavier doit lui transférer le focus DOM.",
+  );
+  await page.keyboard.press("ArrowDown");
+  await page.waitForFunction(
+    (targetPanelId) => {
+      const leaf = document.querySelector(
+        `.split-layout__leaf[data-panel-id="${targetPanelId}"]`,
+      );
+      return leaf?.querySelector(".article-row")?.closest(".split-layout__leaf") === leaf &&
+        document.activeElement?.closest(".split-layout__leaf") === leaf &&
+        document.activeElement?.classList.contains("article-row");
+    },
+    narrowPanelId,
+  );
+
+  await narrowLeaf.getByLabel("Agrandir").click();
+  await page.waitForFunction(
+    (targetPanelId) =>
+      document.querySelector(".split-layout")?.getAttribute("data-maximized-panel-id") ===
+      targetPanelId,
+    narrowPanelId,
+  );
+  await narrowLeaf.locator(".dashboard-panel").focus();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  await page.waitForFunction(
+    (targetPanelId) => {
+      const layout = document.querySelector(".split-layout");
+      const panel = document.querySelector(
+        `.split-layout__leaf[data-panel-id="${targetPanelId}"] .dashboard-panel`,
+      );
+      return layout?.getAttribute("data-maximized-panel-id") === targetPanelId &&
+        document.activeElement === panel;
+    },
+    panelId,
+  );
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(
+    () => !document.querySelector(".split-layout")?.hasAttribute("data-maximized-panel-id"),
   );
 
   const primaryTitle = panelLeaf.locator(".panel-title");
