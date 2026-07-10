@@ -446,12 +446,12 @@ try {
     for (let attempt = 0; attempt < 100; attempt += 1) {
       reader = webContents
         .getAllWebContents()
-        .find((contents) => contents.getURL().startsWith(articlePrefix));
+        .find((contents) =>
+          contents.getURL().startsWith(articlePrefix) && contents.isFocused());
       if (reader) break;
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    if (!reader) throw new Error("Le WebContentsView du lecteur est introuvable.");
-    if (!reader.isFocused()) throw new Error("Le lecteur natif n’a pas reçu le focus.");
+    if (!reader) throw new Error("Le lecteur natif focalisé est introuvable.");
     reader.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
     reader.sendInputEvent({ type: "keyUp", keyCode: "Escape" });
   }, `${origin}/articles/`);

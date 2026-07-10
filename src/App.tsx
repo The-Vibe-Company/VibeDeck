@@ -602,6 +602,16 @@ export default function App() {
       const target = readerReturnFocusRef.current;
       if (!target || linkPreviewRef.current) return;
       readerReturnFocusRef.current = null;
+      const activeElement = document.activeElement;
+      if (!document.hasFocus()) return;
+      if (
+        activeElement instanceof HTMLElement &&
+        activeElement !== document.body &&
+        activeElement.isConnected &&
+        activeElement.id !== target.rowId
+      ) {
+        return;
+      }
       restoreArticleFocus(target);
     }, 150);
     return () => window.clearTimeout(timer);

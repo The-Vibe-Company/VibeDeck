@@ -705,12 +705,41 @@ export function createWebPanelController({
 
   function emit(record, overrides) {
     const state = snapshot(record, overrides);
+    return publishState(state);
+  }
+
+  function publishState(state) {
     try {
       onState(state);
     } catch {
       // A consumer error must never compromise native view cleanup or navigation.
     }
     return state;
+  }
+
+  function publishOriginalReaderDecision(descriptor, overrides = {}) {
+    publishState({
+      panelId: descriptor.panelId,
+      status: "loading",
+      homeUrl: descriptor.url,
+      url: descriptor.url,
+      title: "",
+      loading: true,
+      canGoBack: false,
+      canGoForward: false,
+      muted: true,
+      visible: false,
+      requestedVisible: descriptor.visible,
+      bounds: { ...descriptor.bounds },
+      error: null,
+      errorCode: null,
+      crashed: false,
+      unresponsive: false,
+      destroyed: false,
+      readerMode: "original",
+      readerFallback: descriptor.readerFallback,
+      ...overrides,
+    });
   }
 
   function listen(record, event, listener) {
@@ -1090,8 +1119,15 @@ export function createWebPanelController({
     assertWindowOpen();
     let view;
     let added = false;
+    let publishedOriginalDecision = false;
 
     try {
+      // The main process already knows when an article cannot use a dedicated
+      // adapter. Surface that decision before a cold native view is allocated.
+      if (descriptor.kind === "reader" && descriptor.readerMode === "original") {
+        publishOriginalReaderDecision(descriptor);
+        publishedOriginalDecision = true;
+      }
       const webPreferences = { ...WEB_PREFERENCES };
       if (descriptor.kind === "reader") {
         webPreferences.preload = ARTICLE_READER_PRELOAD;
@@ -1173,6 +1209,7 @@ export function createWebPanelController({
       }).catch(() => {});
       return record;
     } catch (error) {
+      records.delete(descriptor.panelId);
       if (added) {
         try {
           window.contentView.removeChildView(view);
@@ -1187,6 +1224,14 @@ export function createWebPanelController({
         } catch {
           // Best-effort rollback.
         }
+      }
+      if (publishedOriginalDecision) {
+        publishOriginalReaderDecision(descriptor, {
+          status: "destroyed",
+          loading: false,
+          requestedVisible: false,
+          destroyed: true,
+        });
       }
       throw error;
     }

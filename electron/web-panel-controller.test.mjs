@@ -138,6 +138,7 @@ function createHarness({
   contentSize = [800, 600],
   sharedWebSession = null,
   readerExtractionResult = null,
+  viewCreationError = null,
 } = {}) {
   const views = [];
   const addedViews = [];
@@ -147,10 +148,13 @@ function createHarness({
   const escapeCalls = [];
   const readerExtractionCalls = [];
   const searchCalls = [];
+  const creationEvents = [];
   const windowEvents = new Map();
 
   class FakeWebContentsView {
     constructor(options) {
+      creationEvents.push("view");
+      if (viewCreationError) throw viewCreationError;
       this.options = options;
       this.webContents = new FakeWebContents();
       if (sharedWebSession) this.webContents.session = sharedWebSession;
@@ -200,7 +204,10 @@ function createHarness({
         : readerExtractionResult);
       return typeof result?.ok === "boolean" ? result : normalizeExtractedArticle(result);
     },
-    onState: (state) => states.push(state),
+    onState: (state) => {
+      states.push(state);
+      creationEvents.push(`state:${state.readerMode ?? "web"}`);
+    },
     onEscape: (panelId) => escapeCalls.push(panelId),
     onOpenSearch: (panelId) => searchCalls.push(panelId),
     WebContentsViewClass: FakeWebContentsView,
@@ -209,6 +216,7 @@ function createHarness({
   return {
     addedViews,
     controller,
+    creationEvents,
     externalCalls,
     escapeCalls,
     removedViews,
@@ -384,6 +392,42 @@ test("rejects reader fallback reasons outside the closed runtime vocabulary", ()
     readerFallback: "publisher-secret",
   }]), /Motif de repli/);
   assert.equal(views.length, 0);
+});
+
+test("publishes an original-reader decision before allocating its native view", () => {
+  const { controller, creationEvents, states } = createHarness();
+  controller.sync([{
+    ...descriptor("reader:article"),
+    url: "https://example.org/article",
+    kind: "reader",
+    itemId: "article-1",
+    connectorId: null,
+    readerMode: "original",
+    readerFallback: "unsupported-source",
+  }]);
+
+  assert.deepEqual(creationEvents.slice(0, 2), ["state:original", "view"]);
+  assert.equal(states[0].status, "loading");
+  assert.equal(states[0].readerFallback, "unsupported-source");
+});
+
+test("clears a provisional original-reader decision when native allocation fails", () => {
+  const { controller, states } = createHarness({
+    viewCreationError: new Error("native allocation failed"),
+  });
+
+  assert.throws(() => controller.sync([{
+    ...descriptor("reader:article"),
+    url: "https://example.org/article",
+    kind: "reader",
+    itemId: "article-1",
+    connectorId: null,
+    readerMode: "original",
+    readerFallback: "unsupported-source",
+  }]), /native allocation failed/);
+
+  assert.equal(states[0].status, "loading");
+  assert.equal(states.at(-1).status, "destroyed");
 });
 
 test("keeps the public reader invisible until a bounded extraction becomes static", async () => {
