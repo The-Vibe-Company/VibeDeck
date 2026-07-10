@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.3](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.3.2...v0.3.3) (2026-07-10)
+
+
+### Bug Fixes
+
+* **ci:** stabiliser la double-flèche macOS ([#17](https://github.com/The-Vibe-Company/VibeDeck/issues/17)) ([15ced93](https://github.com/The-Vibe-Company/VibeDeck/commit/15ced9338719c45017a9cf43b2de1bfc9ae56b90))
+
 ## [0.3.2](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.3.1...v0.3.2) (2026-07-10)
 
 
