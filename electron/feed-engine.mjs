@@ -15,6 +15,8 @@ import {
   proxyRouteKind,
 } from "./network-safety.mjs";
 
+export { isNonPublicIpAddress } from "./network-safety.mjs";
+
 const DEFAULT_TTL_SECONDS = 60;
 const MAX_CACHE_TTL_SECONDS = 3_600;
 const MAX_RESPONSE_BYTES = 12_000_000;
@@ -1285,6 +1287,14 @@ export class FeedEngine {
 
   getPilotDiagnostics() {
     return this.database.getPilotDiagnostics(this.#nowIso());
+  }
+
+  getSemanticSearchDocuments(sourceIds) {
+    return this.database.listSemanticSearchDocuments(sourceIds);
+  }
+
+  getSemanticSearchItems(itemIds) {
+    return this.database.getSemanticSearchItems(itemIds);
   }
 
   beginPilotSession() {

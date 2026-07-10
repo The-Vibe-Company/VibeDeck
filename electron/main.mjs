@@ -1,5 +1,10 @@
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, session, shell } from "electron";
+import { createHash } from "node:crypto";
+import { createWriteStream } from "node:fs";
+import { rm } from "node:fs/promises";
 import path from "node:path";
+import { Readable } from "node:stream";
+import { finished } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { createFeedEngine } from "./feed-engine.mjs";
 import { createRefreshScheduler } from "./refresh-scheduler.mjs";
@@ -28,6 +33,12 @@ import {
   createArticleReaderService,
   resolveReaderArticle,
 } from "./article-reader.mjs";
+import { isNonPublicIpAddress } from "./network-safety.mjs";
+import {
+  SemanticSearchService,
+  assertModelDownloadUrl,
+  normalizeSearchMode,
+} from "./semantic-search.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REFRESH_TICK_MS = 15_000;
@@ -35,6 +46,7 @@ const PILOT_HEARTBEAT_MS = 60_000;
 const MAX_LAYOUT_DEPTH = 32;
 const MAX_LAYOUT_NODES = 1_023;
 const MAX_DASHBOARD_WEB_PANELS = 6;
+const MAX_MODEL_REDIRECTS = 5;
 const MIN_REFRESH_INTERVAL_SECONDS = 30;
 const MAX_REFRESH_INTERVAL_SECONDS = 3_600;
 const CONNECTOR_PREFERENCES = new Set(["auto", "rss", "atom", "news-sitemap"]);
@@ -44,6 +56,7 @@ const WEB_DATA_SCOPES = new Set(["cache", "site-data", "all"]);
 // It inherits Electron/Chromium proxy and certificate handling without sharing
 // page cookies or duplicating the SQLite feed cache on disk.
 const FEED_NETWORK_PARTITION = "mediagen-feed-network";
+const SEMANTIC_SEARCH_NETWORK_PARTITION = "mediagen-semantic-search";
 const MAX_ITEM_IDS_PER_CALL = 500;
 const MAX_FEED_CONFIGURATION_SOURCE_IDS = 4_096;
 const MAX_FEED_CONFIGURATION_NEW_SOURCES = 256;
@@ -68,6 +81,10 @@ let engine = null;
 let feedNetworkSession = null;
 let articleReaderService = null;
 let lastRendererState = null;
+let semanticSearchNetworkSession = null;
+let semanticSearch = null;
+let semanticSyncTask = null;
+let semanticSyncRevision = 0;
 let refreshTimer = null;
 let refreshScheduler = null;
 let pilotHeartbeatTimer = null;
@@ -79,6 +96,8 @@ let conductorShutdownRequested = false;
 const activeOperations = new Set();
 const webPanelControllers = new Map();
 const resettingWebPanelControllers = new WeakSet();
+const semanticSearchNativeFocus = new WeakMap();
+const semanticSearchNativeRestoreRequested = new WeakSet();
 
 if (!app.isPackaged) {
   process.on("SIGHUP", () => {
@@ -108,6 +127,17 @@ function cleanItemIds(value) {
     throw new TypeError("Liste d’articles invalide.");
   }
   return [...new Set(value.map(cleanId))];
+}
+
+function cleanSemanticSearchScope(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Portée de recherche invalide.");
+  }
+  if (value.kind === "all" && Object.keys(value).length === 1) return { kind: "all" };
+  if (value.kind === "panel" && Object.keys(value).length === 2) {
+    return { kind: "panel", panelId: cleanId(value.panelId) };
+  }
+  throw new TypeError("Portée de recherche invalide.");
 }
 
 function cleanHttpUrl(value) {
@@ -454,11 +484,131 @@ function readEngineState() {
   return state;
 }
 
-function broadcastState(state = readEngineState()) {
+function broadcastState(state = readEngineState(), { syncSemantic = false } = {}) {
   if (!state) return;
   lastRendererState = state;
   for (const window of webPanelControllers.keys()) {
     sendToWindow(window, "aggregator:state-changed", state);
+  }
+  if (syncSemantic) void scheduleSemanticSearchSync();
+}
+
+function broadcastSemanticSearchStatus(status) {
+  for (const window of webPanelControllers.keys()) {
+    sendToWindow(window, "semantic-search:status-changed", status);
+  }
+}
+
+function scheduleSemanticSearchSync() {
+  if (!semanticSearch || isQuitting) return;
+  semanticSyncRevision += 1;
+  if (semanticSyncTask) return;
+  semanticSyncTask = Promise.resolve()
+    .then(async () => {
+      while (!isQuitting) {
+        const revision = semanticSyncRevision;
+        await semanticSearch.sync();
+        if (revision === semanticSyncRevision) break;
+      }
+    })
+    .catch((error) => console.warn("Mise à jour de l’index local impossible :", error))
+    .finally(() => { semanticSyncTask = null; });
+  trackActiveOperation(semanticSyncTask);
+}
+
+function semanticSearchSourceIds(scope) {
+  const state = engine.getState();
+  if (scope.kind === "panel") {
+    const panel = state.panels.find((candidate) => candidate.id === scope.panelId);
+    if (!panel || panel.kind !== "feed") throw new Error("Le fil de recherche n’existe plus.");
+    return panel.sourceIds;
+  }
+  return [...new Set(state.panels.filter((panel) => panel.kind === "feed").flatMap((panel) => panel.sourceIds))];
+}
+
+async function assertSemanticModelTarget(candidate) {
+  const resolution = await semanticSearchNetworkSession.resolveHost(candidate.hostname, {
+    cacheUsage: "allowed", source: "any", secureDnsPolicy: "allow",
+  });
+  if (
+    !resolution?.endpoints?.length ||
+    !resolution.endpoints.every(
+      ({ address }) => typeof address === "string" && !isNonPublicIpAddress(address),
+    )
+  ) {
+    throw new Error("L’hôte du modèle ne peut pas être résolu de manière sûre.");
+  }
+  const route = await semanticSearchNetworkSession.resolveProxy(candidate.href);
+  if (typeof route !== "string" || !/^direct\s*$/i.test(route.trim())) {
+    throw new Error("Le téléchargement du modèle exige une connexion directe vérifiable.");
+  }
+}
+
+async function fetchSemanticModel(url, signal) {
+  const fetchImpl = createElectronSessionFetch(semanticSearchNetworkSession);
+  let candidate = assertModelDownloadUrl(url);
+  for (let redirectCount = 0; redirectCount <= MAX_MODEL_REDIRECTS; redirectCount += 1) {
+    await assertSemanticModelTarget(candidate);
+    if (signal?.aborted) throw new Error("Téléchargement de la recherche locale annulé.");
+    const response = await fetchImpl(candidate.href, { redirect: "manual", signal });
+    const observedUrl = response.url || candidate.href;
+    if (response.redirected === true || observedUrl !== candidate.href) {
+      assertModelDownloadUrl(observedUrl);
+      throw new Error("Le téléchargeur du modèle a suivi une redirection sans contrôle préalable.");
+    }
+    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+    if (redirectCount === MAX_MODEL_REDIRECTS) {
+      throw new Error("Le téléchargement du modèle effectue trop de redirections.");
+    }
+    const location = response.headers?.get?.("location");
+    if (!location) throw new Error("La redirection du modèle est incomplète.");
+    candidate = assertModelDownloadUrl(new URL(location, candidate).href);
+  }
+  throw new Error("Le téléchargement du modèle effectue trop de redirections.");
+}
+
+async function downloadSemanticModelFile(
+  url,
+  destination,
+  { expectedBytes, expectedSha256, cancelled, signal },
+) {
+  const response = await fetchSemanticModel(url, signal);
+  if (!response.ok || !response.body) throw new Error("Le téléchargement du modèle a échoué.");
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength !== expectedBytes) throw new Error("Taille du modèle inattendue.");
+  const output = createWriteStream(destination, { flags: "w", mode: 0o600 });
+  let outputFailure = null;
+  const outputDone = finished(output).catch((error) => {
+    outputFailure = error;
+  });
+  const digest = createHash("sha256");
+  let written = 0;
+  try {
+    for await (const chunk of Readable.fromWeb(response.body)) {
+      if (cancelled()) throw new Error("Téléchargement de la recherche locale annulé.");
+      written += chunk.length;
+      if (written > expectedBytes) throw new Error("Taille du modèle inattendue.");
+      digest.update(chunk);
+      if (!output.write(chunk)) {
+        await Promise.race([
+          new Promise((resolve) => output.once("drain", resolve)),
+          outputDone,
+        ]);
+        if (outputFailure) throw outputFailure;
+      }
+    }
+    output.end();
+    await outputDone;
+    if (outputFailure) throw outputFailure;
+  } catch (error) {
+    output.destroy();
+    await outputDone;
+    await rm(destination, { force: true });
+    throw error;
+  }
+  if (written !== expectedBytes || digest.digest("hex") !== expectedSha256) {
+    await rm(destination, { force: true });
+    throw new Error("La vérification du modèle a échoué.");
   }
 }
 
@@ -545,6 +695,22 @@ function runEngineOperation(operation) {
 
 function registerIpcHandlers() {
   registerHandle("aggregator:get-state", () => readEngineState());
+  registerHandle("semantic-search:get-status", () => semanticSearch.getStatus());
+  registerHandle("semantic-search:prepare", () => runEngineOperation(() => semanticSearch.prepare()));
+  registerHandle("semantic-search:cancel-preparation", () => {
+    semanticSearch.cancelPreparation();
+  });
+  registerHandle("semantic-search:search", (_event, request) => runEngineOperation(async () => {
+    if (!request || typeof request !== "object" || Array.isArray(request)) {
+      throw new TypeError("Recherche invalide.");
+    }
+    const scope = cleanSemanticSearchScope(request.scope);
+    const mode = normalizeSearchMode(request.mode);
+    const sourceIds = semanticSearchSourceIds(scope);
+    if (sourceIds.length === 0) return { items: [], truncated: false, mode };
+    return semanticSearch.search({ query: request.query, sourceIds, mode });
+  }));
+  registerHandle("semantic-search:remove-data", () => runEngineOperation(() => semanticSearch.removeData()));
   registerHandle("aggregator:create-panel", (_event, input, placement) => runEngineOperation(async () => {
     const cleanedInput = cleanPanelInput(input);
     if (
@@ -598,7 +764,7 @@ function registerIpcHandlers() {
         ),
         {
           getState: () => engine.getState(),
-          broadcast: (state) => broadcastState(state),
+          broadcast: (state) => broadcastState(state, { syncSemantic: true }),
           onBroadcastError: (error) =>
             console.warn("Synchronisation finale du fil impossible :", error),
         },
@@ -606,7 +772,7 @@ function registerIpcHandlers() {
   );
   registerHandle("aggregator:delete-panel", (_event, panelId) => runEngineOperation(async () => {
     const state = await engine.deletePanel(cleanId(panelId));
-    broadcastState(state);
+    broadcastState(state, { syncSemantic: true });
     return state;
   }));
   registerHandle(
@@ -626,31 +792,31 @@ function registerIpcHandlers() {
       cleanId(catalogId),
       cleanSourceAddOptions(options),
     );
-    broadcastState(result.state);
+    broadcastState(result.state, { syncSemantic: true });
     return result;
   }));
   registerHandle("aggregator:add-source", (_event, panelId, source) => runEngineOperation(async () => {
     const result = await engine.addSource(cleanId(panelId), cleanSourceRequest(source));
-    broadcastState(result.state);
+    broadcastState(result.state, { syncSemantic: true });
     return result;
   }));
   registerHandle("aggregator:remove-source", (_event, panelId, sourceId) => runEngineOperation(async () => {
     const state = await engine.removeSource(cleanId(panelId), cleanId(sourceId));
-    broadcastState(state);
+    broadcastState(state, { syncSemantic: true });
     return state;
   }));
   registerHandle("aggregator:refresh-source", (_event, sourceId) => runEngineOperation(async () => {
     const refresh = engine.refreshSource(cleanId(sourceId), { force: true });
     broadcastState();
     const state = await refresh;
-    broadcastState(state);
+    broadcastState(state, { syncSemantic: true });
     return state;
   }));
   registerHandle("aggregator:refresh-all", () => runEngineOperation(async () => {
     const refresh = engine.refreshAll();
     broadcastState();
     const state = await refresh;
-    broadcastState(state);
+    broadcastState(state, { syncSemantic: true });
     return state;
   }));
   registerHandle("aggregator:mark-items-seen", (_event, itemIds) =>
@@ -740,7 +906,7 @@ function registerIpcHandlers() {
       });
     });
     const { state, backupFilePath } = imported;
-    broadcastState(state);
+    broadcastState(state, { syncSemantic: true });
     return { canceled: false, filePath, state, backupFilePath };
   });
   registerHandle("aggregator:export-diagnostics", async (event, ...args) => {
@@ -829,11 +995,38 @@ function registerIpcHandlers() {
     }
   });
 
+  ipcMain.on("semantic-search:finish-focus", (event, restoreNative) => {
+    try {
+      if (typeof restoreNative !== "boolean") throw new TypeError("Restauration de focus invalide.");
+      const window = requireMainSender(event);
+      const panelId = semanticSearchNativeFocus.get(window);
+      if (restoreNative && panelId) semanticSearchNativeRestoreRequested.add(window);
+      else {
+        semanticSearchNativeRestoreRequested.delete(window);
+        semanticSearchNativeFocus.delete(window);
+      }
+    } catch (error) {
+      console.warn("Restauration du focus de recherche refusée :", error);
+    }
+  });
+
   ipcMain.on("web-panels:sync", (event, descriptors) => {
     try {
       const controller = controllerForEvent(event);
       if (!resettingWebPanelControllers.has(controller)) {
-        controller.sync(resolveWebPanelDescriptors(descriptors, controller));
+        const resolvedDescriptors = resolveWebPanelDescriptors(descriptors, controller);
+        controller.sync(resolvedDescriptors);
+        const window = requireMainSender(event);
+        const panelId = semanticSearchNativeFocus.get(window);
+        if (panelId && semanticSearchNativeRestoreRequested.has(window)) {
+          const descriptor = resolvedDescriptors.find(
+            (candidate) => candidate?.panelId === panelId && candidate.visible === true,
+          );
+          if (descriptor && controller.focus(panelId)) {
+            semanticSearchNativeRestoreRequested.delete(window);
+            semanticSearchNativeFocus.delete(window);
+          }
+        }
       }
     } catch (error) {
       // This one-way channel intentionally cannot mutate anything after a
@@ -896,6 +1089,13 @@ function createWindow() {
     onEscape: (panelId) => {
       if (!window.isDestroyed()) {
         sendToWindow(window, "web-panels:escape", panelId);
+        window.webContents.focus();
+      }
+    },
+    onOpenSearch: (panelId) => {
+      if (!window.isDestroyed()) {
+        semanticSearchNativeFocus.set(window, panelId);
+        sendToWindow(window, "semantic-search:open-global", true);
         window.webContents.focus();
       }
     },
@@ -993,7 +1193,7 @@ if (!hasSingleInstanceLock) {
     mainWindow.focus();
   });
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     app.setName("MediaGen Veille");
     protocol.handle(
       APP_PROTOCOL_SCHEME,
@@ -1012,6 +1212,17 @@ if (!hasSingleInstanceLock) {
       sessionForConnector: (connectorId) =>
         session.fromPartition(`mediagen-reader-${connectorId}`, { cache: false }),
     });
+    semanticSearchNetworkSession = session.fromPartition(SEMANTIC_SEARCH_NETWORK_PARTITION, {
+      cache: false,
+    });
+    semanticSearchNetworkSession.webRequest.onBeforeRequest({ urls: ["http://*/*", "https://*/*"] }, (details, callback) => {
+      try {
+        assertModelDownloadUrl(details.url);
+        callback({ cancel: false });
+      } catch {
+        callback({ cancel: true });
+      }
+    });
     engine = createFeedEngine({
       dbPath: developmentDatabasePath
         ? path.resolve(developmentDatabasePath)
@@ -1029,11 +1240,25 @@ if (!hasSingleInstanceLock) {
     refreshScheduler = createRefreshScheduler({
       getSources: () => engine.getState().sources,
       refreshSource: (sourceId) => engine.refreshSource(sourceId),
-      onStateChange: () => broadcastState(),
+      onStateChange: () => broadcastState(undefined, { syncSemantic: true }),
     });
+    semanticSearch = new SemanticSearchService({
+      rootPath: path.join(app.getPath("userData"), "semantic-search"),
+      getDocuments: () => semanticSearchSourceIds({ kind: "all" }).length
+        ? engine.getSemanticSearchDocuments(semanticSearchSourceIds({ kind: "all" }))
+        : [],
+      getItems: (itemIds) => engine.getSemanticSearchItems(itemIds),
+      download: downloadSemanticModelFile,
+      testMode:
+        !app.isPackaged && process.env.MEDIAGEN_FAKE_SEMANTIC_SEARCH === "true",
+    });
+    semanticSearch.onStatusChanged(broadcastSemanticSearchStatus);
     beginPilotUsageSession();
     registerIpcHandlers();
     createWindow();
+    void semanticSearch.initialize()
+      .then(() => scheduleSemanticSearchSync())
+      .catch((error) => console.warn("Initialisation de la recherche locale impossible :", error));
     heartbeatPilotUsage({ force: true });
 
     refreshTimer = setInterval(() => void refreshDueSources(), REFRESH_TICK_MS);
@@ -1063,6 +1288,7 @@ app.on("before-quit", (event) => {
   if (refreshTimer) clearInterval(refreshTimer);
   refreshTimer = null;
   refreshScheduler?.stop();
+  if (semanticSearch) pendingPersistence.push(semanticSearch.close());
   engine?.cancelPending();
   const pendingRefresh = refreshScheduler?.pending();
   if (pendingRefresh) pendingPersistence.push(pendingRefresh);
@@ -1076,6 +1302,8 @@ app.on("before-quit", (event) => {
       try {
         endPilotUsageSession();
         engine?.close();
+        semanticSearch = null;
+        semanticSearchNetworkSession = null;
       } catch (error) {
         console.error("Fermeture de la base locale incomplète :", error);
       } finally {

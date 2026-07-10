@@ -40,6 +40,14 @@ contextBridge.exposeInMainWorld("mediagen", {
     ipcRenderer.invoke("aggregator:mark-items-seen", itemIds),
   markItemOpened: (itemId) =>
     ipcRenderer.invoke("aggregator:mark-item-opened", itemId),
+  getSemanticSearchStatus: () => ipcRenderer.invoke("semantic-search:get-status"),
+  prepareSemanticSearch: () => ipcRenderer.invoke("semantic-search:prepare"),
+  cancelSemanticSearchPreparation: () =>
+    ipcRenderer.invoke("semantic-search:cancel-preparation"),
+  searchFeedItems: (request) => ipcRenderer.invoke("semantic-search:search", request),
+  removeSemanticSearchData: () => ipcRenderer.invoke("semantic-search:remove-data"),
+  finishSemanticSearchFocus: (restoreNative) =>
+    ipcRenderer.send("semantic-search:finish-focus", restoreNative),
   exportDashboard: () => ipcRenderer.invoke("aggregator:export-dashboard"),
   importDashboard: () => ipcRenderer.invoke("aggregator:import-dashboard"),
   exportDiagnostics: () => ipcRenderer.invoke("aggregator:export-diagnostics"),
@@ -85,5 +93,17 @@ contextBridge.exposeInMainWorld("mediagen", {
     const listener = (_event, panelId) => callback(panelId);
     ipcRenderer.on("web-panels:escape", listener);
     return () => ipcRenderer.removeListener("web-panels:escape", listener);
+  },
+  onSemanticSearchStatusChanged: (callback) => {
+    if (typeof callback !== "function") throw new TypeError("Callback invalide.");
+    const listener = (_event, status) => callback(status);
+    ipcRenderer.on("semantic-search:status-changed", listener);
+    return () => ipcRenderer.removeListener("semantic-search:status-changed", listener);
+  },
+  onOpenGlobalSearch: (callback) => {
+    if (typeof callback !== "function") throw new TypeError("Callback invalide.");
+    const listener = (_event, nativeOrigin) => callback(nativeOrigin === true);
+    ipcRenderer.on("semantic-search:open-global", listener);
+    return () => ipcRenderer.removeListener("semantic-search:open-global", listener);
   },
 });
