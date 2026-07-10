@@ -736,8 +736,13 @@ try {
       ?.classList.contains("dashboard-panel--focused"),
     panelId,
   );
-  await page.keyboard.press("ArrowRight");
-  await page.keyboard.press("ArrowRight");
+  // Les deux événements doivent partager le même tour du renderer : deux
+  // appels CDP successifs peuvent dépasser le seuil produit de 360 ms sous
+  // charge en CI, sans reproduire la cadence réelle d'une double-flèche.
+  await panelLeaf.locator(".dashboard-panel").evaluate((panel) => {
+    panel.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    panel.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+  });
   await page.waitForFunction(
     (targetPanelId) =>
       document
