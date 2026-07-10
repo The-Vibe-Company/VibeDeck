@@ -227,6 +227,7 @@ test("reader service caches an injected fetcher per connector session", async ()
       sessionCreations += 1;
       return networkSession;
     },
+    timeoutMs: 5_000,
     fetchForSession(session) {
       assert.equal(session, networkSession);
       fetcherCreations += 1;
