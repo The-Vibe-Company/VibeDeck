@@ -1,0 +1,33 @@
+README.md
+  s_423bb963c430be::t_f8ac4566a5c1f7 82
+electron/main.mjs
+  s_423bb963c430be::t_c7ca6c368498e8 1133
+  s_423bb963c430be::t_dcf3ea3654fb1a 1024
+  s_423bb963c430be::t_f8c086140ec368 101-110,113-114
+  s_423bb963c430be::t_8dfa40977e0244 111-112
+  s_423bb963c430be::t_3e25b76c5bdf9d 1058
+scripts/run-conductor.mjs
+  s_423bb963c430be::t_b0e1fd6ba003bd 33
+scripts/test-pilot-ui.mjs
+  s_423bb963c430be::t_a60665d72f05df 187
+  s_423bb963c430be::t_f2c5bf10ff70df 11-13
+  s_423bb963c430be::t_472f2640edfbab 179
+AGENTS.md
+  s_423bb963c430be::t_20f5c110ab037b 139
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "01fc4daad53ff471d440afc766ebba4968bb7166",
+  "prompts": {},
+  "sessions": {
+    "s_423bb963c430be": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "52f0459c-999b-4b5a-8a62-c6773a3c0cb1",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
