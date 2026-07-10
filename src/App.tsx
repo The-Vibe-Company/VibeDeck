@@ -678,6 +678,7 @@ export default function App() {
         visible:
           Boolean(surface) &&
           !modal &&
+          !semanticSearchOpen &&
           !interactionActive &&
           !failedPanelIds.has(LINK_READER_ID),
       });
@@ -1371,7 +1372,10 @@ export default function App() {
           if (ui.visibilityFilter === "unseen") {
             patchFeedUi(panel.id, { focusedItemId: null });
           }
-          void openItem(item, { panelId: keyboardPanelId, rowId: focusedArticleId });
+          void openItem(item, {
+            panelId: panel.id,
+            rowId: `article-${panel.id}-${item.id}`,
+          });
         }
       }
     }

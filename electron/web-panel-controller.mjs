@@ -804,6 +804,20 @@ export function createWebPanelController({
     if (!safeHttpUrl(target)) event.preventDefault?.();
   }
 
+  function focusVisibleReader(record) {
+    if (
+      record.kind !== "reader" ||
+      !record.visible ||
+      record.destroyed ||
+      record.closing ||
+      records.get(record.panelId) !== record ||
+      typeof record.contents.focus !== "function"
+    ) {
+      return;
+    }
+    record.contents.focus();
+  }
+
   function configureContents(record) {
     const { contents } = record;
     requireMethod(contents, "on", "Le WebContents");
@@ -838,6 +852,11 @@ export function createWebPanelController({
         !input.isAutoRepeat
       ) {
         event.preventDefault?.();
+        if (record.visible) {
+          record.visible = false;
+          record.view.setVisible(false);
+          emit(record);
+        }
         onOpenSearch(record.panelId);
       }
     });
@@ -857,9 +876,10 @@ export function createWebPanelController({
       record.crashed = false;
       emit(record);
     });
+    listen(record, "dom-ready", () => focusVisibleReader(record));
     listen(record, "did-stop-loading", () => {
       record.loading = false;
-      if (record.kind === "reader" && record.visible) record.contents.focus();
+      focusVisibleReader(record);
       emit(record);
     });
     listen(record, "did-navigate", (_event, url) => {
@@ -1181,9 +1201,7 @@ export function createWebPanelController({
       added = true;
       records.set(record.panelId, record);
       applyBounds(record, descriptor);
-      if (record.kind === "reader" && record.visible && typeof record.contents.focus === "function") {
-        record.contents.focus();
-      }
+      focusVisibleReader(record);
       emit(record);
       // A dashboard renderer can reload immediately after its previous views
       // were closed. Do not let the replacement page register workers while

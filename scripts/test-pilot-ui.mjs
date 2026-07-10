@@ -65,6 +65,11 @@ async function closeServer(server) {
   await new Promise((resolve) => server.close(resolve));
 }
 
+async function hoverRow(row) {
+  await row.hover();
+  await row.dispatchEvent("pointermove", { pointerType: "mouse" });
+}
+
 function assertWithin(actual, expected, tolerance, label) {
   const difference = Math.abs(actual - expected);
   assert.ok(
@@ -257,10 +262,16 @@ try {
     await page.locator('.article-row[tabindex="-1"]').count(),
     baselineArticleCount - 1,
   );
+  const firstArticleId = await page.locator(".article-row").first().getAttribute("id");
+  assert.ok(firstArticleId, "Le premier article doit avoir un identifiant stable.");
   const secondArticleId = await page.locator(".article-row").nth(1).getAttribute("id");
   assert.ok(secondArticleId, "Le deuxième article doit avoir un identifiant stable.");
+  await page.locator(".article-row").first().focus();
+  await page.waitForFunction(
+    (articleId) => document.querySelector(".article-row--focused")?.id === articleId,
+    firstArticleId,
+  );
   const activeArticleIdAfterKeyDown = await page.locator(".article-row").first().evaluate((row) => {
-    row.focus();
     row.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
     return document.activeElement?.id ?? null;
   });
@@ -305,7 +316,7 @@ try {
   // truly isolates hover-preselect: only onPointerMove can move the selection to nth(3).
   const hoveredRow = page.locator(".article-row").nth(3);
   const hoveredRowId = await hoveredRow.getAttribute("id");
-  await hoveredRow.hover();
+  await hoverRow(hoveredRow);
   assert.equal(
     await page.locator(".dashboard-panel").evaluate((panel) => document.activeElement === panel),
     true,
@@ -339,6 +350,7 @@ try {
   );
   await draftLeaf.getByLabel("Fermer le panel").click();
   await draftLeaf.waitFor({ state: "detached" });
+  await page.locator(".global-bar").hover();
 
   const reference = await page.evaluate(async () => {
     const list = document.querySelector(".article-list");
@@ -1102,7 +1114,7 @@ try {
     "Une arrivée fraîche doit être non vue avant tout survol.",
   );
   // Survol bref puis sortie du fil avant le délai : le marquage est annulé.
-  await dwellRow.hover();
+  await hoverRow(dwellRow);
   await page.locator(".global-bar").hover();
   await page.waitForTimeout(HOVER_SEEN_DELAY_MS + 300);
   assert.equal(
@@ -1111,7 +1123,7 @@ try {
     "Quitter le fil avant le délai de dwell doit annuler le marquage « vu ».",
   );
   // Survol immobile maintenu au-delà du délai : la ligne devient « vue ».
-  await dwellRow.hover();
+  await hoverRow(dwellRow);
   await page.waitForFunction(
     (articleId) => document.getElementById(articleId)?.classList.contains("article-row--seen") === true,
     dwellId,

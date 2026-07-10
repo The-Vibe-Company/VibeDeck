@@ -395,7 +395,7 @@ test("rejects reader fallback reasons outside the closed runtime vocabulary", ()
 });
 
 test("publishes an original-reader decision before allocating its native view", () => {
-  const { controller, creationEvents, states } = createHarness();
+  const { controller, creationEvents, searchCalls, states, views } = createHarness();
   controller.sync([{
     ...descriptor("reader:article"),
     url: "https://example.org/article",
@@ -409,6 +409,17 @@ test("publishes an original-reader decision before allocating its native view", 
   assert.deepEqual(creationEvents.slice(0, 2), ["state:original", "view"]);
   assert.equal(states[0].status, "loading");
   assert.equal(states[0].readerFallback, "unsupported-source");
+  const initialFocusCalls = views[0].webContents.focusCalls;
+  views[0].webContents.emit("dom-ready");
+  assert.equal(views[0].webContents.focusCalls, initialFocusCalls + 1);
+  views[0].webContents.emit("before-input-event", { preventDefault() {} }, {
+    type: "keyDown", key: "k", meta: true,
+  });
+  assert.equal(views[0].visible, false);
+  assert.deepEqual(searchCalls, ["reader:article"]);
+  const hiddenFocusCalls = views[0].webContents.focusCalls;
+  views[0].webContents.emit("dom-ready");
+  assert.equal(views[0].webContents.focusCalls, hiddenFocusCalls);
 });
 
 test("clears a provisional original-reader decision when native allocation fails", () => {
@@ -682,6 +693,8 @@ test("denies permissions, downloads and popups while opening safe popup links in
   });
   assert.equal(searchPrevented, true);
   assert.deepEqual(searchCalls, ["locked-down"]);
+  assert.equal(view.visible, false);
+  controller.sync([descriptor("locked-down")]);
   assert.equal(controller.focus("locked-down"), true);
   assert.equal(contents.focusCalls, 1);
 });
