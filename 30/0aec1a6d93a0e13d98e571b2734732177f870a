@@ -1,0 +1,71 @@
+electron/main.mjs
+  s_8f0044f36e14e9::t_2aef4d4feab308 300,316-321,836,859,861
+  s_8f0044f36e14e9::t_83bcabbb5176f5 22,70,301-302,451-457,459,547,860,974,1028,1085
+electron/web-panel-controller.test.mjs
+  s_8f0044f36e14e9::t_832abfa655ef2a 448,451-453,455,485,489
+  s_8f0044f36e14e9::t_871837dd8cbdd0 422-423,425,445,449-450,454,456,539-560
+  s_8f0044f36e14e9::t_e584114e15b29b 561-562
+electron/article-reader.mjs
+  s_8f0044f36e14e9::t_bd4f3e1c65a4ee 4,476-481,500-530,576-578,590-597
+  s_8f0044f36e14e9::t_2aef4d4feab308 189,193-198
+  s_8f0044f36e14e9::t_83aeb7180a24cd 2,296,298,301-306,308-312,316,318,325-326,331,421-425,623-647,709,726-727,729-732,741
+  s_8f0044f36e14e9::t_7c0260941bbd3e 3
+electron/live-connectors.mjs
+  s_8f0044f36e14e9::t_09ee1f8a7a2bfc 2,27-33
+  s_8f0044f36e14e9::t_83aeb7180a24cd 88-90
+scripts/test-pilot-ui.mjs
+  s_8f0044f36e14e9::t_81e838a0d0418d 432,435-442,453,458-461
+  s_8f0044f36e14e9::t_1e310d812d7fda 593-617
+src/types.ts
+  s_8f0044f36e14e9::t_43998a96c606c0 245
+electron/preload.test.mjs
+  s_8f0044f36e14e9::t_871837dd8cbdd0 90,94-98
+README.md
+  s_8f0044f36e14e9::t_fd795ec9360bda 90
+electron/article-reader.test.mjs
+  s_8f0044f36e14e9::t_832abfa655ef2a 369-373,378-381
+  s_8f0044f36e14e9::t_09ee1f8a7a2bfc 59-65,67-68,70-71,86-95,240-241,273-274,286-311,355-358
+  s_8f0044f36e14e9::t_83aeb7180a24cd 181,187-192
+electron/feed-engine.mjs
+  s_8f0044f36e14e9::t_5dc895557ff656 12-16
+electron/network-safety.mjs
+  s_8f0044f36e14e9::t_5dc895557ff656 1-91
+electron/preload.cjs
+  s_8f0044f36e14e9::t_43998a96c606c0 67-68
+electron/web-panel-controller.mjs
+  s_8f0044f36e14e9::t_c866b6dc4b813d 13,581-592,1143-1147,1191-1194,1285,1333,1354,1361,1368,1375,1396
+  s_8f0044f36e14e9::t_161c057d55b259 998-1000,1021-1025,1196-1197,1336,1349-1351,1456,1480
+  s_8f0044f36e14e9::t_d68e6339fa5122 1235-1240
+  s_8f0044f36e14e9::t_8a102b44f4c605 820,988,1015,1199,1234,1312
+  s_8f0044f36e14e9::t_2aef4d4feab308 366-372,524,536,992-993,995,1001-1002,1019-1020,1195,1437-1454,1485
+  s_8f0044f36e14e9::t_30d4ffbecc94f5 1026
+  s_8f0044f36e14e9::t_c415fc95a2bd4e 1198
+  s_8f0044f36e14e9::t_e456c4fc051df2 1352
+  s_8f0044f36e14e9::t_05c6234759c0b2 1455
+  s_8f0044f36e14e9::t_9d19fc80c30844 1457
+src/App.tsx
+  s_8f0044f36e14e9::t_c2c3d60e062cfb 2051-2054
+  s_8f0044f36e14e9::t_92f84a7b0e06a7 255-256,919-924,959-961,1198-1204,1286-1288,2039,2064
+  s_8f0044f36e14e9::t_1e310d812d7fda 149-153,248-254,291,502-503,505,917-918,1077,1168,1648,1830
+  s_8f0044f36e14e9::t_13ab0d26ada504 2102-2105
+  s_8f0044f36e14e9::t_9d693d1aa4977a 274,294,499-501,504,506-508
+  s_8f0044f36e14e9::t_712c2b52ceabff 509
+electron/article-reader-worker.mjs
+  s_8f0044f36e14e9::t_83aeb7180a24cd 1-9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "300aec1a6d93a0e13d98e571b2734732177f870a",
+  "prompts": {},
+  "sessions": {
+    "s_8f0044f36e14e9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4c09-dd30-7fc3-8b4f-2bb336b613dc",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
