@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.3.3...v0.4.0) (2026-07-11)
+
+
+### Features
+
+* **update:** améliorer l’installation prête ([#20](https://github.com/The-Vibe-Company/VibeDeck/issues/20)) ([4b083d3](https://github.com/The-Vibe-Company/VibeDeck/commit/4b083d39f06a35b417815646920bb2abb583be69))
+
+
+### Bug Fixes
+
+* **release:** publish release-please releases ([#23](https://github.com/The-Vibe-Company/VibeDeck/issues/23)) ([e7b2cea](https://github.com/The-Vibe-Company/VibeDeck/commit/e7b2ceace55887e2c6ae5bee4a3cb01a98a9a2f2))
+
 ## [0.3.3](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.3.2...v0.3.3) (2026-07-10)
 
 
