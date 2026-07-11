@@ -77,7 +77,7 @@ Le diagnostic contient uniquement les durées agrégées et le nombre de session
 
 La diffusion directe exige un certificat `Developer ID Application` et des identifiants de notarisation Apple configurés uniquement dans les secrets CI.
 
-Release Please maintient la Release PR, `package.json`, `package-lock.json`, `.release-please-manifest.json` et `CHANGELOG.md`. Après fusion de cette PR, il crée un tag `vX.Y.Z` et une GitHub Release brouillon. Tant que `ENABLE_WINDOWS_RELEASE` vaut `false`, le tag déclenche uniquement le build macOS signé et le brouillon devient public après validation exacte des artefacts macOS et de leurs checksums. Le secret d’organisation `RELEASE_PLEASE_TOKEN` doit être autorisé uniquement pour ce dépôt et disposer des permissions Contents, Pull Requests et Issues en écriture.
+Release Please maintient la Release PR, `package.json`, `package-lock.json`, `.release-please-manifest.json` et `CHANGELOG.md`. Après fusion de cette PR, il crée un tag `vX.Y.Z` et une GitHub Release publiée. Le workflow signé retire temporairement le statut `latest` à cette release, puis le remet seulement après validation exacte des artefacts macOS et de leurs checksums. Tant que `ENABLE_WINDOWS_RELEASE` vaut `false`, le tag déclenche uniquement le build macOS signé et les artefacts sont ajoutés à cette release après validation. Le secret d’organisation `RELEASE_PLEASE_TOKEN` doit être autorisé uniquement pour ce dépôt et disposer des permissions Contents, Pull Requests et Issues en écriture.
 
 Le secret `APPLE_API_KEY` accepte le contenu brut du fichier `.p8` ou sa version encodée en base64. `MAC_CSC_LINK` contient le certificat `.p12` encodé en base64 ; les mots de passe et identifiants ne sont jamais stockés dans le dépôt.
 
@@ -93,7 +93,7 @@ npm run verify:checksums
 
 Le job `release-signed` refuse de produire une version de diffusion si le certificat est absent. Ses actions tierces sont épinglées par SHA, le tag doit correspondre exactement à la version de `package.json` et pointer sur l’historique de `main`, et le bundle contenu dans le DMG est monté, vérifié puis réellement lancé avant publication. Le ZIP et `latest-mac.yml` sont publiés avec le DMG pour permettre l’auto-mise à jour.
 
-Les secrets de signature doivent vivre uniquement dans l’environnement GitHub `signed-release`, sans reviewer obligatoire et avec sa politique de déploiement limitée aux tags `v*`. La fusion manuelle de la Release PR est le seul geste humain : le tag, la signature, la notarisation, les contrôles et la publication de la release brouillon s’enchaînent ensuite automatiquement. Le dépôt doit être public seulement après un scan de secrets de tout son historique ; `main` et les tags `v*` restent protégés. Les certificats ne doivent pas être provisionnés tant que ces règles sont en place.
+Les secrets de signature doivent vivre uniquement dans l’environnement GitHub `signed-release`, sans reviewer obligatoire et avec sa politique de déploiement limitée aux tags `v*`. La fusion manuelle de la Release PR est le seul geste humain : le tag, la release publiée, le retrait temporaire de `latest`, la signature, la notarisation, les contrôles et l’upload des artefacts s’enchaînent ensuite automatiquement. Le dépôt doit être public seulement après un scan de secrets de tout son historique ; `main` et les tags `v*` restent protégés. Les certificats ne doivent pas être provisionnés tant que ces règles sont en place.
 
 Sur un dossier synchronisé par iCloud/FileProvider, macOS peut réattacher des attributs étendus au bundle et invalider une vérification locale stricte. Construire et vérifier la version de diffusion sur le disque temporaire du runner CI ou dans un dossier local non synchronisé, puis vérifier également l’application réellement contenue dans le DMG. Ce phénomène ne doit jamais être contourné en relâchant les contrôles de signature.
 
@@ -114,13 +114,13 @@ npm run verify:checksums
 
 Vérifier installation, premier lancement, installation d’une version supérieure, désinstallation et absence de données résiduelles non documentées. Tester au moins Windows 11 x64 sur un poste géré AFP.
 
-La variable d’environnement GitHub `WIN_PUBLISHER_NAME` doit contenir exactement le nom juridique validé par Azure Artifact Signing. Le job Windows s’authentifie avec une application Entra limitée au rôle `Artifact Signing Certificate Profile Signer`, puis electron-builder signe l’application et l’installateur avec le profil public configuré. L’installateur, sa blockmap et `latest.yml` sont attachés au même brouillon que les artefacts macOS. La release reste invisible tant que le job final n’a pas validé les deux plateformes.
+La variable d’environnement GitHub `WIN_PUBLISHER_NAME` doit contenir exactement le nom juridique validé par Azure Artifact Signing. Le job Windows s’authentifie avec une application Entra limitée au rôle `Artifact Signing Certificate Profile Signer`, puis electron-builder signe l’application et l’installateur avec le profil public configuré. L’installateur, sa blockmap et `latest.yml` sont attachés à la même release que les artefacts macOS. Le job final valide l’ensemble avant de marquer la release comme `latest`.
 
 ## Mise à jour automatique
 
 À partir de la version 0.3.0, l’application installée vérifie le canal stable public au démarrage puis toutes les six heures. Une nouvelle version est téléchargée en arrière-plan, mais son installation reste une action explicite « Redémarrer ». Avant de lancer l’installeur, le main process annule les rafraîchissements, attend les mutations actives, ferme les vues web puis SQLite. La version 0.2.0 ne contient pas ce mécanisme et doit donc être remplacée une dernière fois manuellement.
 
-Une release publiée est immuable. En cas de défaut, publier une version SemVer supérieure ; ne jamais remplacer un installateur ou un fichier `latest*.yml` existant. Un workflow manuel peut reprendre un brouillon associé à un tag existant, mais ne peut pas inventer une nouvelle version.
+Une release publiée est immuable. En cas de défaut, publier une version SemVer supérieure ; ne jamais remplacer un installateur ou un fichier `latest*.yml` existant. Un workflow manuel peut reprendre une release associée à un tag existant, mais refuse de remplacer un artefact déjà attaché.
 
 ## Gate du pilote
 

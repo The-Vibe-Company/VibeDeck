@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Tag SemVer existant associé à une release brouillon
+        description: Tag SemVer existant associé à une release publiée
         required: true
         type: string
 
@@ -21,7 +21,8 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     permissions:
-      # GitHub réserve la visibilité des releases brouillon aux identités avec accès push.
+      # La release est publiée par Release Please, mais elle ne doit pas devenir latest
+      # avant que les artefacts signés aient été validés et attachés.
       contents: write
     outputs:
       tag: ${{ steps.release.outputs.tag }}
@@ -52,7 +53,9 @@ jobs:
             fi
             sleep 5
           done
-          test "$release_is_draft" = true
+          test "$release_is_draft" = false
+          release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$RELEASE_TAG" --jq .id)"
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/$release_id" -f make_latest=false >/dev/null
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
@@ -61,7 +64,7 @@ jobs:
     runs-on: macos-latest
     environment: signed-release
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -94,15 +97,14 @@ jobs:
           grep -q "BEGIN PRIVATE KEY" "$key_path"
           chmod 600 "$key_path"
           echo "APPLE_API_KEY=$key_path" >> "$GITHUB_ENV"
-      - name: Build, sign, notarize and upload macOS assets
-        run: npm run prepare:mac-universal && npm run build && npx electron-builder --mac --universal -c.forceCodeSigning=true -c.mac.notarize=true --publish always
+      - name: Build, sign and notarize macOS assets
+        run: npm run prepare:mac-universal && npm run build && npx electron-builder --mac --universal -c.forceCodeSigning=true -c.mac.notarize=true --publish never
         env:
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          GITHUB_RELEASE_TOKEN: ${{ github.token }}
       - run: npm run verify:packaged-fuses
       - name: Verify the distributed DMG application
         shell: bash
@@ -141,7 +143,7 @@ jobs:
     runs-on: windows-latest
     environment: signed-release
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -156,7 +158,7 @@ jobs:
       - run: npm run verify:release
       - run: npm audit --omit=dev
       - run: npm audit
-      - name: Build, sign and upload Windows assets
+      - name: Build and sign Windows assets
         shell: pwsh
         env:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
@@ -166,9 +168,8 @@ jobs:
           AZURE_CODE_SIGNING_ACCOUNT_NAME: ${{ vars.AZURE_CODE_SIGNING_ACCOUNT_NAME }}
           AZURE_CERTIFICATE_PROFILE_NAME: ${{ vars.AZURE_CERTIFICATE_PROFILE_NAME }}
           WIN_PUBLISHER_NAME: ${{ vars.WIN_PUBLISHER_NAME }}
-          GITHUB_RELEASE_TOKEN: ${{ github.token }}
         run: |
-          npm run dist:win:signed -- --publish always
+          npm run dist:win:signed -- --publish never
       - run: npm run verify:packaged-fuses
       - run: npm run test:packaged
       - name: Verify Windows Authenticode signature and update metadata
@@ -209,7 +210,7 @@ jobs:
           pattern: release-*
           path: release
           merge-multiple: true
-      - name: Validate assets and publish the draft
+      - name: Validate, upload assets and mark the release as latest
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -229,11 +230,30 @@ jobs:
             test ! -e release/latest.yml
             test "$(find release -maxdepth 1 -type f -name '*.blockmap' | wc -l | tr -d ' ')" = 2
           fi
-          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = false
           npm run checksums:release
           npm run verify:checksums
-          gh release upload "$RELEASE_TAG" release/SHA256SUMS.txt --clobber
-          expected_assets="$(find release -maxdepth 1 -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' -o -name '*.blockmap' -o -name 'latest.yml' -o -name 'latest-mac.yml' -o -name 'SHA256SUMS.txt' \) -exec basename {} \; | sort)"
+          mapfile -t expected_artifact_paths < <(find release -maxdepth 1 -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' -o -name '*.blockmap' -o -name 'latest.yml' -o -name 'latest-mac.yml' -o -name 'SHA256SUMS.txt' \) | sort)
+          expected_assets="$(for artifact_path in "${expected_artifact_paths[@]}"; do basename "$artifact_path"; done | sort)"
+          remote_assets="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | sort)"
+          asset_verify_dir="$RUNNER_TEMP/release-asset-verify"
+          rm -rf "$asset_verify_dir"
+          mkdir -p "$asset_verify_dir"
+          missing_artifact_paths=()
+          for artifact_path in "${expected_artifact_paths[@]}"; do
+            asset_name="$(basename "$artifact_path")"
+            if printf '%s\n' "$remote_assets" | grep -Fxq "$asset_name"; then
+              gh release download "$RELEASE_TAG" --pattern "$asset_name" --dir "$asset_verify_dir"
+              cmp -s "$artifact_path" "$asset_verify_dir/$asset_name"
+              rm -f "$asset_verify_dir/$asset_name"
+              echo "Release asset already exists, leaving immutable asset untouched: $asset_name"
+            else
+              missing_artifact_paths+=("$artifact_path")
+            fi
+          done
+          if [ "${#missing_artifact_paths[@]}" -gt 0 ]; then
+            gh release upload "$RELEASE_TAG" "${missing_artifact_paths[@]}"
+          fi
           remote_assets="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | sort)"
           test "$remote_assets" = "$expected_assets"
           gh release edit "$RELEASE_TAG" --draft=false --latest
