@@ -129,11 +129,17 @@ const secondaryArticles = [
 ];
 let primaryRequestCount = 0;
 let secondaryRequestCount = 0;
+let redirectedFeedRequestCount = 0;
 let primaryShouldFail = false;
 let primaryDelayMs = 0;
 let origin = "";
 
 const server = createServer((request, response) => {
+  if (request.url === "/feed-redirect.xml") {
+    redirectedFeedRequestCount += 1;
+    response.writeHead(307, { Location: "/feed.xml" }).end();
+    return;
+  }
   if (request.url !== "/feed.xml" && request.url !== "/feed-secondary.xml") {
     response.writeHead(404).end("Not found");
     return;
@@ -371,7 +377,7 @@ try {
       });
       return result.sourceId;
     },
-    { targetPanelId: panelId, feedUrl: `${origin}/feed.xml` },
+    { targetPanelId: panelId, feedUrl: `${origin}/feed-redirect.xml` },
   );
 
   await page.waitForFunction(
@@ -379,6 +385,11 @@ try {
     initialArticleCount,
   );
   assert.equal(primaryRequestCount, 1, "Le flux principal doit être chargé une seule fois.");
+  assert.equal(
+    redirectedFeedRequestCount,
+    1,
+    "Le flux pilote doit traverser une redirection HTTP avec la pile Electron réelle.",
+  );
 
   await page.evaluate(
     async ({ targetPanelId, feedUrl }) => window.vibedeck.addSource(targetPanelId, {
@@ -675,7 +686,7 @@ try {
       connectorKind: "rss",
       refreshIntervalSeconds: 1_800,
     }),
-    { targetPanelId: narrowPanelId, feedUrl: `${origin}/feed.xml` },
+    { targetPanelId: narrowPanelId, feedUrl: `${origin}/feed-redirect.xml` },
   );
   assert.equal(
     primaryRequestCount,

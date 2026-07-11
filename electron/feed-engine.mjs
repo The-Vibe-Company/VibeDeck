@@ -932,6 +932,14 @@ function cachePolicy(headers, fallbackSeconds) {
   };
 }
 
+async function discardResponseBody(response) {
+  try {
+    await response.body?.cancel?.();
+  } catch {
+    // The response may already be closed or consumed by another fetch adapter.
+  }
+}
+
 export async function readResponseTextWithLimit(
   response,
   { maxBytes = MAX_RESPONSE_BYTES, signal = null } = {},
@@ -941,6 +949,7 @@ export async function readResponseTextWithLimit(
   }
   const declaredLength = Number(response.headers?.get?.("content-length") ?? 0);
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    await discardResponseBody(response);
     throw new Error("Ce flux est trop volumineux pour être ajouté.");
   }
 
@@ -1544,6 +1553,7 @@ export class FeedEngine {
       // observed destination, then fail closed: it was already contacted and
       // therefore could not receive the required preflight resolution.
       if (response.redirected === true || observedUrl !== currentUrl) {
+        await discardResponseBody(response);
         assertSafeFeedUrl(observedUrl, {
           allowPrivateNetwork: this.allowPrivateNetwork,
           expectedSiteUrl: endpoint,
@@ -1555,6 +1565,7 @@ export class FeedEngine {
       if (![301, 302, 303, 307, 308].includes(response.status)) {
         return { response, finalUrl: currentUrl };
       }
+      await discardResponseBody(response);
       if (redirectCount === MAX_REDIRECTS) {
         throw new Error("Cette source effectue trop de redirections.");
       }
@@ -1636,11 +1647,13 @@ export class FeedEngine {
     const { maxAge, noStore } = cachePolicy(response.headers, ttlSeconds);
     const expiresAt = new Date(now.valueOf() + maxAge * 1_000).toISOString();
     if (response.status === 304 && cache) {
+      await discardResponseBody(response);
       if (noStore) this.database.deleteEndpointCache(endpoint);
       else this.database.touchEndpointCache(endpoint, { fetchedAt, expiresAt });
       return { ...cache, fetchedAt, expiresAt, fromCache: true, stale: false };
     }
     if (!response.ok) {
+      await discardResponseBody(response);
       if (cache) {
         return {
           ...cache,

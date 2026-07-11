@@ -1,11 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, session, shell } from "electron";
 import electronUpdater from "electron-updater";
-import { createHash } from "node:crypto";
-import { createWriteStream } from "node:fs";
-import { rm } from "node:fs/promises";
 import path from "node:path";
-import { Readable } from "node:stream";
-import { finished } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { createFeedEngine } from "./feed-engine.mjs";
 import { createRefreshScheduler } from "./refresh-scheduler.mjs";
@@ -23,11 +18,11 @@ import { resolveRendererEntryUrl } from "./development-config.mjs";
 import {
   clearWebPanelSessionData,
   collectEnterpriseNetworkDiagnostics,
-  createElectronSessionFetch,
   createWebPanelController,
   validateWebPanelDescriptorList,
   WEB_PANEL_SESSION_STRATEGY,
 } from "./web-panel-controller.mjs";
+import { createElectronSessionFetch } from "./electron-session-fetch.mjs";
 import { runWithFinalStateBroadcast } from "./final-state-operation.mjs";
 import { closePersistenceAfterPending } from "./shutdown.mjs";
 import { createUpdateController } from "./update-controller.mjs";
@@ -35,7 +30,7 @@ import {
   createArticleReaderService,
   resolveReaderArticle,
 } from "./article-reader.mjs";
-import { isNonPublicIpAddress } from "./network-safety.mjs";
+import { createSemanticModelDownloader } from "./semantic-model-download.mjs";
 import {
   SemanticSearchService,
   assertModelDownloadUrl,
@@ -50,7 +45,6 @@ const PILOT_HEARTBEAT_MS = 60_000;
 const MAX_LAYOUT_DEPTH = 32;
 const MAX_LAYOUT_NODES = 1_023;
 const MAX_DASHBOARD_WEB_PANELS = 6;
-const MAX_MODEL_REDIRECTS = 5;
 const MIN_REFRESH_INTERVAL_SECONDS = 30;
 const MAX_REFRESH_INTERVAL_SECONDS = 3_600;
 const CONNECTOR_PREFERENCES = new Set(["auto", "rss", "atom", "news-sitemap"]);
@@ -105,6 +99,12 @@ const webPanelControllers = new Map();
 const resettingWebPanelControllers = new WeakSet();
 const semanticSearchNativeFocus = new WeakMap();
 const semanticSearchNativeRestoreRequested = new WeakSet();
+
+function createIsolatedSessionFetch(networkSession) {
+  return createElectronSessionFetch(networkSession, {
+    clientRequestFactory: (options) => net.request({ ...options, session: networkSession }),
+  });
+}
 
 if (!app.isPackaged) {
   process.on("SIGHUP", () => {
@@ -545,92 +545,6 @@ function semanticSearchSourceIds(scope) {
     return panel.sourceIds;
   }
   return [...new Set(state.panels.filter((panel) => panel.kind === "feed").flatMap((panel) => panel.sourceIds))];
-}
-
-async function assertSemanticModelTarget(candidate) {
-  const resolution = await semanticSearchNetworkSession.resolveHost(candidate.hostname, {
-    cacheUsage: "allowed", source: "any", secureDnsPolicy: "allow",
-  });
-  if (
-    !resolution?.endpoints?.length ||
-    !resolution.endpoints.every(
-      ({ address }) => typeof address === "string" && !isNonPublicIpAddress(address),
-    )
-  ) {
-    throw new Error("L’hôte du modèle ne peut pas être résolu de manière sûre.");
-  }
-  const route = await semanticSearchNetworkSession.resolveProxy(candidate.href);
-  if (typeof route !== "string" || !/^direct\s*$/i.test(route.trim())) {
-    throw new Error("Le téléchargement du modèle exige une connexion directe vérifiable.");
-  }
-}
-
-async function fetchSemanticModel(url, signal) {
-  const fetchImpl = createElectronSessionFetch(semanticSearchNetworkSession);
-  let candidate = assertModelDownloadUrl(url);
-  for (let redirectCount = 0; redirectCount <= MAX_MODEL_REDIRECTS; redirectCount += 1) {
-    await assertSemanticModelTarget(candidate);
-    if (signal?.aborted) throw new Error("Téléchargement de la recherche locale annulé.");
-    const response = await fetchImpl(candidate.href, { redirect: "manual", signal });
-    const observedUrl = response.url || candidate.href;
-    if (response.redirected === true || observedUrl !== candidate.href) {
-      assertModelDownloadUrl(observedUrl);
-      throw new Error("Le téléchargeur du modèle a suivi une redirection sans contrôle préalable.");
-    }
-    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
-    if (redirectCount === MAX_MODEL_REDIRECTS) {
-      throw new Error("Le téléchargement du modèle effectue trop de redirections.");
-    }
-    const location = response.headers?.get?.("location");
-    if (!location) throw new Error("La redirection du modèle est incomplète.");
-    candidate = assertModelDownloadUrl(new URL(location, candidate).href);
-  }
-  throw new Error("Le téléchargement du modèle effectue trop de redirections.");
-}
-
-async function downloadSemanticModelFile(
-  url,
-  destination,
-  { expectedBytes, expectedSha256, cancelled, signal },
-) {
-  const response = await fetchSemanticModel(url, signal);
-  if (!response.ok || !response.body) throw new Error("Le téléchargement du modèle a échoué.");
-  const contentLength = Number(response.headers.get("content-length"));
-  if (Number.isFinite(contentLength) && contentLength !== expectedBytes) throw new Error("Taille du modèle inattendue.");
-  const output = createWriteStream(destination, { flags: "w", mode: 0o600 });
-  let outputFailure = null;
-  const outputDone = finished(output).catch((error) => {
-    outputFailure = error;
-  });
-  const digest = createHash("sha256");
-  let written = 0;
-  try {
-    for await (const chunk of Readable.fromWeb(response.body)) {
-      if (cancelled()) throw new Error("Téléchargement de la recherche locale annulé.");
-      written += chunk.length;
-      if (written > expectedBytes) throw new Error("Taille du modèle inattendue.");
-      digest.update(chunk);
-      if (!output.write(chunk)) {
-        await Promise.race([
-          new Promise((resolve) => output.once("drain", resolve)),
-          outputDone,
-        ]);
-        if (outputFailure) throw outputFailure;
-      }
-    }
-    output.end();
-    await outputDone;
-    if (outputFailure) throw outputFailure;
-  } catch (error) {
-    output.destroy();
-    await outputDone;
-    await rm(destination, { force: true });
-    throw error;
-  }
-  if (written !== expectedBytes || digest.digest("hex") !== expectedSha256) {
-    await rm(destination, { force: true });
-    throw new Error("La vérification du modèle a échoué.");
-  }
 }
 
 function broadcastUpdateState(state = updateController?.getState()) {
@@ -1313,6 +1227,7 @@ if (!hasSingleInstanceLock) {
     articleReaderService = createArticleReaderService({
       sessionForConnector: (connectorId) =>
         session.fromPartition(`vibedeck-reader-${connectorId}`, { cache: false }),
+      fetchForSession: createIsolatedSessionFetch,
     });
     semanticSearchNetworkSession = session.fromPartition(SEMANTIC_SEARCH_NETWORK_PARTITION, {
       cache: false,
@@ -1325,11 +1240,17 @@ if (!hasSingleInstanceLock) {
         callback({ cancel: true });
       }
     });
+    const downloadSemanticModelFile = createSemanticModelDownloader({
+      fetchImpl: createIsolatedSessionFetch(semanticSearchNetworkSession),
+      resolveHost: (hostname, options) =>
+        semanticSearchNetworkSession.resolveHost(hostname, options),
+      resolveProxy: (url) => semanticSearchNetworkSession.resolveProxy(url),
+    });
     engine = createFeedEngine({
       dbPath: developmentDatabasePath
         ? path.resolve(developmentDatabasePath)
         : path.join(app.getPath("userData"), "vibedeck.sqlite3"),
-      fetchImpl: createElectronSessionFetch(feedNetworkSession),
+      fetchImpl: createIsolatedSessionFetch(feedNetworkSession),
       resolveHost: (hostname, options) =>
         feedNetworkSession.resolveHost(hostname, options),
       resolveProxy: (url) => feedNetworkSession.resolveProxy(url),

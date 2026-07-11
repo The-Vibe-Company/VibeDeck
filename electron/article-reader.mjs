@@ -534,9 +534,20 @@ function createAbortError() {
   return error;
 }
 
+async function discardResponseBody(response) {
+  try {
+    await response.body?.cancel?.();
+  } catch {
+    // The body may already be closed after an aborted or malformed response.
+  }
+}
+
 async function readBoundedHtml(response, maximum, signal) {
   const declared = Number.parseInt(response.headers?.get?.("content-length") ?? "", 10);
-  if (Number.isFinite(declared) && declared > maximum) return fallback("blocked");
+  if (Number.isFinite(declared) && declared > maximum) {
+    await discardResponseBody(response);
+    return fallback("blocked");
+  }
   const reader = response.body?.getReader?.();
   if (!reader) {
     const bytes = new Uint8Array(await response.arrayBuffer());
@@ -569,14 +580,22 @@ async function readBoundedHtml(response, maximum, signal) {
   return { ok: true, html: new TextDecoder().decode(bytes) };
 }
 
-async function downloadArticleHtml({ session, adapter, url, signal, maxBytes, maxRedirects }) {
+async function downloadArticleHtml({
+  session,
+  fetchImpl,
+  adapter,
+  url,
+  signal,
+  maxBytes,
+  maxRedirects,
+}) {
   let currentUrl = url;
   for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount += 1) {
     if (signal.aborted) throw createAbortError();
     if (!(await isSafeArticleNetworkHop(session, currentUrl, signal))) {
       return fallback("blocked");
     }
-    const response = await session.fetch(currentUrl, {
+    const response = await fetchImpl(currentUrl, {
       method: "GET",
       headers: {
         Accept: "text/html,application/xhtml+xml;q=0.9",
@@ -593,9 +612,11 @@ async function downloadArticleHtml({ session, adapter, url, signal, maxBytes, ma
       observedUrl !== currentUrl ||
       !isProfileArticleUrl(adapter, observedUrl)
     ) {
+      await discardResponseBody(response);
       return fallback("blocked");
     }
     if (REDIRECT_STATUSES.has(response.status)) {
+      await discardResponseBody(response);
       if (redirectCount === maxRedirects) return fallback("blocked");
       const location = response.headers?.get?.("location");
       let nextUrl;
@@ -608,10 +629,17 @@ async function downloadArticleHtml({ session, adapter, url, signal, maxBytes, ma
       currentUrl = nextUrl;
       continue;
     }
-    if (BLOCKED_STATUSES.has(response.status)) return fallback("blocked");
-    if (response.status < 200 || response.status >= 300) return fallback("extraction-failed");
+    if (BLOCKED_STATUSES.has(response.status)) {
+      await discardResponseBody(response);
+      return fallback("blocked");
+    }
+    if (response.status < 200 || response.status >= 300) {
+      await discardResponseBody(response);
+      return fallback("extraction-failed");
+    }
     const contentType = response.headers?.get?.("content-type")?.toLowerCase() ?? "";
     if (!contentType.includes("text/html") && !contentType.includes("application/xhtml+xml")) {
+      await discardResponseBody(response);
       return fallback("blocked");
     }
     const body = await readBoundedHtml(response, maxBytes, signal);
@@ -648,12 +676,16 @@ function extractArticleInWorker(input, { signal, deadlineAt }) {
 /** Owns bounded, cookie-free article downloads and never caches article HTML. */
 export function createArticleReaderService({
   sessionForConnector,
+  fetchForSession = (networkSession) => networkSession.fetch.bind(networkSession),
   timeoutMs = ARTICLE_READER_LIMITS.timeoutMs,
   maxBytes = ARTICLE_READER_LIMITS.maxBytes,
   maxRedirects = ARTICLE_READER_LIMITS.maxRedirects,
 } = {}) {
   if (typeof sessionForConnector !== "function") {
     throw new TypeError("Fabrique de sessions du lecteur invalide.");
+  }
+  if (typeof fetchForSession !== "function") {
+    throw new TypeError("Fabrique Fetch du lecteur invalide.");
   }
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 10_000) {
     throw new TypeError("Budget du lecteur invalide.");
@@ -672,8 +704,13 @@ export function createArticleReaderService({
   function readerSession(connectorId) {
     if (sessions.has(connectorId)) return sessions.get(connectorId);
     const networkSession = secureArticleReaderSession(sessionForConnector(connectorId));
-    sessions.set(connectorId, networkSession);
-    return networkSession;
+    const fetchImpl = fetchForSession(networkSession);
+    if (typeof fetchImpl !== "function") {
+      throw new TypeError("Téléchargeur du lecteur invalide.");
+    }
+    const readerSession = { networkSession, fetchImpl };
+    sessions.set(connectorId, readerSession);
+    return readerSession;
   }
 
   async function extract({ connectorId, url, signal } = {}) {
@@ -708,9 +745,11 @@ export function createArticleReaderService({
     signal?.addEventListener("abort", onCallerAbort, { once: true });
     let timer = setTimeout(onTimeout, downloadBudgetMs);
     try {
+      const { networkSession, fetchImpl } = readerSession(connectorId);
       const outcome = await Promise.race([
         downloadArticleHtml({
-          session: readerSession(connectorId),
+          session: networkSession,
+          fetchImpl,
           adapter,
           url,
           signal: operationController.signal,
@@ -750,7 +789,7 @@ export function createArticleReaderService({
     for (const controller of activeControllers) controller.abort();
     activeControllers.clear();
     await Promise.allSettled(
-      [...sessions.values()].map((networkSession) =>
+      [...sessions.values()].map(({ networkSession }) =>
         networkSession.clearStorageData?.({
           storages: ["cookies", "localstorage", "cachestorage", "serviceworkers"],
         })),
