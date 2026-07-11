@@ -1,0 +1,20 @@
+src/App.tsx
+  s_2339bc864a2e75::t_f3ad1b2cc51588 1502-1503
+  s_2339bc864a2e75::t_7ea342f0e398c0 1504
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "b486a5e77304e912a119af6bab06101642f57a37",
+  "prompts": {},
+  "sessions": {
+    "s_2339bc864a2e75": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4d56-2a17-7382-85e4-68a4844ee8a5",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
