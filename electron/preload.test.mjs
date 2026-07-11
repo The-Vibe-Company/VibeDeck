@@ -76,6 +76,55 @@ test("forwards all catalog source arguments in the documented order", async () =
   ]);
 });
 
+test("exposes a bounded source probe without panel or persistence primitives", async () => {
+  const { api, calls } = await loadPreloadApi();
+  const probeId = "123e4567-e89b-42d3-a456-426614174000";
+  const request = { url: "https://example.test/feed.xml", connectorKind: "auto" };
+
+  await api.probeSource(probeId, request);
+  assert.equal(await api.cancelSourceProbe(probeId), undefined);
+  assert.deepEqual(calls, [
+    ["aggregator:probe-source", probeId, request],
+    ["aggregator:cancel-source-probe", probeId],
+  ]);
+  assert.equal(api.resolveSource, undefined);
+  assert.equal(api.putSource, undefined);
+});
+
+test("controls a web preview through a temporary id and commits only its name and placement", async () => {
+  const { api, calls } = await loadPreloadApi();
+  const placement = { targetPanelId: "panel-1", side: "right" };
+
+  await api.startWebPreview(
+    "draft:123e4567-e89b-42d3-a456-426614174000",
+    "https://example.test/",
+  );
+  await api.commitWebPreview(
+    "draft:123e4567-e89b-42d3-a456-426614174000",
+    "Exemple",
+    placement,
+  );
+  assert.equal(
+    await api.cancelWebPreview("draft:123e4567-e89b-42d3-a456-426614174000"),
+    undefined,
+  );
+
+  assert.deepEqual(calls, [
+    [
+      "web-preview:start",
+      "draft:123e4567-e89b-42d3-a456-426614174000",
+      "https://example.test/",
+    ],
+    [
+      "web-preview:commit",
+      "draft:123e4567-e89b-42d3-a456-426614174000",
+      "Exemple",
+      placement,
+    ],
+    ["web-preview:cancel", "draft:123e4567-e89b-42d3-a456-426614174000"],
+  ]);
+});
+
 test("saves a feed configuration through one main-owned IPC operation", async () => {
   const { api, calls } = await loadPreloadApi();
   const draft = {

@@ -32,6 +32,10 @@ contextBridge.exposeInMainWorld("vibedeck", {
     ),
   addCatalogSource: (panelId, catalogId, options) =>
     ipcRenderer.invoke("aggregator:add-catalog-source", panelId, catalogId, options),
+  probeSource: (probeId, source) =>
+    ipcRenderer.invoke("aggregator:probe-source", probeId, source),
+  cancelSourceProbe: (probeId) =>
+    ipcRenderer.invoke("aggregator:cancel-source-probe", probeId).then(() => undefined),
   addSource: (panelId, source) =>
     ipcRenderer.invoke("aggregator:add-source", panelId, source),
   removeSource: (panelId, sourceId) =>
@@ -56,6 +60,12 @@ contextBridge.exposeInMainWorld("vibedeck", {
   exportDiagnostics: () => ipcRenderer.invoke("aggregator:export-diagnostics"),
   clearWebData: () =>
     ipcRenderer.invoke("web-session:clear-data", { scope: "all" }).then(() => undefined),
+  startWebPreview: (previewId, url) =>
+    ipcRenderer.invoke("web-preview:start", previewId, url),
+  commitWebPreview: (previewId, name, placement) =>
+    ipcRenderer.invoke("web-preview:commit", previewId, name, placement),
+  cancelWebPreview: (previewId) =>
+    ipcRenderer.invoke("web-preview:cancel", previewId).then(() => undefined),
   openExternal: (url) => ipcRenderer.invoke("shell:open-external", url),
   focusDashboard: () => ipcRenderer.send("dashboard:focus"),
   syncWebPanels: (panels) => ipcRenderer.send("web-panels:sync", panels),

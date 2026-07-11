@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  SOURCE_CATALOG,
   assertSafeFeedUrl,
   canonicalizeUrl,
   createFeedEngine,
@@ -159,6 +160,364 @@ async function waitForCondition(predicate, label) {
   }
   assert.fail(`Délai dépassé : ${label}`);
 }
+
+test("exposes an immutable catalogue with only verified capabilities", () => {
+  const allowedCapabilities = new Set(["optimized-feed", "simplified-reading"]);
+
+  assert.equal(Object.isFrozen(SOURCE_CATALOG), true);
+  assert.deepEqual(
+    SOURCE_CATALOG.map(({ id, capabilities }) => ({ id, capabilities })),
+    [
+      {
+        id: "le-monde",
+        capabilities: ["optimized-feed", "simplified-reading"],
+      },
+      {
+        id: "le-figaro",
+        capabilities: ["optimized-feed", "simplified-reading"],
+      },
+      {
+        id: "le-parisien",
+        capabilities: ["optimized-feed", "simplified-reading"],
+      },
+    ],
+  );
+  for (const source of SOURCE_CATALOG) {
+    assert.equal(Object.isFrozen(source), true);
+    assert.equal(Object.isFrozen(source.capabilities), true);
+    assert.ok(source.description.length > 0 && source.description.length <= 120);
+    assert.equal(Object.hasOwn(source, "feedUrl"), false);
+    assert.equal(source.capabilities.every((capability) => allowedCapabilities.has(capability)), true);
+  }
+
+  const engine = createFeedEngine();
+  try {
+    const firstProjection = engine.getSourceCatalog();
+    firstProjection[0].capabilities.push("unknown-capability");
+    assert.deepEqual(engine.getSourceCatalog()[0].capabilities, [
+      "optimized-feed",
+      "simplified-reading",
+    ]);
+  } finally {
+    engine.close();
+  }
+});
+
+test("probes a direct feed through a bounded projection without changing visible state", async () => {
+  const engine = createFeedEngine({
+    fetchImpl: async () =>
+      response(RSS_FIXTURE, {
+        headers: { "content-type": "application/rss+xml", "cache-control": "max-age=300" },
+      }),
+    now: () => new Date("2026-07-09T12:00:00.000Z"),
+  });
+  try {
+    const before = engine.getState();
+    const result = await engine.probeSource(" example.test/feed.xml#articles ");
+
+    assert.deepEqual(result, {
+      normalizedInputUrl: "https://example.test/feed.xml",
+      name: "Le fil de test",
+      connectorKind: "rss",
+      connectorId: null,
+      itemCount: 1,
+      samples: [
+        {
+          title: "Premier sujet",
+          publishedAt: "2026-07-09T10:30:00.000Z",
+        },
+      ],
+      freshness: "fresh",
+      warning: null,
+    });
+    assert.equal(Object.hasOwn(result, "feedUrl"), false);
+    assert.equal(Object.hasOwn(result.samples[0], "url"), false);
+    assert.equal(Object.hasOwn(result.samples[0], "html"), false);
+    assert.deepEqual(engine.getState(), before);
+  } finally {
+    engine.close();
+  }
+});
+
+test("projects the dedicated connector id without exposing its private feed URL", async () => {
+  const privateFeedUrl = "https://www.lemonde.fr/rss/en_continu.xml";
+  const engine = createFeedEngine({
+    fetchImpl: async (url) => {
+      assert.equal(url, privateFeedUrl);
+      return response(RSS_FIXTURE, {
+        headers: { "content-type": "application/rss+xml" },
+      });
+    },
+  });
+  try {
+    const result = await engine.probeSource("https://www.lemonde.fr/politique/");
+
+    assert.equal(result.normalizedInputUrl, "https://www.lemonde.fr/politique/");
+    assert.equal(result.name, "Le Monde");
+    assert.equal(result.connectorId, "le-monde");
+    assert.equal(JSON.stringify(result).includes(privateFeedUrl), false);
+  } finally {
+    engine.close();
+  }
+});
+
+test("probes an advertised feed while honoring the requested connector kind", async () => {
+  const homepageUrl = "https://discovery.test/";
+  const feedUrl = "https://discovery.test/feed.atom";
+  const calls = [];
+  const engine = createFeedEngine({
+    fetchImpl: async (url) => {
+      calls.push(url);
+      if (url === homepageUrl) {
+        return response(
+          '<html><head><link rel="alternate" type="application/atom+xml" href="/feed.atom"></head></html>',
+          { headers: { "content-type": "text/html" } },
+        );
+      }
+      if (url === feedUrl) {
+        return response(ATOM_FIXTURE, {
+          headers: { "content-type": "application/atom+xml" },
+        });
+      }
+      throw new Error("Requête inattendue pendant le test.");
+    },
+  });
+  try {
+    const result = await engine.probeSource({
+      url: homepageUrl,
+      connectorKind: "atom",
+    });
+
+    assert.equal(result.normalizedInputUrl, homepageUrl);
+    assert.equal(result.name, "Fil Atom");
+    assert.equal(result.connectorKind, "atom");
+    assert.equal(result.connectorId, null);
+    assert.equal(result.itemCount, 1);
+    assert.deepEqual(calls, [homepageUrl, feedUrl]);
+    assert.equal(engine.getState().sources.length, 0);
+    assert.equal(engine.getState().items.length, 0);
+  } finally {
+    engine.close();
+  }
+});
+
+test("bounds probe samples and their text independently from the feed size", async () => {
+  const longName = "N".repeat(500);
+  const longTitle = "T".repeat(500);
+  const items = Array.from(
+    { length: 5 },
+    (_value, index) => `<item>
+      <title>${longTitle}${index}</title>
+      <link>https://bounds.test/articles/${index}</link>
+      <pubDate>Thu, 09 Jul 2026 10:3${index}:00 GMT</pubDate>
+    </item>`,
+  ).join("");
+  const engine = createFeedEngine({
+    fetchImpl: async () =>
+      response(`<rss><channel><title>${longName}</title>${items}</channel></rss>`, {
+        headers: { "content-type": "application/rss+xml" },
+      }),
+  });
+  try {
+    const result = await engine.probeSource("https://bounds.test/feed.xml");
+
+    assert.equal(result.itemCount, 5);
+    assert.equal(result.samples.length, 3);
+    assert.ok(result.name.length <= 120);
+    assert.equal(result.samples.every(({ title }) => title.length <= 350), true);
+    assert.deepEqual(Object.keys(result.samples[0]).sort(), ["publishedAt", "title"]);
+  } finally {
+    engine.close();
+  }
+});
+
+test("reports an empty feed as a successful probe with a warning", async () => {
+  const engine = createFeedEngine({
+    fetchImpl: async () =>
+      response("<rss><channel><title>Flux vide</title></channel></rss>", {
+        headers: { "content-type": "application/rss+xml" },
+      }),
+  });
+  try {
+    const result = await engine.probeSource("https://empty.test/feed.xml");
+
+    assert.equal(result.freshness, "fresh");
+    assert.equal(result.itemCount, 0);
+    assert.deepEqual(result.samples, []);
+    assert.match(result.warning, /aucun article/);
+  } finally {
+    engine.close();
+  }
+});
+
+test("uses stale endpoint cache for a probe without leaking the network error", async () => {
+  let online = true;
+  let fetchCount = 0;
+  const engine = createFeedEngine({
+    fetchImpl: async () => {
+      fetchCount += 1;
+      if (!online) {
+        throw new Error("offline https://stale.test/feed.xml");
+      }
+      return response(RSS_FIXTURE, {
+        headers: { "content-type": "application/rss+xml", "cache-control": "max-age=0" },
+      });
+    },
+    now: () => new Date("2026-07-09T12:00:00.000Z"),
+  });
+  try {
+    const fresh = await engine.probeSource("https://stale.test/feed.xml");
+    online = false;
+    const stale = await engine.probeSource("https://stale.test/feed.xml");
+
+    assert.equal(fresh.freshness, "fresh");
+    assert.equal(stale.freshness, "stale");
+    assert.equal(stale.itemCount, fresh.itemCount);
+    assert.match(stale.warning, /dernier cache disponible/);
+    assert.doesNotMatch(stale.warning, /offline|https?:/);
+    assert.equal(fetchCount, 2);
+    assert.equal(engine.getState().sources.length, 0);
+    assert.equal(engine.getState().items.length, 0);
+  } finally {
+    engine.close();
+  }
+});
+
+test("aborts a source probe at the active network request", async () => {
+  let resolveStarted;
+  const started = new Promise((resolve) => {
+    resolveStarted = resolve;
+  });
+  let networkAborted = false;
+  const engine = createFeedEngine({
+    fetchImpl: async (_url, options) => new Promise((_resolve, reject) => {
+      resolveStarted();
+      options.signal.addEventListener("abort", () => {
+        networkAborted = true;
+        reject(new DOMException("aborted", "AbortError"));
+      }, { once: true });
+    }),
+  });
+  const controller = new AbortController();
+  try {
+    const probe = engine.probeSource("https://cancelled-probe.test/feed.xml", {
+      signal: controller.signal,
+    });
+    await started;
+    controller.abort();
+
+    await assert.rejects(probe, /Téléchargement interrompu/);
+    assert.equal(networkAborted, true);
+    assert.equal(engine.getState().sources.length, 0);
+  } finally {
+    engine.close();
+  }
+});
+
+test("rejects an already cancelled probe without starting a request", async () => {
+  let fetchCount = 0;
+  const engine = createFeedEngine({
+    fetchImpl: async () => {
+      fetchCount += 1;
+      return response(RSS_FIXTURE);
+    },
+  });
+  const controller = new AbortController();
+  controller.abort();
+  try {
+    await assert.rejects(
+      engine.probeSource("https://already-cancelled.test/feed.xml", {
+        signal: controller.signal,
+      }),
+      /Téléchargement interrompu/,
+    );
+    assert.equal(fetchCount, 0);
+  } finally {
+    engine.close();
+  }
+});
+
+test("propagates cancellation through advertised feed discovery", async () => {
+  const homepageUrl = "https://cancel-discovery.test/";
+  let candidateAbortCount = 0;
+  let resolveCandidateStarted;
+  const candidateStarted = new Promise((resolve) => {
+    resolveCandidateStarted = resolve;
+  });
+  const engine = createFeedEngine({
+    fetchImpl: async (url, options) => {
+      if (url === homepageUrl) {
+        return response(
+          '<html><head><link rel="alternate" type="application/rss+xml" href="/feed.xml"></head></html>',
+          { headers: { "content-type": "text/html" } },
+        );
+      }
+      resolveCandidateStarted();
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener("abort", () => {
+          candidateAbortCount += 1;
+          reject(new DOMException("aborted", "AbortError"));
+        }, { once: true });
+      });
+    },
+  });
+  const controller = new AbortController();
+  try {
+    const probe = engine.probeSource(homepageUrl, { signal: controller.signal });
+    await candidateStarted;
+    controller.abort();
+
+    await assert.rejects(probe, (error) => {
+      assert.match(error.message, /Téléchargement interrompu/);
+      assert.doesNotMatch(error.message, /flux annoncé.+illisible/i);
+      return true;
+    });
+    assert.equal(candidateAbortCount, 1);
+  } finally {
+    engine.close();
+  }
+});
+
+test("propagates probe cancellation through specialized enrichment", async () => {
+  const feedUrl = "https://feeds.leparisien.fr/leparisien/rss";
+  const sitemapUrl =
+    "https://www.leparisien.fr/arc/outboundfeeds/sitemapnews/?outputType=xml&from=0";
+  let resolveEnrichmentStarted;
+  const enrichmentStarted = new Promise((resolve) => {
+    resolveEnrichmentStarted = resolve;
+  });
+  let sitemapAborted = false;
+  const engine = createFeedEngine({
+    fetchImpl: async (url, options) => {
+      if (url === feedUrl) {
+        return response(RSS_FIXTURE, {
+          headers: { "content-type": "application/rss+xml" },
+        });
+      }
+      assert.equal(url, sitemapUrl);
+      resolveEnrichmentStarted();
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener("abort", () => {
+          sitemapAborted = true;
+          reject(new DOMException("aborted", "AbortError"));
+        }, { once: true });
+      });
+    },
+  });
+  const controller = new AbortController();
+  try {
+    const probe = engine.probeSource("https://www.leparisien.fr/", {
+      signal: controller.signal,
+    });
+    await enrichmentStarted;
+    controller.abort();
+
+    await assert.rejects(probe, /Téléchargement interrompu/);
+    assert.equal(sitemapAborted, true);
+  } finally {
+    engine.close();
+  }
+});
 
 function controlledRefreshFetch() {
   let active = 0;
@@ -1245,6 +1604,87 @@ test("coalesces concurrent reads of the same endpoint", async () => {
     const [firstResult, secondResult] = await Promise.all([first, second]);
     assert.equal(fetchCount, 1);
     assert.equal(firstResult.body, secondResult.body);
+  } finally {
+    engine.close();
+  }
+});
+
+test("cancelling one coalesced subscriber preserves the shared download", async () => {
+  let fetchCount = 0;
+  let networkAbortCount = 0;
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const engine = createFeedEngine({
+    fetchImpl: async (_url, options) => {
+      fetchCount += 1;
+      options.signal.addEventListener("abort", () => {
+        networkAbortCount += 1;
+      }, { once: true });
+      await gate;
+      return response(RSS_FIXTURE, {
+        headers: { "content-type": "application/rss+xml" },
+      });
+    },
+  });
+  const controller = new AbortController();
+  try {
+    const cancelled = engine.fetchEndpoint("https://shared-probe.test/feed.xml", {
+      signal: controller.signal,
+    });
+    const retained = engine.fetchEndpoint("https://shared-probe.test/feed.xml");
+    controller.abort();
+
+    await assert.rejects(cancelled, /Téléchargement interrompu/);
+    assert.equal(networkAbortCount, 0);
+    release();
+    const result = await retained;
+    assert.equal(fetchCount, 1);
+    assert.equal(networkAbortCount, 0);
+    assert.match(result.body, /Le fil de test/);
+  } finally {
+    release?.();
+    engine.close();
+  }
+});
+
+test("starts a fresh download after the final subscriber cancels", async () => {
+  let fetchCount = 0;
+  let resolveFirstStarted;
+  const firstStarted = new Promise((resolve) => {
+    resolveFirstStarted = resolve;
+  });
+  const engine = createFeedEngine({
+    fetchImpl: async (_url, options) => {
+      fetchCount += 1;
+      if (fetchCount > 1) {
+        return response(RSS_FIXTURE, {
+          headers: { "content-type": "application/rss+xml" },
+        });
+      }
+      resolveFirstStarted();
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener(
+          "abort",
+          () => reject(new DOMException("aborted", "AbortError")),
+          { once: true },
+        );
+      });
+    },
+  });
+  const controller = new AbortController();
+  try {
+    const first = engine.fetchEndpoint("https://restart-probe.test/feed.xml", {
+      signal: controller.signal,
+    });
+    await firstStarted;
+    controller.abort();
+    await assert.rejects(first, /Téléchargement interrompu/);
+
+    const second = await engine.fetchEndpoint("https://restart-probe.test/feed.xml");
+    assert.equal(fetchCount, 2);
+    assert.match(second.body, /Le fil de test/);
   } finally {
     engine.close();
   }

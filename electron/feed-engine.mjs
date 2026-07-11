@@ -35,7 +35,12 @@ const MAX_REFRESH_INTERVAL_SECONDS = 3_600;
 const MAX_FAILURE_BACKOFF_SECONDS = 1_800;
 const MAX_CONCURRENT_REFRESHES = 6;
 const MAX_CONCURRENT_REFRESHES_PER_HOST = 2;
+const MAX_SOURCE_PROBE_SAMPLES = 3;
 const CONNECTOR_PREFERENCES = new Set(["auto", "rss", "atom", "news-sitemap"]);
+const OPTIMIZED_SOURCE_CAPABILITIES = Object.freeze([
+  "optimized-feed",
+  "simplified-reading",
+]);
 const LE_MONDE_FEED_URL = "https://www.lemonde.fr/rss/en_continu.xml";
 const LE_FIGARO_FEED_URL = "https://www.lefigaro.fr/rss/figaro_flash-actu.xml";
 const LE_PARISIEN_FEED_URL = "https://feeds.leparisien.fr/leparisien/rss";
@@ -73,6 +78,7 @@ export const KNOWN_PUBLICATIONS = Object.freeze([
   {
     id: "le-monde",
     name: "Le Monde",
+    description: "L’actualité en continu, avec une lecture facilitée des articles.",
     homepageUrl: "https://www.lemonde.fr/",
     hostnames: ["lemonde.fr"],
     feedUrl: LE_MONDE_FEED_URL,
@@ -82,6 +88,7 @@ export const KNOWN_PUBLICATIONS = Object.freeze([
   {
     id: "le-figaro",
     name: "Le Figaro",
+    description: "Le fil Flash Actu, avec une lecture facilitée des articles.",
     homepageUrl: "https://www.lefigaro.fr/",
     hostnames: ["lefigaro.fr"],
     feedUrl: LE_FIGARO_FEED_URL,
@@ -91,6 +98,7 @@ export const KNOWN_PUBLICATIONS = Object.freeze([
   {
     id: "le-parisien",
     name: "Le Parisien",
+    description: "L’actualité du Parisien, enrichie pour une lecture facilitée.",
     homepageUrl: "https://www.leparisien.fr/",
     hostnames: ["leparisien.fr"],
     feedUrl: LE_PARISIEN_FEED_URL,
@@ -100,10 +108,26 @@ export const KNOWN_PUBLICATIONS = Object.freeze([
 ]);
 
 export const SOURCE_CATALOG = Object.freeze(
-  KNOWN_PUBLICATIONS.map(({ id, name, homepageUrl, connectorKind, refreshIntervalSeconds }) =>
-    Object.freeze({ id, name, homepageUrl, connectorKind, refreshIntervalSeconds }),
+  KNOWN_PUBLICATIONS.map(
+    ({ id, name, description, homepageUrl, connectorKind, refreshIntervalSeconds }) =>
+      Object.freeze({
+        id,
+        name,
+        description,
+        homepageUrl,
+        connectorKind,
+        refreshIntervalSeconds,
+        capabilities: OPTIMIZED_SOURCE_CAPABILITIES,
+      }),
   ),
 );
+
+function publicSourceCatalog() {
+  return SOURCE_CATALOG.map((source) => ({
+    ...source,
+    capabilities: [...source.capabilities],
+  }));
+}
 
 function connectorIdForFeedUrl(feedUrl) {
   return KNOWN_PUBLICATIONS.find((publication) => publication.feedUrl === feedUrl)?.id ?? null;
@@ -1126,12 +1150,41 @@ export class FeedEngine {
   getState() {
     return {
       ...this.database.getState(this.#nowIso()),
-      sourceCatalog: SOURCE_CATALOG.map((source) => ({ ...source })),
+      sourceCatalog: publicSourceCatalog(),
     };
   }
 
   getSourceCatalog() {
-    return SOURCE_CATALOG.map((source) => ({ ...source }));
+    return publicSourceCatalog();
+  }
+
+  async probeSource(input, { signal = null } = {}) {
+    if (signal?.aborted) throw new FetchCancelledError();
+    const request = normalizeSourceRequest(input);
+    const normalizedInputUrl = normalizeInputUrl(request.url);
+    const resolved = await this.#resolveSource(normalizedInputUrl, request.connectorKind, {
+      signal,
+    });
+    const itemCount = resolved.parsed.items.length;
+    const freshness = resolved.response.stale ? "stale" : "fresh";
+    const warning = resolved.response.stale
+      ? "La source est momentanément indisponible ; l’aperçu provient du dernier cache disponible."
+      : itemCount === 0
+        ? "Ce flux est valide, mais il ne contient aucun article pour le moment."
+        : null;
+
+    return {
+      normalizedInputUrl,
+      name: resolved.name,
+      connectorKind: resolved.connectorKind,
+      connectorId: resolved.connectorId,
+      itemCount,
+      samples: resolved.parsed.items
+        .slice(0, MAX_SOURCE_PROBE_SAMPLES)
+        .map(({ title, publishedAt }) => ({ title, publishedAt })),
+      freshness,
+      warning,
+    };
   }
 
   async createPanel(input, placement = null) {
@@ -1579,33 +1632,70 @@ export class FeedEngine {
     throw new Error("Cette source effectue trop de redirections.");
   }
 
+  #subscribeToInflightRequest(entry, signal) {
+    entry.subscribers += 1;
+    return new Promise((resolve, reject) => {
+      let active = true;
+      const onAbort = () => finish(reject, new FetchCancelledError());
+      const finish = (callback, value) => {
+        if (!active) return;
+        active = false;
+        signal?.removeEventListener?.("abort", onAbort);
+        entry.subscribers = Math.max(0, entry.subscribers - 1);
+        if (entry.subscribers === 0 && !entry.settled) entry.controller.abort();
+        callback(value);
+      };
+
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      signal?.addEventListener?.("abort", onAbort, { once: true });
+      entry.promise.then(
+        (value) => finish(resolve, value),
+        (error) => finish(reject, error),
+      );
+    });
+  }
+
   async fetchEndpoint(
     inputUrl,
     { force = false, ttlSeconds = DEFAULT_TTL_SECONDS, accept, signal } = {},
   ) {
     if (this.closed) throw new Error("Le moteur de veille est fermé.");
+    if (signal?.aborted) throw new FetchCancelledError();
     const endpoint = assertSafeFeedUrl(inputUrl, {
       allowPrivateNetwork: this.allowPrivateNetwork,
     });
-    const existingPromise = this.inflight.get(endpoint);
-    if (existingPromise) return existingPromise;
+    const existingRequest = this.inflight.get(endpoint);
+    if (existingRequest && !existingRequest.controller.signal.aborted) {
+      return this.#subscribeToInflightRequest(existingRequest, signal);
+    }
+    if (existingRequest && this.inflight.get(endpoint) === existingRequest) {
+      this.inflight.delete(endpoint);
+    }
 
     const controller = new AbortController();
     this.abortControllers.add(controller);
-    const requestSignal = signal
-      ? AbortSignal.any([controller.signal, signal])
-      : controller.signal;
+    const entry = {
+      controller,
+      promise: null,
+      settled: false,
+      subscribers: 0,
+    };
     const request = this.#fetchEndpoint(endpoint, {
       force,
       ttlSeconds,
       accept,
-      signal: requestSignal,
+      signal: controller.signal,
     }).finally(() => {
+      entry.settled = true;
       this.abortControllers.delete(controller);
-      if (this.inflight.get(endpoint) === request) this.inflight.delete(endpoint);
+      if (this.inflight.get(endpoint) === entry) this.inflight.delete(endpoint);
     });
-    this.inflight.set(endpoint, request);
-    return request;
+    entry.promise = request;
+    this.inflight.set(endpoint, entry);
+    return this.#subscribeToInflightRequest(entry, signal);
   }
 
   async #fetchEndpoint(endpoint, { force, ttlSeconds, accept, signal }) {
@@ -1690,16 +1780,19 @@ export class FeedEngine {
     return { ...entry, fromCache: false, stale: false };
   }
 
-  async #resolveSource(inputUrl, expectedKind = "auto") {
+  async #resolveSource(inputUrl, expectedKind = "auto", { signal = null } = {}) {
+    if (signal?.aborted) throw new FetchCancelledError();
     const known = matchKnownPublication(inputUrl);
     if (known) {
       const response = await this.fetchEndpoint(known.feedUrl, {
         ttlSeconds: known.refreshIntervalSeconds,
         accept: "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.1",
+        signal,
       });
       const parsed = await this.#enrichSpecializedSource(
         known.feedUrl,
         parseFeedDocument(response.body, response.finalUrl ?? known.feedUrl),
+        { signal },
       );
       assertConnectorKind(expectedKind, parsed.kind);
       return {
@@ -1715,7 +1808,10 @@ export class FeedEngine {
     }
 
     const normalizedUrl = normalizeInputUrl(inputUrl);
-    const firstResponse = await this.fetchEndpoint(normalizedUrl, { ttlSeconds: 300 });
+    const firstResponse = await this.fetchEndpoint(normalizedUrl, {
+      ttlSeconds: 300,
+      signal,
+    });
     let directFeed = null;
     if (!responseLooksLikeHtml(firstResponse)) {
       try {
@@ -1769,7 +1865,9 @@ export class FeedEngine {
             }
             const response = await this.fetchEndpoint(candidate.url, {
               ttlSeconds: 300,
-              signal: attemptControllers[index].signal,
+              signal: signal
+                ? AbortSignal.any([signal, attemptControllers[index].signal])
+                : attemptControllers[index].signal,
             });
             const parsed = parseFeedDocument(response.body, response.finalUrl ?? candidate.url);
             assertConnectorKind(expectedKind, parsed.kind);
@@ -1797,6 +1895,7 @@ export class FeedEngine {
         response,
       };
     } catch (error) {
+      if (signal?.aborted) throw new FetchCancelledError();
       const failures = error instanceof AggregateError ? error.errors : [error];
       const lastError = failures.findLast(Boolean);
       throw new Error(`Le flux annoncé par ce site est illisible : ${friendlyFetchError(lastError)}`);
@@ -1805,12 +1904,13 @@ export class FeedEngine {
     }
   }
 
-  async #enrichSpecializedSource(feedUrl, parsed) {
+  async #enrichSpecializedSource(feedUrl, parsed, { signal = null } = {}) {
     if (feedUrl !== LE_PARISIEN_FEED_URL) return parsed;
     try {
       const response = await this.fetchEndpoint(LE_PARISIEN_NEWS_SITEMAP_URL, {
         ttlSeconds: 120,
         accept: "application/xml, text/xml;q=0.9, */*;q=0.1",
+        signal,
       });
       const sitemap = parseFeedDocument(
         response.body,

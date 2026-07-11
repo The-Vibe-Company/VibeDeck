@@ -781,6 +781,155 @@ test("documents the persistent web session while clearing background workers on 
   assert.equal(views[0].webContents.destroyed, true);
 });
 
+test("creates one secure preview in the shared persistent session without exposing it to sync", async () => {
+  const sharedWebSession = new FakeSession();
+  const { controller, removedViews, states, views } = createHarness({ sharedWebSession });
+  controller.sync([descriptor("news")]);
+
+  const initial = controller.startPreview(
+    descriptor("preview:add-panel", {
+      url: "https://accounts.example.org/login",
+      bounds: { x: 50, y: 60, width: 420, height: 300 },
+    }),
+  );
+  await Promise.resolve();
+
+  assert.equal(initial.panelId, "preview:add-panel");
+  assert.equal(views.length, 2);
+  assert.deepEqual(views[1].options.webPreferences, views[0].options.webPreferences);
+  assert.equal(
+    views[1].options.webPreferences.partition,
+    WEB_PANEL_SESSION_STRATEGY.partition,
+  );
+  assert.equal(views[1].webContents.session, sharedWebSession);
+  assert.deepEqual(views[1].webContents.loadCalls, [
+    "https://accounts.example.org/login",
+  ]);
+
+  controller.sync([descriptor("news", { bounds: { x: 0, y: 0, width: 200, height: 180 } })]);
+  assert.equal(views[1].webContents.destroyed, false);
+  assert.equal(views[1].visible, true);
+  assert.deepEqual(controller.getDescriptors(), [
+    descriptor("news", { bounds: { x: 0, y: 0, width: 200, height: 180 } }),
+  ]);
+  assert.equal(
+    states.findLast((state) => state.panelId === "preview:add-panel").destroyed,
+    false,
+  );
+  assert.deepEqual(removedViews, []);
+});
+
+test("updates and navigates an existing preview while enforcing a one-preview limit", async () => {
+  const { controller, views } = createHarness();
+  controller.startPreview(descriptor("preview:add-panel"));
+  await Promise.resolve();
+
+  const updated = controller.startPreview(
+    descriptor("preview:add-panel", {
+      url: "https://example.org/sign-in",
+      bounds: { x: 30, y: 40, width: 500, height: 400 },
+      visible: false,
+    }),
+  );
+  assert.equal(views.length, 1, "updating a preview must reuse its native view");
+  assert.equal(updated.homeUrl, "https://example.org/sign-in");
+  assert.deepEqual(views[0].bounds, { x: 30, y: 40, width: 500, height: 400 });
+  assert.equal(views[0].visible, false);
+  assert.equal(views[0].webContents.loadCalls.at(-1), "https://example.org/sign-in");
+
+  await controller.navigate("preview:add-panel", "https://example.org/account");
+  assert.equal(views[0].webContents.loadCalls.at(-1), "https://example.org/account");
+  assert.throws(
+    () => controller.startPreview(descriptor("preview:second")),
+    /Un seul aperçu web/,
+  );
+  assert.equal(views.length, 1);
+
+  assert.throws(
+    () => controller.sync([descriptor("preview:add-panel")]),
+    /déjà utilisé par l’aperçu/,
+  );
+  assert.equal(views[0].webContents.destroyed, false);
+
+  assert.throws(
+    () => controller.sync([{ ...descriptor("preview:forged"), kind: "preview" }]),
+    /startPreview/,
+  );
+  assert.equal(views.length, 1);
+});
+
+test("cancels a preview while retaining login data and clearing only service workers", async () => {
+  const sharedWebSession = new FakeSession();
+  const { controller, removedViews, states, views } = createHarness({ sharedWebSession });
+  controller.startPreview(
+    descriptor("preview:add-panel", { url: "https://accounts.example.org/login" }),
+  );
+  await Promise.resolve();
+
+  assert.equal(controller.cancelPreview("preview:other"), false);
+  assert.equal(controller.cancelPreview("preview:add-panel"), true);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(removedViews, [views[0]]);
+  assert.deepEqual(views[0].webContents.closeCalls, [{ waitForBeforeUnload: false }]);
+  assert.equal(states.at(-1).destroyed, true);
+  assert.deepEqual(sharedWebSession.clearDataCalls, [
+    { dataTypes: ["serviceWorkers"] },
+  ]);
+  assert.equal(sharedWebSession.clearStorageDataCalls.length, 0);
+  assert.equal(sharedWebSession.clearCacheCalls, 0);
+});
+
+test("applies panel security controls to previews and refuses HTTP auth", async () => {
+  const { controller, views } = createHarness();
+  assert.throws(
+    () => controller.startPreview(descriptor("preview:unsafe", { url: "file:///tmp/a" })),
+    /http et https/,
+  );
+  assert.throws(
+    () => controller.startPreview(
+      descriptor("preview:credentials", { url: "https://user:pass@example.org/" }),
+    ),
+    /http et https/,
+  );
+  assert.equal(views.length, 0);
+
+  controller.startPreview(descriptor("preview:add-panel"));
+  await Promise.resolve();
+  const { webContents: contents } = views[0];
+  const { session } = contents;
+
+  assert.equal(views[0].options.webPreferences.nodeIntegration, false);
+  assert.equal(views[0].options.webPreferences.contextIsolation, true);
+  assert.equal(views[0].options.webPreferences.sandbox, true);
+  assert.equal(session.permissionCheckHandler(), false);
+
+  let preventedNavigation = false;
+  contents.emit("will-navigate", {
+    preventDefault: () => {
+      preventedNavigation = true;
+    },
+  }, "javascript:alert(1)");
+  assert.equal(preventedNavigation, true);
+
+  let authPrevented = false;
+  let authCallbackCalls = 0;
+  contents.emit(
+    "login",
+    { preventDefault: () => { authPrevented = true; } },
+    {},
+    { isProxy: false },
+    () => { authCallbackCalls += 1; },
+  );
+  assert.equal(authPrevented, true);
+  assert.equal(authCallbackCalls, 1);
+
+  assert.deepEqual(contents.windowOpenHandler({ url: "https://example.org/popup" }), {
+    action: "deny",
+  });
+  assert.equal(contents.loadCalls.at(-1), "https://example.org/popup");
+});
+
 test("clears workers from a closed panel without stopping origins still open elsewhere", async () => {
   const sharedWebSession = new FakeSession();
   const { controller } = createHarness({ sharedWebSession });

@@ -55,6 +55,8 @@ import {
   formatNextRefresh,
 } from "./feed-presentation";
 import { saveFeedPanelConfiguration } from "./feed-settings";
+import { createLatestAsyncOperation } from "./latest-async-operation";
+import ProviderMark from "./ProviderMark";
 import { cancelSmoothScroll, smoothScrollIntoView } from "./smooth-scroll";
 import type {
   AppState,
@@ -68,6 +70,7 @@ import type {
   PanelPlacement,
   Source,
   SourceCatalogEntry,
+  SourceProbeResult,
   SourceRequest,
   UpdateState,
   SemanticSearchScope,
@@ -147,6 +150,11 @@ type DraftPanel = {
   targetPanelId: string | null;
   side: PanelPlacement["side"] | null;
   pending: boolean;
+};
+
+type WebPreviewDraft = {
+  previewId: string;
+  normalizedUrl: string;
 };
 
 type FeedPanelUi = {
@@ -362,6 +370,7 @@ export default function App() {
   const [state, setState] = useState<AppState | null>(null);
   const [layout, setLayout] = useState<LayoutNode | null>(null);
   const [drafts, setDrafts] = useState<Record<string, DraftPanel>>({});
+  const [webPreviewDrafts, setWebPreviewDrafts] = useState<Record<string, WebPreviewDraft>>({});
   const [focusedPanelId, setFocusedPanelId] = useState<string | null>(null);
   const [maximizedPanelId, setMaximizedPanelId] = useState<string | null>(null);
   const [feedUi, setFeedUi] = useState<Record<string, FeedPanelUi>>({});
@@ -405,6 +414,7 @@ export default function App() {
   const linkPreviewRef = useRef<LinkPreview | null>(null);
   const feedUiRef = useRef<Record<string, FeedPanelUi>>({});
   const draftsRef = useRef<Record<string, DraftPanel>>({});
+  const webPreviewDraftsRef = useRef<Record<string, WebPreviewDraft>>({});
   const revisionRef = useRef(0);
   const hydratedRef = useRef(false);
   const serverLayoutMutationRef = useRef(false);
@@ -728,7 +738,18 @@ export default function App() {
         return { ...current, [nextState.panelId]: nextState };
       });
     });
-    const unsubscribeWebEscape = window.vibedeck.onWebPanelEscape(() => {
+    const unsubscribeWebEscape = window.vibedeck.onWebPanelEscape((panelId) => {
+      if (webPreviewDraftsRef.current[panelId]) {
+        window.vibedeck.focusDashboard();
+        window.requestAnimationFrame(() => {
+          document
+            .querySelector<HTMLElement>(
+              `[data-web-preview-controls="${CSS.escape(panelId)}"] button`,
+            )
+            ?.focus({ preventScroll: true });
+        });
+        return;
+      }
       setLinkPreview((current) => {
         if (current) return null;
         setMaximizedPanelId(null);
@@ -816,6 +837,26 @@ export default function App() {
           visible: canDisplay,
         };
       });
+    for (const preview of Object.values(webPreviewDrafts)) {
+      const surface = document.querySelector<HTMLElement>(
+        `[data-web-preview-surface="${CSS.escape(preview.previewId)}"]`,
+      );
+      const rect = surface?.getBoundingClientRect();
+      descriptors.push({
+        kind: "preview",
+        panelId: preview.previewId,
+        bounds: rect
+          ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+          : { x: 0, y: 0, width: 0, height: 0 },
+        visible:
+          Boolean(surface) &&
+          !modal &&
+          !semanticSearchOpen &&
+          !interactionActive &&
+          !linkPreview &&
+          !failedPanelIds.has(preview.previewId),
+      });
+    }
     if (linkPreview) {
       const surface = document.querySelector<HTMLElement>(
         `[data-web-panel-surface="${LINK_READER_ID}"]`,
@@ -837,7 +878,15 @@ export default function App() {
       });
     }
     window.vibedeck.syncWebPanels(descriptors);
-  }, [failedWebPanelKey, interactionActive, linkPreview, modal, semanticSearchOpen, state]);
+  }, [
+    failedWebPanelKey,
+    interactionActive,
+    linkPreview,
+    modal,
+    semanticSearchOpen,
+    state,
+    webPreviewDrafts,
+  ]);
 
   useEffect(() => {
     let frame = requestAnimationFrame(syncWebPanels);
@@ -951,6 +1000,41 @@ export default function App() {
     setDrafts(nextDrafts);
   }
 
+  async function startWebPreview(draftId: string, url: string) {
+    if (!draftsRef.current[draftId]) {
+      throw new Error("Ce nouveau panel n’est plus disponible.");
+    }
+    const preview = await window.vibedeck.startWebPreview(draftId, url);
+    if (!draftsRef.current[draftId]) {
+      await window.vibedeck.cancelWebPreview(preview.previewId);
+      throw new Error("Ce nouveau panel a été fermé pendant le chargement.");
+    }
+    const next = {
+      ...webPreviewDraftsRef.current,
+      [draftId]: preview,
+    };
+    webPreviewDraftsRef.current = next;
+    setWebPreviewDrafts(next);
+  }
+
+  async function cancelWebPreview(draftId: string) {
+    const preview = webPreviewDraftsRef.current[draftId];
+    if (!preview) return;
+    try {
+      await window.vibedeck.cancelWebPreview(preview.previewId);
+    } finally {
+      const next = { ...webPreviewDraftsRef.current };
+      delete next[draftId];
+      webPreviewDraftsRef.current = next;
+      setWebPreviewDrafts(next);
+      setWebStates((current) => {
+        const copy = { ...current };
+        delete copy[preview.previewId];
+        return copy;
+      });
+    }
+  }
+
   async function startCompetitorTemplate() {
     if (templatePendingRef.current) return;
     templatePendingRef.current = true;
@@ -989,6 +1073,7 @@ export default function App() {
     if (draftsRef.current[draftId]?.pending || draftCompletionRef.current.has(draftId)) {
       return;
     }
+    void cancelWebPreview(draftId).catch((error) => showToast(cleanError(error)));
     const nextLayout = removePanel(layoutRef.current, draftId);
     const nextDrafts = { ...draftsRef.current };
     delete nextDrafts[draftId];
@@ -1022,12 +1107,26 @@ export default function App() {
     const previousIds = new Set(state.panels.map(({ id }) => id));
     serverLayoutMutationRef.current = true;
     try {
-      let nextState = await window.vibedeck.createPanel(
-        input,
-        panelPlacementForDraft(draft),
-      );
+      const webPreview = webPreviewDraftsRef.current[draftId];
+      let nextState = input.kind === "web" && webPreview
+        ? await window.vibedeck.commitWebPreview(
+            webPreview.previewId,
+            input.name,
+            panelPlacementForDraft(draft),
+          )
+        : await window.vibedeck.createPanel(
+            input,
+            panelPlacementForDraft(draft),
+          );
       const createdPanel = nextState.panels.find(({ id }) => !previousIds.has(id));
       if (!createdPanel) throw new Error("Le nouveau panel n’a pas pu être retrouvé.");
+
+      if (webPreview) {
+        const nextPreviews = { ...webPreviewDraftsRef.current };
+        delete nextPreviews[draftId];
+        webPreviewDraftsRef.current = nextPreviews;
+        setWebPreviewDrafts(nextPreviews);
+      }
 
       const sourceErrors: string[] = [];
       let sourceSuccesses = 0;
@@ -1616,9 +1715,13 @@ export default function App() {
           key={panelId}
           draft={draft}
           catalog={state!.sourceCatalog}
+          webPreview={webPreviewDrafts[panelId] ?? null}
+          webPreviewRuntime={webStates[panelId]}
           focused={focusedPanelId === panelId}
           onFocus={() => setFocusedPanelId(panelId)}
           onClose={() => closeDraft(panelId)}
+          onStartWebPreview={(url) => startWebPreview(panelId, url)}
+          onCancelWebPreview={() => cancelWebPreview(panelId)}
           onComplete={(input, catalogIds, customSources) =>
             completeDraft(panelId, input, catalogIds, customSources)
           }
@@ -3290,61 +3393,515 @@ function LinkPreviewView({
   );
 }
 
+function catalogCapabilityLabel(capability: SourceCatalogEntry["capabilities"][number]) {
+  if (capability === "optimized-feed") return "Fil optimisé";
+  return "Lecture facilitée";
+}
+
+function sourceHealthLabel(source: Source) {
+  if (source.status === "refreshing") return "Actualisation en cours";
+  if (source.status === "error") return "Dernière actualisation en échec";
+  if (source.status === "healthy") return "Source disponible";
+  return "En attente d’actualisation";
+}
+
+function SourceCatalogPicker({
+  catalog,
+  selectedIds,
+  attachedConnectorIds,
+  disabled = false,
+  onToggle,
+}: {
+  catalog: SourceCatalogEntry[];
+  selectedIds: Set<string>;
+  attachedConnectorIds: Set<string>;
+  disabled?: boolean;
+  onToggle: (catalogId: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const normalizedQuery = query.trim().toLocaleLowerCase("fr");
+  const filtered = catalog.filter((entry) =>
+    `${entry.name} ${entry.description} ${entry.homepageUrl}`
+      .toLocaleLowerCase("fr")
+      .includes(normalizedQuery),
+  );
+
+  return (
+    <div className="catalog-picker">
+      <label className="search-input catalog-picker__search">
+        <Search size={14} />
+        <span className="visually-hidden">Rechercher un connecteur optimisé</span>
+        <input
+          value={query}
+          placeholder="Rechercher un média…"
+          onChange={(event) => setQuery(event.target.value)}
+          disabled={disabled}
+        />
+      </label>
+      <div className="provider-list" aria-label="Connecteurs optimisés">
+        {filtered.map((entry) => {
+          const attached = attachedConnectorIds.has(entry.id);
+          const selected = selectedIds.has(entry.id);
+          return (
+            <button
+              type="button"
+              key={entry.id}
+              className={`provider-row${selected ? " is-selected" : ""}${attached ? " is-added" : ""}`}
+              aria-pressed={selected || attached}
+              disabled={disabled || attached}
+              onClick={() => onToggle(entry.id)}
+            >
+              <ProviderMark providerId={entry.id} size={42} />
+              <span className="provider-row__copy">
+                <span className="provider-row__title">
+                  <strong>{entry.name}</strong>
+                  {attached && <em>Déjà dans le fil</em>}
+                </span>
+                <small>{entry.description}</small>
+                <span className="provider-row__capabilities">
+                  {entry.capabilities.map((capability) => (
+                    <span key={capability}>{catalogCapabilityLabel(capability)}</span>
+                  ))}
+                </span>
+              </span>
+              <span className="provider-row__selection" aria-hidden="true">
+                {(selected || attached) ? <Check size={14} /> : <Plus size={14} />}
+              </span>
+            </button>
+          );
+        })}
+        {filtered.length === 0 && (
+          <div className="provider-list__empty">
+            Aucun connecteur optimisé ne correspond à « {query.trim()} ».
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CurrentSourcePicker({
+  sources,
+  keptSourceIds,
+  disabled = false,
+  onToggle,
+}: {
+  sources: Source[];
+  keptSourceIds: Set<string>;
+  disabled?: boolean;
+  onToggle: (sourceId: string) => void;
+}) {
+  if (sources.length === 0) return null;
+  return (
+    <section className="feed-source-section">
+      <div className="feed-source-section__heading">
+        <div>
+          <h3>Dans ce fil</h3>
+          <p>Décochez une source pour la retirer au prochain enregistrement.</p>
+        </div>
+      </div>
+      <div className="current-source-list">
+        {sources.map((source) => {
+          const kept = keptSourceIds.has(source.id);
+          return (
+            <button
+              type="button"
+              key={source.id}
+              className={kept ? "is-kept" : "is-removed"}
+              aria-pressed={kept}
+              disabled={disabled}
+              onClick={() => onToggle(source.id)}
+            >
+              <ProviderMark providerId={source.connectorId ?? "custom"} size={34} />
+              <span>
+                <strong>{source.name}</strong>
+                <small>
+                  {sourceHealthLabel(source)} · {connectorKindLabel(source.connectorKind)} · toutes les{" "}
+                  {refreshIntervalLabel(source.refreshIntervalSeconds)}
+                </small>
+              </span>
+              <em>{kept ? "Conservée" : "Sera retirée"}</em>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function probeDateLabel(value: string | null) {
+  if (!value) return "Date non fournie";
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return "Date non fournie";
+  return date.toLocaleString("fr-FR", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function CustomSourceTester({
+  inputId,
+  sources,
+  disabled = false,
+  onSourcesChange,
+}: {
+  inputId: string;
+  sources: PendingCustomSource[];
+  disabled?: boolean;
+  onSourcesChange: (sources: PendingCustomSource[]) => void;
+}) {
+  const [input, setInput] = useState("");
+  const [connectorKind, setConnectorKind] = useState<ConnectorPreference>("auto");
+  const [pending, setPending] = useState(false);
+  const [probe, setProbe] = useState<SourceProbeResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [latestProbe] = useState(createLatestAsyncOperation);
+  const testedKeyRef = useRef<string | null>(null);
+  const probeIdRef = useRef<string | null>(null);
+  const currentKey = `${connectorKind}\u0000${input.trim()}`;
+
+  useEffect(() => () => {
+    const probeId = probeIdRef.current;
+    if (probeId) void window.vibedeck.cancelSourceProbe(probeId).catch(() => undefined);
+  }, []);
+
+  function invalidate(nextInput?: string, nextKind?: ConnectorPreference) {
+    latestProbe.invalidate();
+    testedKeyRef.current = null;
+    const probeId = probeIdRef.current;
+    probeIdRef.current = null;
+    if (probeId) void window.vibedeck.cancelSourceProbe(probeId).catch(() => undefined);
+    setPending(false);
+    setProbe(null);
+    setError(null);
+    if (nextInput !== undefined) setInput(nextInput);
+    if (nextKind !== undefined) setConnectorKind(nextKind);
+  }
+
+  async function testSource() {
+    const url = input.trim();
+    if (!url || disabled || pending) return;
+    const probeId = crypto.randomUUID();
+    probeIdRef.current = probeId;
+    const requestKey = `${connectorKind}\u0000${url}`;
+    setPending(true);
+    setProbe(null);
+    setError(null);
+    try {
+      await latestProbe.run(
+        () => window.vibedeck.probeSource(probeId, { url, connectorKind }),
+        {
+          onSuccess: (result) => {
+            testedKeyRef.current = requestKey;
+            setProbe(result);
+          },
+          onError: (caught) => {
+            testedKeyRef.current = null;
+            setError(cleanError(caught));
+          },
+          onSettled: () => setPending(false),
+        },
+      );
+    } finally {
+      if (probeIdRef.current === probeId) probeIdRef.current = null;
+    }
+  }
+
+  function addTestedSource() {
+    if (!probe || testedKeyRef.current !== currentKey) return;
+    const candidate = {
+      url: probe.normalizedInputUrl,
+      connectorKind,
+    } satisfies PendingCustomSource;
+    if (
+      sources.some(
+        (source) =>
+          source.url === candidate.url && source.connectorKind === candidate.connectorKind,
+      )
+    ) {
+      setError("Cette source est déjà prête à être ajoutée.");
+      return;
+    }
+    onSourcesChange([...sources, candidate]);
+    invalidate("");
+  }
+
+  return (
+    <div className="custom-source-tester">
+      <label htmlFor={inputId}>Adresse du site ou du flux</label>
+      <div className="custom-source-input">
+        <input
+          id={inputId}
+          value={input}
+          inputMode="url"
+          placeholder="https://exemple.fr/rss.xml"
+          disabled={disabled}
+          onChange={(event) => invalidate(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            void testSource();
+          }}
+        />
+        <button type="button" disabled={!input.trim() || disabled || pending} onClick={() => void testSource()}>
+          {pending && <LoaderCircle className="is-spinning" size={13} />}
+          Tester
+        </button>
+      </div>
+      <details className="connector-options">
+        <summary>Options avancées · {connectorKindLabel(connectorKind)}</summary>
+        <label>
+          <span>Détection du connecteur</span>
+          <select
+            value={connectorKind}
+            disabled={disabled}
+            onChange={(event) => invalidate(undefined, event.target.value as ConnectorPreference)}
+          >
+            {CONNECTOR_KIND_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </details>
+      {pending && (
+        <div className="source-probe source-probe--loading" role="status">
+          <span />
+          <div>
+            <strong>Vérification du flux…</strong>
+            <small>Détection du format et lecture des derniers éléments.</small>
+          </div>
+        </div>
+      )}
+      {probe && testedKeyRef.current === currentKey && (
+        <div
+          className={`source-probe${probe.freshness === "stale" ? " is-stale" : ""}`}
+          aria-live="polite"
+        >
+          <div className="source-probe__summary">
+            <span className="source-probe__check"><Check size={14} /></span>
+            <div>
+              <strong>{probe.name}</strong>
+              <small>
+                {connectorKindLabel(probe.connectorKind)} · {probe.itemCount} élément(s)
+                {probe.connectorId ? " · connecteur optimisé reconnu" : ""}
+              </small>
+            </div>
+            <button type="button" className="primary-button" onClick={addTestedSource} disabled={disabled}>
+              Ajouter au fil
+            </button>
+          </div>
+          {probe.warning && <p>{probe.warning}</p>}
+          {probe.samples.length > 0 && (
+            <ul>
+              {probe.samples.map((sample, index) => (
+                <li key={`${sample.publishedAt ?? "sans-date"}:${index}`}>
+                  <span>{sample.title}</span>
+                  <time>{probeDateLabel(sample.publishedAt)}</time>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+      {error && <p className="form-error" role="alert">{error}</p>}
+      {sources.length > 0 && (
+        <div className="queued-source-list" aria-label="Sources personnalisées prêtes">
+          {sources.map((source) => (
+            <div key={`${source.connectorKind}:${source.url}`}>
+              <Rss size={14} />
+              <span>
+                <strong>{hostLabel(source.url)}</strong>
+                <small>{connectorKindLabel(source.connectorKind)} · test réussi</small>
+              </span>
+              <button
+                type="button"
+                aria-label={`Retirer ${source.url}`}
+                disabled={disabled}
+                onClick={() =>
+                  onSourcesChange(
+                    sources.filter(
+                      (candidate) =>
+                        candidate.url !== source.url ||
+                        candidate.connectorKind !== source.connectorKind,
+                    ),
+                  )
+                }
+              >
+                <X size={13} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FeedSourceSelector({
+  idPrefix,
+  catalog,
+  currentSources = [],
+  keptSourceIds,
+  selectedCatalogIds,
+  customSources,
+  disabled = false,
+  onKeptSourceIdsChange,
+  onSelectedCatalogIdsChange,
+  onCustomSourcesChange,
+}: {
+  idPrefix: string;
+  catalog: SourceCatalogEntry[];
+  currentSources?: Source[];
+  keptSourceIds: Set<string>;
+  selectedCatalogIds: Set<string>;
+  customSources: PendingCustomSource[];
+  disabled?: boolean;
+  onKeptSourceIdsChange: (sourceIds: Set<string>) => void;
+  onSelectedCatalogIdsChange: (catalogIds: Set<string>) => void;
+  onCustomSourcesChange: (sources: PendingCustomSource[]) => void;
+}) {
+  const attachedConnectorIds = new Set(
+    currentSources
+      .filter((source) => keptSourceIds.has(source.id))
+      .map(({ connectorId }) => connectorId)
+      .filter((connectorId): connectorId is string => Boolean(connectorId)),
+  );
+
+  return (
+    <div className="feed-source-selector">
+      <CurrentSourcePicker
+        sources={currentSources}
+        keptSourceIds={keptSourceIds}
+        disabled={disabled}
+        onToggle={(sourceId) => {
+          const next = new Set(keptSourceIds);
+          if (next.has(sourceId)) next.delete(sourceId);
+          else next.add(sourceId);
+          onKeptSourceIdsChange(next);
+        }}
+      />
+      <section className="feed-source-section">
+        <div className="feed-source-section__heading">
+          <div>
+            <h3>Connecteurs optimisés</h3>
+            <p>Configurés et vérifiés pour chaque publication.</p>
+          </div>
+          <span className="feed-source-section__global-feature">
+            <Search size={12} /> Recherche locale incluse dans tous les fils
+          </span>
+        </div>
+        <SourceCatalogPicker
+          catalog={catalog}
+          selectedIds={selectedCatalogIds}
+          attachedConnectorIds={attachedConnectorIds}
+          disabled={disabled}
+          onToggle={(catalogId) => {
+            const next = new Set(selectedCatalogIds);
+            if (next.has(catalogId)) next.delete(catalogId);
+            else next.add(catalogId);
+            onSelectedCatalogIdsChange(next);
+          }}
+        />
+      </section>
+      <section className="feed-source-section feed-source-section--custom">
+        <div className="feed-source-section__heading">
+          <div>
+            <h3>Autre source</h3>
+            <p>Testez une URL avant de l’ajouter. Rien ne sera attaché au fil pendant le test.</p>
+          </div>
+        </div>
+        <CustomSourceTester
+          inputId={`${idPrefix}-custom-source-url`}
+          sources={customSources}
+          disabled={disabled}
+          onSourcesChange={onCustomSourcesChange}
+        />
+      </section>
+    </div>
+  );
+}
+
 function DraftPanelView({
   draft,
   catalog,
+  webPreview,
+  webPreviewRuntime,
   focused,
   onFocus,
   onClose,
+  onStartWebPreview,
+  onCancelWebPreview,
   onComplete,
 }: {
   draft: DraftPanel;
   catalog: SourceCatalogEntry[];
+  webPreview: WebPreviewDraft | null;
+  webPreviewRuntime?: WebPanelRuntimeState;
   focused: boolean;
   onFocus: () => void;
   onClose: () => void;
+  onStartWebPreview: (url: string) => Promise<void>;
+  onCancelWebPreview: () => Promise<void>;
   onComplete: (
     input: CreatePanelInput,
     catalogIds?: string[],
     customSources?: PendingCustomSource[],
   ) => Promise<void>;
 }) {
+  const contentRef = useRef<HTMLDivElement>(null);
   const [step, setStep] = useState<"type" | "web" | "feed">("type");
   const [pending, setPending] = useState(false);
+  const [previewPending, setPreviewPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [webName, setWebName] = useState("");
   const [webUrl, setWebUrl] = useState("");
   const [feedName, setFeedName] = useState("");
   const [defaultRefreshInterval, setDefaultRefreshInterval] = useState(60);
-  const [query, setQuery] = useState("");
   const [selectedCatalog, setSelectedCatalog] = useState<Set<string>>(new Set());
-  const [customInput, setCustomInput] = useState("");
-  const [customConnectorKind, setCustomConnectorKind] =
-    useState<ConnectorPreference>("auto");
   const [customSources, setCustomSources] = useState<PendingCustomSource[]>([]);
-  const busy = pending || draft.pending;
+  const busy = pending || previewPending || draft.pending;
 
-  function queueCustomSource() {
-    const url = customInput.trim();
-    if (!url) return;
-    setCustomSources((current) => {
-      if (current.some((source) => source.url === url && source.connectorKind === customConnectorKind)) {
-        return current;
-      }
-      return [...current, { url, connectorKind: customConnectorKind }];
+  useLayoutEffect(() => {
+    if (draft.pending) return;
+    const frame = window.requestAnimationFrame(() => {
+      const target =
+        contentRef.current?.querySelector<HTMLElement>("[data-autofocus]:not(:disabled)") ??
+        contentRef.current?.querySelector<HTMLElement>(
+          "input:not(:disabled), button:not(:disabled), summary, select:not(:disabled)",
+        );
+      target?.focus({ preventScroll: true });
     });
-    setCustomInput("");
+    return () => window.cancelAnimationFrame(frame);
+  }, [draft.pending, step, webPreview?.previewId]);
+
+  async function previewWeb(name: string, url: string) {
+    if (!url.trim() || busy) return;
+    setWebName(name.trim());
+    setWebUrl(url.trim());
+    setPreviewPending(true);
+    setError(null);
+    try {
+      await onStartWebPreview(url.trim());
+    } catch (caught) {
+      setError(cleanError(caught));
+    } finally {
+      setPreviewPending(false);
+    }
   }
 
-  async function createWeb(name: string, url: string) {
-    if (!url.trim() || busy) return;
+  async function createWebFromPreview() {
+    if (!webPreview || pending || draft.pending) return;
     setPending(true);
     setError(null);
     try {
       await onComplete({
         kind: "web",
-        name: name.trim() || hostLabel(url),
-        url: url.trim(),
+        name: webName.trim() || webPreviewRuntime?.title.trim() || hostLabel(webPreview.normalizedUrl),
+        url: webPreview.normalizedUrl,
       });
     } catch (caught) {
       setError(cleanError(caught));
@@ -3354,13 +3911,7 @@ function DraftPanelView({
 
   async function createFeed(event: FormEvent) {
     event.preventDefault();
-    const submittedCustomSources = [
-      ...customSources,
-      ...(customInput.trim()
-        ? [{ url: customInput.trim(), connectorKind: customConnectorKind }]
-        : []),
-    ];
-    if (selectedCatalog.size + submittedCustomSources.length === 0 || busy) {
+    if (selectedCatalog.size + customSources.length === 0 || busy) {
       setError("Sélectionnez au moins une source.");
       return;
     }
@@ -3374,24 +3925,13 @@ function DraftPanelView({
           defaultRefreshIntervalSeconds: defaultRefreshInterval,
         },
         [...selectedCatalog],
-        submittedCustomSources.filter(
-          (source, index, all) =>
-            all.findIndex(
-              (candidate) =>
-                candidate.url === source.url &&
-                candidate.connectorKind === source.connectorKind,
-            ) === index,
-        ),
+        customSources,
       );
     } catch (caught) {
       setError(cleanError(caught));
       setPending(false);
     }
   }
-
-  const filteredCatalog = catalog.filter((entry) =>
-    `${entry.name} ${entry.homepageUrl}`.toLowerCase().includes(query.toLowerCase()),
-  );
 
   return (
     <PanelFrame
@@ -3405,15 +3945,16 @@ function DraftPanelView({
       closeDisabled={busy}
     >
       <div
+        ref={contentRef}
         className="draft-panel"
         aria-busy={busy}
         inert={busy ? true : undefined}
       >
-        {draft.pending && !pending && (
+        {draft.pending && (
           <div className="panel-empty" role="status">
             <LoaderCircle className="is-spinning" size={20} />
-            <strong>Installation de la veille concurrents…</strong>
-            <span>Le Monde, Le Figaro et Le Parisien sont ajoutés à ce fil.</span>
+            <strong>{step === "web" ? "Création de la page web…" : "Création du fil…"}</strong>
+            <span>La configuration est vérifiée et enregistrée localement.</span>
           </div>
         )}
         {!draft.pending && step === "type" && (
@@ -3421,7 +3962,7 @@ function DraftPanelView({
             <span className="step-kicker">Nouveau panel</span>
             <h2>Que voulez-vous afficher ici ?</h2>
             <div className="panel-type-grid">
-              <button type="button" onClick={() => setStep("web")}>
+              <button type="button" data-autofocus onClick={() => setStep("web")}>
                 <Globe2 size={21} />
                 <strong>Page web</strong>
                 <span>Un site ou une chaîne d’information affiché directement dans l’app.</span>
@@ -3435,7 +3976,7 @@ function DraftPanelView({
           </div>
         )}
 
-        {!draft.pending && step === "web" && (
+        {!draft.pending && step === "web" && !webPreview && (
           <div className="draft-step">
             <button type="button" className="back-button" onClick={() => setStep("type")}>
               ‹ Type de panel
@@ -3447,7 +3988,7 @@ function DraftPanelView({
                 <button
                   type="button"
                   key={preset.url}
-                  onClick={() => void createWeb(preset.name.split(" — ")[0], preset.url)}
+                  onClick={() => void previewWeb(preset.name.split(" — ")[0], preset.url)}
                 >
                   <span>
                     <strong>{preset.name}</strong>
@@ -3457,22 +3998,27 @@ function DraftPanelView({
                 </button>
               ))}
             </div>
-            <span className="form-section-label">Ou coller une URL</span>
+            <span className="form-section-label">Ou prévisualiser une URL</span>
             <form
               className="inline-url-form"
               onSubmit={(event) => {
                 event.preventDefault();
-                void createWeb(webName, webUrl);
+                void previewWeb(webName, webUrl);
               }}
             >
+              <label htmlFor={`${draft.id}-web-name`}>Nom du panel</label>
               <input
+                id={`${draft.id}-web-name`}
+                data-autofocus
                 aria-label="Nom du panel web"
                 value={webName}
                 placeholder="Nom du panel (facultatif)"
                 onChange={(event) => setWebName(event.target.value)}
               />
+              <label htmlFor={`${draft.id}-web-url`}>Adresse du site</label>
               <div>
                 <input
+                  id={`${draft.id}-web-url`}
                   aria-label="URL de la page web"
                   value={webUrl}
                   placeholder="bfmtv.com/en-direct"
@@ -3480,11 +4026,75 @@ function DraftPanelView({
                   onChange={(event) => setWebUrl(event.target.value)}
                 />
                 <button type="submit" className="primary-button" disabled={!webUrl.trim() || busy}>
-                  {pending && <LoaderCircle className="is-spinning" size={13} />} Afficher
+                  {previewPending && <LoaderCircle className="is-spinning" size={13} />} Prévisualiser
                 </button>
               </div>
             </form>
             {error && <p className="form-error" role="alert">{error}</p>}
+          </div>
+        )}
+
+        {!draft.pending && step === "web" && webPreview && (
+          <div className="draft-step web-preview-step">
+            <div className="web-preview-step__heading" data-web-preview-controls={draft.id}>
+              <button
+                type="button"
+                className="back-button"
+                onClick={() => {
+                  void onCancelWebPreview().catch((caught) => setError(cleanError(caught)));
+                }}
+              >
+                ‹ Modifier l’adresse
+              </button>
+              <h2>{webPreviewRuntime?.title || webName || hostLabel(webPreview.normalizedUrl)}</h2>
+              <p>
+                Vérifiez le site et connectez-vous si nécessaire. Cookies et préférences resteront
+                disponibles pour les autres panels de ce domaine.
+              </p>
+            </div>
+            <div className="web-preview-frame">
+              <div className="web-preview-frame__status" aria-live="polite">
+                <span>{webPreviewRuntime?.url ?? webPreview.normalizedUrl}</span>
+                <em>
+                  {webPreviewRuntime?.loading
+                    ? "Chargement…"
+                    : webPreviewRuntime?.status === "ready"
+                      ? "Prêt"
+                      : webPreviewRuntime?.status === "error"
+                        ? "Indisponible"
+                        : "Ouverture…"}
+                </em>
+              </div>
+              {webPreviewRuntime?.status === "error" && (
+                <div className="web-preview-frame__error" role="alert">
+                  {webPreviewRuntime.error ?? "Impossible de charger cette page."}
+                </div>
+              )}
+              <div
+                className="web-native-surface web-preview-native-surface"
+                data-web-preview-surface={draft.id}
+                aria-label={`Aperçu de ${hostLabel(webPreview.normalizedUrl)}`}
+              />
+            </div>
+            {error && <p className="form-error" role="alert">{error}</p>}
+            <div className="web-preview-step__footer" data-web-preview-controls={draft.id}>
+              <button
+                type="button"
+                className="quiet-button"
+                onClick={() => void onCancelWebPreview().catch((caught) => setError(cleanError(caught)))}
+                disabled={pending}
+              >
+                Changer d’adresse
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                disabled={pending || webPreviewRuntime?.status === "error"}
+                onClick={() => void createWebFromPreview()}
+              >
+                {pending && <LoaderCircle className="is-spinning" size={13} />} Créer ce panel
+              </button>
+            </div>
           </div>
         )}
 
@@ -3494,141 +4104,52 @@ function DraftPanelView({
               ‹ Type de panel
             </button>
             <h2>Fil agrégé</h2>
-            <input
-              className="name-input"
-              aria-label="Nom du fil"
-              value={feedName}
-              placeholder="Nom du fil — ex. Économie"
-              onChange={(event) => setFeedName(event.target.value)}
-            />
-            <label className="compact-select-field">
-              <span>Actualisation par défaut</span>
-              <select
-                value={defaultRefreshInterval}
-                onChange={(event) => setDefaultRefreshInterval(Number(event.target.value))}
-              >
-                {REFRESH_INTERVAL_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <span className="form-section-label">Bibliothèque de sources</span>
-            <label className="search-input">
-              <Search size={13} />
-              <input
-                aria-label="Rechercher une source"
-                value={query}
-                placeholder="Rechercher une source…"
-                onChange={(event) => setQuery(event.target.value)}
-              />
-            </label>
-            <div className="source-library">
-              {filteredCatalog.map((entry) => {
-                const checked = selectedCatalog.has(entry.id);
-                return (
-                  <button
-                    type="button"
-                    key={entry.id}
-                    className={checked ? "is-selected" : ""}
-                    aria-pressed={checked}
-                    onClick={() =>
-                      setSelectedCatalog((current) => {
-                        const next = new Set(current);
-                        if (next.has(entry.id)) next.delete(entry.id);
-                        else next.add(entry.id);
-                        return next;
-                      })
-                    }
-                  >
-                    <span className="checkbox">{checked && <Check size={10} />}</span>
-                    <span>
-                      <strong>{entry.name}</strong>
-                      <small>{new URL(entry.homepageUrl).hostname.replace("www.", "")}</small>
-                    </span>
-                    <em>{connectorKindLabel(entry.connectorKind)}</em>
-                  </button>
-                );
-              })}
-            </div>
-            <span className="form-section-label">Source personnalisée</span>
-            <div className="custom-source-field">
-              <div className="custom-source-input">
+            <div className="feed-builder__basics">
+              <label htmlFor={`${draft.id}-feed-name`}>
+                <span>Nom du fil</span>
                 <input
-                  aria-label="URL de la source personnalisée"
-                  value={customInput}
-                  inputMode="url"
-                  placeholder="URL du site ou du flux…"
-                  onChange={(event) => setCustomInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      queueCustomSource();
-                    }
-                  }}
+                  id={`${draft.id}-feed-name`}
+                  data-autofocus
+                  className="name-input"
+                  value={feedName}
+                  placeholder="Économie, concurrents, local…"
+                  onChange={(event) => setFeedName(event.target.value)}
                 />
-                <button type="button" onClick={queueCustomSource}>
-                  Ajouter
-                </button>
-              </div>
-              <details className="connector-options">
-                <summary>
-                  Options avancées · {connectorKindLabel(customConnectorKind)}
-                </summary>
-                <label>
-                  <span>Format du connecteur</span>
-                  <select
-                    value={customConnectorKind}
-                    onChange={(event) =>
-                      setCustomConnectorKind(event.target.value as ConnectorPreference)
-                    }
-                  >
-                    {CONNECTOR_KIND_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </details>
+              </label>
+              <label className="compact-select-field">
+                <span>Actualisation des nouvelles sources</span>
+                <select
+                  value={defaultRefreshInterval}
+                  onChange={(event) => setDefaultRefreshInterval(Number(event.target.value))}
+                >
+                  {REFRESH_INTERVAL_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
-            {customSources.length > 0 && (
-              <div className="custom-source-chips">
-                {customSources.map((source) => (
-                  <span key={`${source.connectorKind}:${source.url}`}>
-                    {hostLabel(source.url)} · {connectorKindLabel(source.connectorKind)}
-                    <button
-                      type="button"
-                      aria-label={`Retirer ${source.url}`}
-                      onClick={() =>
-                        setCustomSources((current) =>
-                          current.filter(
-                            (candidate) =>
-                              candidate.url !== source.url ||
-                              candidate.connectorKind !== source.connectorKind,
-                          ),
-                        )
-                      }
-                    >
-                      ×
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
+            <FeedSourceSelector
+              idPrefix={draft.id}
+              catalog={catalog}
+              keptSourceIds={new Set()}
+              selectedCatalogIds={selectedCatalog}
+              customSources={customSources}
+              disabled={busy}
+              onKeptSourceIdsChange={() => undefined}
+              onSelectedCatalogIdsChange={setSelectedCatalog}
+              onCustomSourcesChange={setCustomSources}
+            />
             {error && <p className="form-error" role="alert">{error}</p>}
             <div className="feed-builder__footer">
               <span>
-                {selectedCatalog.size + customSources.length + (customInput.trim() ? 1 : 0)} source(s)
+                {selectedCatalog.size + customSources.length} source(s) sélectionnée(s)
               </span>
               <button
                 type="submit"
                 className="primary-button"
-                disabled={
-                  selectedCatalog.size + customSources.length + (customInput.trim() ? 1 : 0) === 0 ||
-                  busy
-                }
+                disabled={selectedCatalog.size + customSources.length === 0 || busy}
               >
                 {pending && <LoaderCircle className="is-spinning" size={13} />} Créer le fil
               </button>
@@ -3745,9 +4266,12 @@ function Modal({
       ? document.activeElement
       : null;
     const frame = window.requestAnimationFrame(() => {
-      const firstField = initialFocusRef?.current ?? layerRef.current?.querySelector<HTMLElement>(
-        "input:not(:disabled), textarea:not(:disabled), select:not(:disabled), button:not(:disabled)",
-      );
+      const firstField =
+        initialFocusRef?.current ??
+        layerRef.current?.querySelector<HTMLElement>("[data-autofocus]:not(:disabled)") ??
+        layerRef.current?.querySelector<HTMLElement>(
+          "input:not(:disabled), textarea:not(:disabled), select:not(:disabled), button:not(:disabled)",
+        );
       firstField?.focus();
     });
     return () => {
@@ -3766,6 +4290,21 @@ function Modal({
       role="presentation"
       onMouseDown={onBackdrop}
       onKeyDown={(event) => {
+        if (event.key === "Tab") {
+          const focusable = [...(layerRef.current?.querySelectorAll<HTMLElement>(
+            "button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), summary, [href], [tabindex]:not([tabindex='-1'])",
+          ) ?? [])].filter((element) => element.getClientRects().length > 0);
+          const first = focusable[0];
+          const last = focusable.at(-1);
+          if (first && last && event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+          } else if (first && last && !event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+          }
+          return;
+        }
         if (event.key !== "Escape") return;
         event.preventDefault();
         event.stopPropagation();
@@ -4174,23 +4713,8 @@ function FeedConfigModal({
     panel.defaultRefreshIntervalSeconds,
   );
   const [customSources, setCustomSources] = useState<PendingCustomSource[]>([]);
-  const [customInput, setCustomInput] = useState("");
-  const [customConnectorKind, setCustomConnectorKind] =
-    useState<ConnectorPreference>("auto");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  function queueCustomSource() {
-    const url = customInput.trim();
-    if (!url) return;
-    setCustomSources((current) => {
-      if (current.some((source) => source.url === url && source.connectorKind === customConnectorKind)) {
-        return current;
-      }
-      return [...current, { url, connectorKind: customConnectorKind }];
-    });
-    setCustomInput("");
-  }
 
   async function save(event: FormEvent) {
     event.preventDefault();
@@ -4198,18 +4722,12 @@ function FeedConfigModal({
     setPending(true);
     setError(null);
     try {
-      const submittedCustomSources = [
-        ...customSources,
-        ...(customInput.trim()
-          ? [{ url: customInput.trim(), connectorKind: customConnectorKind }]
-          : []),
-      ];
       const nextState = await saveFeedPanelConfiguration(window.vibedeck, panel, state, {
         name: name.trim(),
         defaultRefreshIntervalSeconds: defaultRefreshInterval,
         keptSourceIds: [...keptSourceIds],
         selectedCatalogIds: [...selectedCatalogIds],
-        customSources: submittedCustomSources,
+        customSources,
       });
       onSaved(nextState, "Sources mises à jour");
     } catch (caught) {
@@ -4233,151 +4751,43 @@ function FeedConfigModal({
             <X size={16} />
           </button>
         </header>
-        <div className="modal-scroll">
-          <label className="field">
-            <span>Nom du panel</span>
-            <input value={name} onChange={(event) => setName(event.target.value)} />
-          </label>
-          <label className="compact-select-field compact-select-field--modal">
-            <span>Actualisation par défaut des nouvelles sources</span>
-            <select
-              value={defaultRefreshInterval}
-              onChange={(event) => setDefaultRefreshInterval(Number(event.target.value))}
-            >
-              {REFRESH_INTERVAL_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <span className="form-section-label">Sources actuelles</span>
-          <div className="source-library source-library--current">
-            {currentSources.map((source) => {
-              const checked = keptSourceIds.has(source.id);
-              return (
-                <button
-                  type="button"
-                  key={source.id}
-                  className={checked ? "is-selected" : ""}
-                  aria-pressed={checked}
-                  onClick={() => {
-                    setKeptSourceIds((current) => {
-                      const next = new Set(current);
-                      if (next.has(source.id)) next.delete(source.id);
-                      else next.add(source.id);
-                      return next;
-                    });
-                  }}
-                >
-                  <span className="checkbox">{checked && <Check size={10} />}</span>
-                  <span>
-                    <strong>{source.name}</strong>
-                    <small>
-                      {connectorKindLabel(source.connectorKind)} · toutes les {refreshIntervalLabel(source.refreshIntervalSeconds)}
-                    </small>
-                  </span>
-                  <i className={`source-dot source-dot--${source.status}`} />
-                </button>
-              );
-            })}
-          </div>
-          <span className="form-section-label">Connecteurs disponibles</span>
-          <div className="source-library">
-            {state.sourceCatalog.map((entry) => {
-              const alreadyAdded = currentSources.some(
-                (source) => source.connectorId === entry.id && keptSourceIds.has(source.id),
-              );
-              const selected = selectedCatalogIds.has(entry.id);
-              return (
-                <button
-                  type="button"
-                  key={entry.id}
-                  className={selected ? "is-selected" : alreadyAdded ? "is-added" : ""}
-                  disabled={alreadyAdded}
-                  aria-pressed={selected || alreadyAdded}
-                  onClick={() =>
-                    setSelectedCatalogIds((current) => {
-                      const next = new Set(current);
-                      if (next.has(entry.id)) next.delete(entry.id);
-                      else next.add(entry.id);
-                      return next;
-                    })
-                  }
-                >
-                  <span className="checkbox">
-                    {(selected || alreadyAdded) && <Check size={10} />}
-                  </span>
-                  <span>
-                    <strong>{entry.name}</strong>
-                    <small>{hostLabel(entry.homepageUrl)}</small>
-                  </span>
-                  <em>{alreadyAdded ? "Ajouté" : connectorKindLabel(entry.connectorKind)}</em>
-                </button>
-              );
-            })}
-          </div>
-          <span className="form-section-label">Ajouter une URL personnalisée</span>
-          <div className="custom-source-field">
-            <div className="custom-source-input">
+        <div className="modal-scroll" aria-busy={pending} inert={pending ? true : undefined}>
+          <div className="feed-config-basics">
+            <label className="field" htmlFor={`${panel.id}-feed-name`}>
+              <span>Nom du fil</span>
               <input
-                aria-label="URL de la source personnalisée"
-                value={customInput}
-                placeholder="URL du site ou du flux…"
-                onChange={(event) => setCustomInput(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key !== "Enter") return;
-                  event.preventDefault();
-                  queueCustomSource();
-                }}
+                id={`${panel.id}-feed-name`}
+                data-autofocus
+                value={name}
+                onChange={(event) => setName(event.target.value)}
               />
-              <button type="button" onClick={queueCustomSource}>
-                Ajouter
-              </button>
-            </div>
-            <details className="connector-options">
-              <summary>Options avancées · {connectorKindLabel(customConnectorKind)}</summary>
-              <label>
-                <span>Format du connecteur</span>
-                <select
-                  value={customConnectorKind}
-                  onChange={(event) =>
-                    setCustomConnectorKind(event.target.value as ConnectorPreference)
-                  }
-                >
-                  {CONNECTOR_KIND_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </details>
+            </label>
+            <label className="compact-select-field compact-select-field--modal">
+              <span>Actualisation des nouvelles sources</span>
+              <select
+                value={defaultRefreshInterval}
+                onChange={(event) => setDefaultRefreshInterval(Number(event.target.value))}
+              >
+                {REFRESH_INTERVAL_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
-          {customSources.length > 0 && (
-            <div className="custom-source-chips">
-              {customSources.map((source) => (
-                <span key={`${source.connectorKind}:${source.url}`}>
-                  {hostLabel(source.url)} · {connectorKindLabel(source.connectorKind)}
-                  <button
-                    type="button"
-                    aria-label={`Retirer ${source.url}`}
-                    onClick={() =>
-                      setCustomSources((current) =>
-                        current.filter(
-                          (candidate) =>
-                            candidate.url !== source.url ||
-                            candidate.connectorKind !== source.connectorKind,
-                        ),
-                      )
-                    }
-                  >
-                    ×
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
+          <FeedSourceSelector
+            idPrefix={panel.id}
+            catalog={state.sourceCatalog}
+            currentSources={currentSources}
+            keptSourceIds={keptSourceIds}
+            selectedCatalogIds={selectedCatalogIds}
+            customSources={customSources}
+            disabled={pending}
+            onKeptSourceIdsChange={setKeptSourceIds}
+            onSelectedCatalogIdsChange={setSelectedCatalogIds}
+            onCustomSourcesChange={setCustomSources}
+          />
           {error && <p className="form-error" role="alert">{error}</p>}
         </div>
         <footer>
@@ -4385,7 +4795,7 @@ function FeedConfigModal({
             Annuler
           </button>
           <button type="submit" className="primary-button" disabled={!name.trim() || pending}>
-            {pending && <LoaderCircle className="is-spinning" size={13} />} Enregistrer
+            {pending && <LoaderCircle className="is-spinning" size={13} />} Enregistrer les sources
           </button>
         </footer>
       </form>
