@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.5.0...v0.6.0) (2026-07-11)
+
+
+### Features
+
+* **connecteurs:** refondre l’ajout de sources ([#25](https://github.com/The-Vibe-Company/VibeDeck/issues/25)) ([3822882](https://github.com/The-Vibe-Company/VibeDeck/commit/382288241a45bf4879774d8b4ec51bae029a3cc1))
+
 ## [0.5.0](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.4.0...v0.5.0) (2026-07-11)
 
 
