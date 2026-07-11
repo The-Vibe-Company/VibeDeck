@@ -68,6 +68,14 @@ async function closeServer(server) {
   await new Promise((resolve) => server.close(resolve));
 }
 
+async function waitForLocalCondition(predicate, label, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(`Délai dépassé : ${label}.`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
 async function hoverRow(row) {
   await row.hover();
   await row.dispatchEvent("pointermove", { pointerType: "mouse" });
@@ -132,6 +140,9 @@ let secondaryRequestCount = 0;
 let redirectedFeedRequestCount = 0;
 let primaryShouldFail = false;
 let primaryDelayMs = 0;
+let probeDelayMs = 0;
+let delayedProbeRequestCount = 0;
+let delayedProbeAbortCount = 0;
 let origin = "";
 
 const server = createServer((request, response) => {
@@ -140,13 +151,40 @@ const server = createServer((request, response) => {
     response.writeHead(307, { Location: "/feed.xml" }).end();
     return;
   }
-  if (request.url !== "/feed.xml" && request.url !== "/feed-secondary.xml") {
+  if (request.url === "/preview.html") {
+    response.writeHead(200, {
+      "Cache-Control": "no-store",
+      "Content-Type": "text/html; charset=utf-8",
+      "Set-Cookie": "vibedeck-preview-session=active; Path=/; SameSite=Lax",
+    });
+    response.end(`<!doctype html>
+      <html lang="fr"><head><title>Page web contrôlée</title></head>
+      <body><main><h1>Aperçu web contrôlé</h1><p>Session locale de test.</p></main></body></html>`);
+    return;
+  }
+  if (
+    request.url !== "/feed.xml" &&
+    request.url !== "/feed-secondary.xml" &&
+    request.url !== "/feed-probe-delayed.xml"
+  ) {
     response.writeHead(404).end("Not found");
     return;
   }
   const isSecondary = request.url === "/feed-secondary.xml";
+  const isDelayedProbe = request.url === "/feed-probe-delayed.xml";
+  if (isDelayedProbe) {
+    delayedProbeRequestCount += 1;
+    let abortCounted = false;
+    const countAbort = () => {
+      if (abortCounted || response.writableEnded) return;
+      abortCounted = true;
+      delayedProbeAbortCount += 1;
+    };
+    request.once("aborted", countAbort);
+    response.once("close", countAbort);
+  }
   if (isSecondary) secondaryRequestCount += 1;
-  else primaryRequestCount += 1;
+  else if (!isDelayedProbe) primaryRequestCount += 1;
   if (!isSecondary && primaryShouldFail) {
     response.writeHead(503, {
       "Cache-Control": "no-store",
@@ -156,15 +194,17 @@ const server = createServer((request, response) => {
     return;
   }
   const sendFeed = () => {
+    if (response.destroyed) return;
     response.writeHead(200, {
       "Cache-Control": "no-store",
       "Content-Type": "application/rss+xml; charset=utf-8",
     });
     response.end(renderFeed(origin, isSecondary ? secondaryArticles : articles));
   };
-  if (!isSecondary && primaryDelayMs > 0) {
-    const delay = primaryDelayMs;
-    primaryDelayMs = 0;
+  const delay = isDelayedProbe ? probeDelayMs : (isSecondary ? 0 : primaryDelayMs);
+  if (delay > 0) {
+    if (isDelayedProbe) probeDelayMs = 0;
+    else primaryDelayMs = 0;
     setTimeout(sendFeed, delay);
     return;
   }
@@ -575,6 +615,61 @@ try {
   const draftLeaf = page.locator('.split-layout__leaf[data-panel-id^="draft:"]');
   await draftLeaf.waitFor({ state: "visible" });
   await draftLeaf.getByRole("button", { name: /Fil agrégé/ }).click();
+  const draftFeedName = draftLeaf.getByLabel("Nom du fil");
+  assert.equal(
+    await draftFeedName.evaluate((input) => document.activeElement === input),
+    true,
+    "Entrer dans le constructeur de Fil doit placer le vrai focus dans son premier champ.",
+  );
+  assert.equal(
+    await draftLeaf.locator(".provider-row").count(),
+    3,
+    "Le catalogue V1 doit afficher les trois connecteurs vérifiés.",
+  );
+  assert.equal(
+    await draftLeaf.locator(".provider-row > svg").count(),
+    3,
+    "Chaque connecteur vérifié doit disposer d’une marque locale.",
+  );
+  const customSourceInput = draftLeaf.getByLabel("Adresse du site ou du flux");
+  const customSourceTestButton = draftLeaf.getByRole("button", { name: "Tester" });
+  probeDelayMs = 1_200;
+  await customSourceInput.fill(`${origin}/feed-probe-delayed.xml`);
+  await customSourceTestButton.click();
+  await draftLeaf.locator(".source-probe--loading").waitFor({ state: "visible" });
+  await waitForLocalCondition(
+    () => delayedProbeRequestCount === 1,
+    "le premier test de source doit atteindre le serveur",
+  );
+  await customSourceInput.fill(`${origin}/feed-secondary.xml`);
+  await waitForLocalCondition(
+    () => delayedProbeAbortCount === 1,
+    "modifier l’URL doit interrompre le premier téléchargement",
+  );
+  assert.equal(
+    await customSourceTestButton.isEnabled(),
+    true,
+    "Modifier l’URL pendant un test doit permettre de relancer immédiatement le contrôle.",
+  );
+  await customSourceTestButton.click();
+  await draftLeaf.locator(".source-probe").filter({ hasText: "Flux contrôlé VibeDeck" })
+    .waitFor({ state: "visible" });
+  assert.equal(
+    await draftLeaf.locator(".source-probe li").filter({ hasText: "Article secondaire interclassé 01" }).count(),
+    1,
+    "La réponse du second test doit rester la seule preview affichée.",
+  );
+  assert.equal(
+    await draftLeaf.locator(".source-probe li").filter({ hasText: "Article de référence 01" }).count(),
+    0,
+    "Une réponse tardive ne doit pas remplacer le résultat du test courant.",
+  );
+  await draftLeaf.getByRole("button", { name: "Ajouter au fil" }).click();
+  assert.equal(
+    await draftLeaf.locator(".queued-source-list").filter({ hasText: "test réussi" }).count(),
+    1,
+    "Une source testée doit être mise en attente sans créer le fil.",
+  );
   const advancedSummary = draftLeaf.locator("summary").filter({ hasText: "Options avancées" });
   await advancedSummary.focus();
   await page.locator(".global-bar").hover();
@@ -584,8 +679,95 @@ try {
     true,
     "Le survol ne doit pas interrompre le contrôle natif Options avancées.",
   );
-  await draftLeaf.getByLabel("Fermer le panel").click();
+  const customFeedName = "Fil temporaire du catalogue";
+  await draftFeedName.fill(customFeedName);
+  await draftLeaf.getByRole("button", { name: "Créer le fil" }).click();
   await draftLeaf.waitFor({ state: "detached" });
+  const customFeedPanelId = await page.evaluate(({ name, inputUrl }) => {
+    return window.vibedeck.getState().then((state) => {
+      const panel = state.panels.find((candidate) => candidate.kind === "feed" && candidate.name === name);
+      const source = state.sources.find((candidate) => candidate.inputUrl === inputUrl);
+      if (!panel || panel.kind !== "feed" || !source || !panel.sourceIds.includes(source.id)) return null;
+      return panel.id;
+    });
+  }, { name: customFeedName, inputUrl: `${origin}/feed-secondary.xml` });
+  assert.ok(
+    customFeedPanelId,
+    "Créer un Fil depuis une URL testée doit persister son rattachement exact.",
+  );
+  const customFeedLeaf = page.locator(
+    `.split-layout__leaf[data-panel-id="${customFeedPanelId}"]`,
+  );
+  await customFeedLeaf.getByLabel("Configurer les sources").click();
+  let customFeedDialog = page.getByRole("dialog", { name: "Configuration du fil" });
+  await customFeedDialog.waitFor({ state: "visible" });
+  const attachedSource = customFeedDialog.locator(".current-source-list > button");
+  assert.equal(await attachedSource.getAttribute("aria-pressed"), "true");
+  await attachedSource.click();
+  assert.equal(await attachedSource.getAttribute("aria-pressed"), "false");
+  await customFeedDialog.getByRole("button", { name: "Enregistrer les sources" }).click();
+  await customFeedDialog.waitFor({ state: "detached" });
+  assert.deepEqual(
+    await page.evaluate((panelId) => window.vibedeck.getState().then((state) => {
+      const panel = state.panels.find((candidate) => candidate.id === panelId);
+      return panel?.kind === "feed" ? panel.sourceIds : null;
+    }), customFeedPanelId),
+    [],
+    "L’édition par le sélecteur partagé doit retirer la source après enregistrement.",
+  );
+
+  await customFeedLeaf.getByLabel("Configurer les sources").click();
+  customFeedDialog = page.getByRole("dialog", { name: "Configuration du fil" });
+  await customFeedDialog.waitFor({ state: "visible" });
+  probeDelayMs = 5_000;
+  await customFeedDialog.getByLabel("Adresse du site ou du flux")
+    .fill(`${origin}/feed-probe-delayed.xml`);
+  await customFeedDialog.getByRole("button", { name: "Tester" }).click();
+  await customFeedDialog.locator(".source-probe--loading").waitFor({ state: "visible" });
+  await waitForLocalCondition(
+    () => delayedProbeRequestCount === 2,
+    "le test lancé depuis l’édition doit atteindre le serveur",
+  );
+  await customFeedDialog.getByLabel("Fermer").click();
+  await customFeedDialog.waitFor({ state: "detached" });
+  await waitForLocalCondition(
+    () => delayedProbeAbortCount === 2,
+    "fermer l’éditeur doit interrompre le téléchargement en cours",
+  );
+  assert.equal(
+    await page.evaluate((inputUrl) => window.vibedeck.getState().then((state) =>
+      state.sources.some((source) => source.inputUrl === inputUrl)), `${origin}/feed-probe-delayed.xml`),
+    false,
+    "Un test annulé ne doit créer aucune source.",
+  );
+  await customFeedLeaf.getByLabel("Fermer le panel").click();
+  const closeCustomFeedDialog = page.getByRole("alertdialog", { name: /Fermer/ });
+  await closeCustomFeedDialog.getByRole("button", { name: "Fermer le panel" }).click();
+  await customFeedLeaf.waitFor({ state: "detached" });
+  await page.locator(".global-bar").hover();
+
+  await page.keyboard.press("ControlOrMeta+N");
+  const webDraftLeaf = page.locator('.split-layout__leaf[data-panel-id^="draft:"]');
+  await webDraftLeaf.waitFor({ state: "visible" });
+  await webDraftLeaf.getByRole("button", { name: /Page web/ }).click();
+  await webDraftLeaf.getByLabel("URL de la page web").fill(`${origin}/preview.html`);
+  await webDraftLeaf.getByRole("button", { name: "Prévisualiser" }).click();
+  await webDraftLeaf.locator(".web-preview-frame__status").filter({ hasText: "Prêt" })
+    .waitFor({ state: "visible" });
+  await webDraftLeaf.getByRole("button", { name: "Créer ce panel" }).click();
+  await webDraftLeaf.waitFor({ state: "detached" });
+  const previewWebPanelId = await page.evaluate(async (expectedUrl) => {
+    const state = await window.vibedeck.getState();
+    return state.panels.find((panel) => panel.kind === "web" && panel.url === expectedUrl)?.id ?? null;
+  }, `${origin}/preview.html`);
+  assert.ok(previewWebPanelId, "La preview doit être confirmée depuis son URL main-owned.");
+  const previewWebLeaf = page.locator(
+    `.split-layout__leaf[data-panel-id="${previewWebPanelId}"]`,
+  );
+  await previewWebLeaf.getByLabel("Fermer le panel").click();
+  const closePreviewDialog = page.getByRole("alertdialog", { name: /Fermer/ });
+  await closePreviewDialog.getByRole("button", { name: "Fermer le panel" }).click();
+  await previewWebLeaf.waitFor({ state: "detached" });
   await page.locator(".global-bar").hover();
 
   const reference = await page.evaluate(async () => {
@@ -1213,7 +1395,23 @@ try {
 
   await narrowLeaf.getByLabel("Configurer les sources").click();
   const feedConfigDialog = page.getByRole("dialog", { name: "Configuration du fil" });
-  await feedConfigDialog.getByRole("button", { name: "Enregistrer" }).click();
+  const configFeedName = feedConfigDialog.getByLabel("Nom du fil");
+  assert.equal(
+    await configFeedName.evaluate((input) => document.activeElement === input),
+    true,
+    "La configuration doit focaliser le nom du Fil et enfermer le clavier dans la modale.",
+  );
+  const saveFeedConfiguration = feedConfigDialog.getByRole("button", { name: "Enregistrer" });
+  await saveFeedConfiguration.focus();
+  await page.keyboard.press("Tab");
+  assert.equal(
+    await feedConfigDialog.getByRole("button", { name: "Fermer" }).evaluate(
+      (button) => document.activeElement === button,
+    ),
+    true,
+    "Tab depuis le dernier contrôle doit reboucler dans la modale.",
+  );
+  await saveFeedConfiguration.click();
   await feedConfigDialog.waitFor({ state: "detached" });
   await sharedSiblingRow.waitFor({ state: "visible" });
 

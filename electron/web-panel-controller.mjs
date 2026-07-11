@@ -427,7 +427,7 @@ function normalizeDescriptor(window, descriptor) {
   }
 
   const kind = descriptor.kind ?? "web";
-  if (kind !== "web" && kind !== "reader") {
+  if (kind !== "web" && kind !== "reader" && kind !== "preview") {
     throw new TypeError("Type de panel web invalide.");
   }
   const normalized = {
@@ -437,7 +437,7 @@ function normalizeDescriptor(window, descriptor) {
     bounds: clipBounds(window, cleanBounds(descriptor.bounds)),
     visible: descriptor.visible,
   };
-  if (kind === "web") return normalized;
+  if (kind === "web" || kind === "preview") return normalized;
   if (normalized.panelId !== ARTICLE_READER_PANEL_ID) {
     throw new TypeError("Identifiant du lecteur d’article invalide.");
   }
@@ -512,7 +512,9 @@ export function validateWebPanelDescriptorList(descriptors) {
 
 /**
  * Owns the native WebContentsView instances displayed over the React dashboard.
- * `sync()` is authoritative: views omitted from its descriptor list are destroyed.
+ * `sync()` is authoritative only for persistent panel views: views omitted from
+ * its descriptor list are destroyed, while the separately controlled preview is
+ * left untouched.
  */
 export function createWebPanelController({
   window,
@@ -548,6 +550,7 @@ export function createWebPanelController({
   }
 
   const records = new Map();
+  const previewRecords = new Map();
   const observedSessions = new Set();
   let windowClosed = false;
   let cleanupTask = Promise.resolve();
@@ -557,6 +560,30 @@ export function createWebPanelController({
     if (windowClosed || window.isDestroyed?.()) {
       throw new Error("La fenêtre Electron est fermée.");
     }
+  }
+
+  function recordMapForKind(kind) {
+    return kind === "preview" ? previewRecords : records;
+  }
+
+  function recordForPanelId(panelId) {
+    return records.get(panelId) ?? previewRecords.get(panelId);
+  }
+
+  function registerRecord(record) {
+    if (recordForPanelId(record.panelId)) {
+      throw new Error(`Le panel web « ${record.panelId} » existe déjà.`);
+    }
+    recordMapForKind(record.kind).set(record.panelId, record);
+  }
+
+  function unregisterRecord(record) {
+    const recordMap = recordMapForKind(record.kind);
+    if (recordMap.get(record.panelId) === record) recordMap.delete(record.panelId);
+  }
+
+  function activeRecords() {
+    return [...records.values(), ...previewRecords.values()];
   }
 
   function historyState(record) {
@@ -667,7 +694,7 @@ export function createWebPanelController({
       if (
         record.closing ||
         record.destroyed ||
-        records.get(record.panelId) !== record
+        recordForPanelId(record.panelId) !== record
       ) {
         return;
       }
@@ -730,7 +757,7 @@ export function createWebPanelController({
       !record.visible ||
       record.destroyed ||
       record.closing ||
-      records.get(record.panelId) !== record ||
+      recordForPanelId(record.panelId) !== record ||
       typeof record.contents.focus !== "function"
     ) {
       return;
@@ -884,7 +911,11 @@ export function createWebPanelController({
       emit(record);
     });
     listen(record, "render-process-gone", (_event, details) => {
-      if (record.closing || record.destroyed || records.get(record.panelId) !== record) return;
+      if (
+        record.closing ||
+        record.destroyed ||
+        recordForPanelId(record.panelId) !== record
+      ) return;
       record.loading = false;
       record.crashed = true;
       record.unresponsive = false;
@@ -901,7 +932,7 @@ export function createWebPanelController({
     });
     listen(record, "destroyed", () => {
       if (record.closing || record.destroyed) return;
-      records.delete(record.panelId);
+      unregisterRecord(record);
       record.destroyed = true;
       record.loading = false;
       record.visible = false;
@@ -945,7 +976,7 @@ export function createWebPanelController({
           record.destroyed ||
           record.closing ||
           generation !== record.loadGeneration ||
-          records.get(record.panelId) !== record
+          recordForPanelId(record.panelId) !== record
         ) {
           throw new Error("Navigation annulée : le panel web a été remplacé ou fermé.");
         }
@@ -967,7 +998,7 @@ export function createWebPanelController({
     return (
       !record.destroyed &&
       !record.closing &&
-      records.get(record.panelId) === record
+      recordForPanelId(record.panelId) === record
     );
   }
 
@@ -1156,7 +1187,7 @@ export function createWebPanelController({
       view.setBounds(descriptor.bounds);
       window.contentView.addChildView(view);
       added = true;
-      records.set(record.panelId, record);
+      registerRecord(record);
       applyBounds(record, descriptor);
       focusVisibleReader(record);
       emit(record);
@@ -1173,7 +1204,7 @@ export function createWebPanelController({
           !record.destroyed &&
           !record.closing &&
           record.loadGeneration === initialLoadGeneration &&
-          records.get(record.panelId) === record
+          recordForPanelId(record.panelId) === record
         ) {
           if (record.kind === "reader" && record.readerMode === "extracting") {
             return beginReaderExtraction(record);
@@ -1184,7 +1215,8 @@ export function createWebPanelController({
       }).catch(() => {});
       return record;
     } catch (error) {
-      records.delete(descriptor.panelId);
+      const registeredRecord = recordForPanelId(descriptor.panelId);
+      if (registeredRecord) unregisterRecord(registeredRecord);
       if (added) {
         try {
           window.contentView.removeChildView(view);
@@ -1214,7 +1246,7 @@ export function createWebPanelController({
 
   function requireRecord(panelId) {
     const id = cleanPanelId(panelId);
-    const record = records.get(id);
+    const record = recordForPanelId(id);
     if (!record || record.destroyed || isDestroyed(record.contents)) {
       throw new Error("Panel web introuvable.");
     }
@@ -1223,8 +1255,8 @@ export function createWebPanelController({
 
   function requireWebRecord(panelId) {
     const record = requireRecord(panelId);
-    if (record.kind !== "web") {
-      throw new Error("Cette commande est réservée aux panels web.");
+    if (record.kind !== "web" && record.kind !== "preview") {
+      throw new Error("Cette commande est réservée aux panels web ou aux aperçus.");
     }
     return record;
   }
@@ -1236,7 +1268,7 @@ export function createWebPanelController({
     record.readerGeneration += 1;
     record.readerAbortController?.abort();
     record.readerAbortController = null;
-    records.delete(record.panelId);
+    unregisterRecord(record);
 
     try {
       record.view.setVisible(false);
@@ -1277,7 +1309,7 @@ export function createWebPanelController({
 
   function scheduleWebSessionCleanup(candidateOrigins = null) {
     if (observedSessions.size === 0) return cleanupTask;
-    const clearAll = candidateOrigins === null || records.size === 0;
+    const clearAll = candidateOrigins === null || activeRecords().length === 0;
     if (clearAll && fullCleanupScheduled) return cleanupTask;
     if (clearAll) fullCleanupScheduled = true;
     const requestedOrigins = clearAll
@@ -1289,7 +1321,7 @@ export function createWebPanelController({
       .catch(() => {})
       .then(() => {
         const activeOrigins = new Set(
-          [...records.values()].flatMap((record) => [...record.visitedOrigins]),
+          activeRecords().flatMap((record) => [...record.visitedOrigins]),
         );
         const origins = requestedOrigins?.filter((origin) => !activeOrigins.has(origin)) ?? null;
         if (origins?.length === 0) return [];
@@ -1320,8 +1352,18 @@ export function createWebPanelController({
     const normalized = descriptors.map((descriptor) => normalizeDescriptor(window, descriptor));
     const ids = new Set();
     for (const descriptor of normalized) {
+      if (descriptor.kind === "preview") {
+        throw new TypeError(
+          "Les aperçus web temporaires doivent être gérés avec startPreview().",
+        );
+      }
       if (ids.has(descriptor.panelId)) {
         throw new Error(`Le panel web « ${descriptor.panelId} » est présent plusieurs fois.`);
+      }
+      if (previewRecords.has(descriptor.panelId)) {
+        throw new Error(
+          `Le panel web « ${descriptor.panelId} » est déjà utilisé par l’aperçu.`,
+        );
       }
       ids.add(descriptor.panelId);
     }
@@ -1357,13 +1399,53 @@ export function createWebPanelController({
       }
     }
 
-    if (records.size === 0) scheduleWebSessionCleanup();
+    if (activeRecords().length === 0) scheduleWebSessionCleanup();
 
     return normalized.map(({ panelId }) => snapshot(records.get(panelId)));
   }
 
   function navigate(panelId, url) {
     return load(requireWebRecord(panelId), cleanHttpUrl(url));
+  }
+
+  function startPreview(descriptor) {
+    assertWindowOpen();
+    if (!descriptor || typeof descriptor !== "object" || Array.isArray(descriptor)) {
+      throw new TypeError("Descripteur d’aperçu web invalide.");
+    }
+    if (descriptor.kind != null && descriptor.kind !== "preview") {
+      throw new TypeError("Type d’aperçu web invalide.");
+    }
+    const normalized = normalizeDescriptor(window, {
+      ...descriptor,
+      kind: "preview",
+    });
+    if (records.has(normalized.panelId)) {
+      throw new Error(
+        `L’identifiant « ${normalized.panelId} » est déjà utilisé par un panel persistant.`,
+      );
+    }
+    if (previewRecords.size > 0 && !previewRecords.has(normalized.panelId)) {
+      throw new RangeError("Un seul aperçu web peut être actif à la fois.");
+    }
+
+    let record = previewRecords.get(normalized.panelId);
+    if (!record) return snapshot(createRecord(normalized));
+
+    applyBounds(record, normalized);
+    if (record.homeUrl !== normalized.url) {
+      record.homeUrl = normalized.url;
+      record.originalUrl = normalized.url;
+      void load(record, normalized.url).catch(() => {});
+    } else {
+      emit(record);
+    }
+    return snapshot(record);
+  }
+
+  function cancelPreview(panelId) {
+    const id = cleanPanelId(panelId);
+    return destroyRecord(previewRecords.get(id));
   }
 
   function reloadRecord(record) {
@@ -1441,13 +1523,13 @@ export function createWebPanelController({
 
   function destroy(panelId) {
     const id = cleanPanelId(panelId);
-    const destroyed = destroyRecord(records.get(id));
+    const destroyed = destroyRecord(recordForPanelId(id));
     return destroyed;
   }
 
   function destroyAll() {
     let destroyedCount = 0;
-    for (const record of [...records.values()]) {
+    for (const record of activeRecords()) {
       if (destroyRecord(record)) destroyedCount += 1;
     }
     scheduleWebSessionCleanup();
@@ -1509,6 +1591,8 @@ export function createWebPanelController({
 
   return Object.freeze({
     sync,
+    startPreview,
+    cancelPreview,
     navigate,
     reload,
     stop,

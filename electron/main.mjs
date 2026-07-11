@@ -36,6 +36,12 @@ import {
   assertModelDownloadUrl,
   normalizeSearchMode,
 } from "./semantic-search.mjs";
+import {
+  cleanSourceProbeId,
+  cleanWebPreviewId,
+  createLatestAbortOperationRegistry,
+  createWebPreviewAuthorizationStore,
+} from "./transient-operations.mjs";
 
 const { autoUpdater } = electronUpdater;
 
@@ -96,6 +102,8 @@ let updateInstallRequested = false;
 let shutdownPromise = null;
 const activeOperations = new Set();
 const webPanelControllers = new Map();
+const webPreviewAuthorizations = createWebPreviewAuthorizationStore();
+const sourceProbeOperations = createLatestAbortOperationRegistry();
 const resettingWebPanelControllers = new WeakSet();
 const semanticSearchNativeFocus = new WeakMap();
 const semanticSearchNativeRestoreRequested = new WeakSet();
@@ -348,7 +356,7 @@ function cleanWebDataRequest(value) {
   return { scope: value.scope };
 }
 
-function resolveWebPanelDescriptors(value, controller) {
+function resolveWebPanelDescriptors(value, controller, window) {
   validateWebPanelDescriptorList(value);
   const state = lastRendererState ?? readEngineState();
   const webPanels = new Map(
@@ -380,6 +388,17 @@ function resolveWebPanelDescriptors(value, controller) {
         connectorId: article.connectorId,
         readerMode: article.readerMode,
         readerFallback: article.readerFallback,
+      };
+    }
+    if (descriptor.kind === "preview") {
+      const panelId = cleanWebPreviewId(descriptor.panelId);
+      const authorization = webPreviewAuthorizations.require(window, panelId);
+      return {
+        kind: "preview",
+        panelId,
+        url: authorization.url,
+        bounds: descriptor.bounds,
+        visible: descriptor.visible,
       };
     }
     if (descriptor.kind !== "web") throw new TypeError("Type de panel web invalide.");
@@ -472,7 +491,13 @@ function registerHandle(channel, handler) {
   });
 }
 
+function cancelSourceProbe(window, probeId = null) {
+  return sourceProbeOperations.cancel(window, probeId);
+}
+
 function destroyWebPanelController(window) {
+  cancelSourceProbe(window);
+  webPreviewAuthorizations.clear(window);
   const controller = webPanelControllers.get(window);
   if (!controller) return Promise.resolve();
   webPanelControllers.delete(window);
@@ -684,6 +709,71 @@ function registerIpcHandlers() {
     broadcastState(state);
     return state;
   }));
+  registerHandle("web-preview:start", (event, previewId, url) => {
+    const window = requireMainSender(event);
+    const controller = controllerForEvent(event);
+    if (resettingWebPanelControllers.has(controller)) {
+      throw new Error("Les données web sont en cours de réinitialisation.");
+    }
+    if (
+      engine.getState().panels.filter((panel) => panel.kind === "web").length >=
+      MAX_DASHBOARD_WEB_PANELS
+    ) {
+      throw new RangeError(
+        `Le dashboard accepte jusqu’à ${MAX_DASHBOARD_WEB_PANELS} pages web simultanées.`,
+      );
+    }
+    const normalizedPreviewId = cleanWebPreviewId(previewId);
+    const normalizedUrl = cleanSourceUrl(url);
+    webPreviewAuthorizations.start(
+      window,
+      { previewId: normalizedPreviewId, url: normalizedUrl },
+      (authorization) => {
+        controller.startPreview({
+          kind: "preview",
+          panelId: authorization.previewId,
+          url: authorization.url,
+          bounds: { x: 0, y: 0, width: 0, height: 0 },
+          visible: false,
+        });
+      },
+    );
+    return { previewId: normalizedPreviewId, normalizedUrl };
+  });
+  registerHandle("web-preview:commit", (event, previewId, name, placement) =>
+    runEngineOperation(async () => {
+      const window = requireMainSender(event);
+      const controller = controllerForEvent(event);
+      const normalizedPreviewId = cleanWebPreviewId(previewId);
+      if (
+        engine.getState().panels.filter((panel) => panel.kind === "web").length >=
+        MAX_DASHBOARD_WEB_PANELS
+      ) {
+        throw new RangeError(
+          `Le dashboard accepte jusqu’à ${MAX_DASHBOARD_WEB_PANELS} pages web simultanées.`,
+        );
+      }
+      const state = await webPreviewAuthorizations.commit(
+        window,
+        normalizedPreviewId,
+        (authorization) => engine.createPanel(
+          { kind: "web", name: cleanName(name), url: authorization.url },
+          cleanPanelPlacement(placement),
+        ),
+      );
+      controller.cancelPreview(normalizedPreviewId);
+      broadcastState(state);
+      return state;
+    }));
+  registerHandle("web-preview:cancel", (event, previewId) => {
+    const window = requireMainSender(event);
+    const controller = controllerForEvent(event);
+    const normalizedPreviewId = cleanWebPreviewId(previewId);
+    const authorization = webPreviewAuthorizations.cancel(window, normalizedPreviewId);
+    if (authorization) {
+      controller.cancelPreview(normalizedPreviewId);
+    }
+  });
   registerHandle("aggregator:rename-panel", (_event, panelId, name) => runEngineOperation(async () => {
     const state = await engine.renamePanel(cleanId(panelId), cleanName(name));
     broadcastState(state);
@@ -749,6 +839,24 @@ function registerIpcHandlers() {
     broadcastState(result.state, { syncSemantic: true });
     return result;
   }));
+  registerHandle("aggregator:probe-source", (event, probeId, source) => {
+    const window = requireMainSender(event);
+    const normalizedProbeId = cleanSourceProbeId(probeId);
+    const operation = sourceProbeOperations.start(window, normalizedProbeId);
+    return runEngineOperation(async () => {
+      try {
+        return await engine.probeSource(cleanSourceRequest(source), {
+          signal: operation.controller.signal,
+        });
+      } finally {
+        sourceProbeOperations.finish(window, operation);
+      }
+    });
+  });
+  registerHandle("aggregator:cancel-source-probe", (event, probeId) => {
+    const window = requireMainSender(event);
+    cancelSourceProbe(window, cleanSourceProbeId(probeId));
+  });
   registerHandle("aggregator:add-source", (_event, panelId, source) => runEngineOperation(async () => {
     const result = await engine.addSource(cleanId(panelId), cleanSourceRequest(source));
     broadcastState(result.state, { syncSemantic: true });
@@ -917,6 +1025,7 @@ function registerIpcHandlers() {
   });
   registerHandle("web-session:clear-data", async (event, request) => {
     const { scope } = cleanWebDataRequest(request);
+    const window = requireMainSender(event);
     const controller = controllerForEvent(event);
     if (resettingWebPanelControllers.has(controller)) {
       throw new Error("Un effacement des données web est déjà en cours.");
@@ -926,6 +1035,7 @@ function registerIpcHandlers() {
       return await runEngineOperation(async () => {
         // No page may keep handles to data while its profile is being erased.
         const descriptors = controller.getDescriptors();
+        webPreviewAuthorizations.clear(window);
         await controller.shutdown();
         const webSession = session.fromPartition(WEB_PANEL_SESSION_STRATEGY.partition);
         const result = await clearWebPanelSessionData(webSession, scope);
@@ -966,11 +1076,37 @@ function registerIpcHandlers() {
 
   ipcMain.on("web-panels:sync", (event, descriptors) => {
     try {
+      const window = requireMainSender(event);
       const controller = controllerForEvent(event);
       if (!resettingWebPanelControllers.has(controller)) {
-        const resolvedDescriptors = resolveWebPanelDescriptors(descriptors, controller);
-        controller.sync(resolvedDescriptors);
-        const window = requireMainSender(event);
+        const resolvedDescriptors = resolveWebPanelDescriptors(
+          descriptors,
+          controller,
+          window,
+        );
+        const persistentDescriptors = resolvedDescriptors.filter(
+          (descriptor) => descriptor.kind !== "preview",
+        );
+        const previewDescriptors = resolvedDescriptors.filter(
+          (descriptor) => descriptor.kind === "preview",
+        );
+        if (previewDescriptors.length > 1) {
+          throw new Error("Un seul aperçu web peut être synchronisé.");
+        }
+        const [previewDescriptor] = previewDescriptors;
+        controller.sync(persistentDescriptors);
+        const authorization = webPreviewAuthorizations.current(window);
+        if (authorization) {
+          controller.startPreview(
+            previewDescriptor ?? {
+              kind: "preview",
+              panelId: authorization.previewId,
+              url: authorization.url,
+              bounds: { x: 0, y: 0, width: 0, height: 0 },
+              visible: false,
+            },
+          );
+        }
         const panelId = semanticSearchNativeFocus.get(window);
         if (panelId && semanticSearchNativeRestoreRequested.has(window)) {
           const descriptor = resolvedDescriptors.find(
@@ -1088,11 +1224,15 @@ function createWindow() {
     "did-start-navigation",
     (_event, _url, isInPlace, isMainFrame) => {
       if (isMainFrame !== false && isInPlace !== true) {
+        cancelSourceProbe(window);
+        webPreviewAuthorizations.clear(window);
         webPanelController.destroyAll();
       }
     },
   );
   window.webContents.on("render-process-gone", () => {
+    cancelSourceProbe(window);
+    webPreviewAuthorizations.clear(window);
     webPanelController.destroyAll();
   });
   window.webContents.setWindowOpenHandler(({ url }) => {

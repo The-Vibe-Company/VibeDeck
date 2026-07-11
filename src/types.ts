@@ -1,5 +1,6 @@
 export type ConnectorKind = "rss" | "atom" | "news-sitemap";
 export type ConnectorPreference = "auto" | ConnectorKind;
+export type SourceCatalogCapability = "optimized-feed" | "simplified-reading";
 
 export type SourceStatus = "idle" | "refreshing" | "healthy" | "error";
 
@@ -44,9 +45,11 @@ export interface Source {
 export interface SourceCatalogEntry {
   id: string;
   name: string;
+  description: string;
   homepageUrl: string;
   connectorKind: ConnectorKind;
   refreshIntervalSeconds: number;
+  capabilities: SourceCatalogCapability[];
 }
 
 interface PanelBase {
@@ -111,6 +114,25 @@ export interface SourceRequest {
   refreshIntervalSeconds?: number;
 }
 
+export interface SourceProbeRequest {
+  url: string;
+  connectorKind?: ConnectorPreference;
+}
+
+export interface SourceProbeResult {
+  normalizedInputUrl: string;
+  name: string;
+  connectorKind: ConnectorKind;
+  connectorId: string | null;
+  itemCount: number;
+  samples: Array<{
+    title: string;
+    publishedAt: string | null;
+  }>;
+  freshness: "fresh" | "stale";
+  warning: string | null;
+}
+
 export interface FeedConfigurationCustomSource {
   url: string;
   connectorKind: ConnectorPreference;
@@ -152,7 +174,14 @@ export interface ArticleReaderPanelDescriptor extends WebPanelDescriptorBase {
   itemId: string;
 }
 
-export type WebPanelDescriptor = DashboardWebPanelDescriptor | ArticleReaderPanelDescriptor;
+export interface WebPreviewPanelDescriptor extends WebPanelDescriptorBase {
+  kind: "preview";
+}
+
+export type WebPanelDescriptor =
+  | DashboardWebPanelDescriptor
+  | ArticleReaderPanelDescriptor
+  | WebPreviewPanelDescriptor;
 
 export type ReaderMode = "extracting" | "simplified" | "original";
 export type ReaderFallbackReason =
@@ -258,6 +287,11 @@ export interface VibeDeckApi {
     catalogId: string,
     options?: SourceAddOptions,
   ) => Promise<AddSourceResult>;
+  probeSource: (
+    probeId: string,
+    source: string | SourceProbeRequest,
+  ) => Promise<SourceProbeResult>;
+  cancelSourceProbe: (probeId: string) => Promise<void>;
   addSource: (panelId: string, source: string | SourceRequest) => Promise<AddSourceResult>;
   setFeedPanelDefaultRefresh: (
     panelId: string,
@@ -286,6 +320,16 @@ export interface VibeDeckApi {
   importDashboard: () => Promise<LocalImportResult>;
   exportDiagnostics: () => Promise<LocalFileActionResult>;
   clearWebData: () => Promise<void>;
+  startWebPreview: (
+    previewId: string,
+    url: string,
+  ) => Promise<{ previewId: string; normalizedUrl: string }>;
+  commitWebPreview: (
+    previewId: string,
+    name: string,
+    placement?: PanelPlacement,
+  ) => Promise<AppState>;
+  cancelWebPreview: (previewId: string) => Promise<void>;
   openExternal: (url: string) => Promise<void>;
   focusDashboard: () => void;
   syncWebPanels: (panels: WebPanelDescriptor[]) => void;
