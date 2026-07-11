@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.4.0...v0.5.0) (2026-07-11)
+
+
+### Features
+
+* **fils:** agrandir les titres et régler la taille du texte par fil ([#22](https://github.com/The-Vibe-Company/VibeDeck/issues/22)) ([67abdec](https://github.com/The-Vibe-Company/VibeDeck/commit/67abdecc44380542be95786f83d9675b32149461))
+
+
+### Bug Fixes
+
+* **network:** contrôler les redirections Electron ([#19](https://github.com/The-Vibe-Company/VibeDeck/issues/19)) ([7d79ae4](https://github.com/The-Vibe-Company/VibeDeck/commit/7d79ae44c2c0fd8bd758d1bd2f63b94968945069))
+
 ## [0.4.0](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.3.3...v0.4.0) (2026-07-11)
 
 
