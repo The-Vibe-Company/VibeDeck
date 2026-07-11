@@ -1499,7 +1499,9 @@ export default function App() {
     if (result.truncated) showToast("Résultats limités à 200 articles");
   }
 
-  useEffect(() => {
+  // Remplacer le listener clavier dans le même commit que le DOM évite qu’un
+  // raccourci rapide observe la nouvelle interface avec un état React périmé.
+  useLayoutEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         if (semanticSearchOpen) {
