@@ -38,6 +38,7 @@
   --danger-line: oklch(46.33% 0.0712 28.5);
   --warning: var(--amber-500);
   --mono: "IBM Plex Mono", monospace;
+  --feed-text-scale: 1;
 }
 
 * {
@@ -270,6 +271,68 @@ button:disabled {
 
 .danger-button:hover:not(:disabled) {
   border-color: var(--danger);
+}
+
+.text-scale-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.text-scale-button {
+  padding: 6px 8px;
+}
+
+/* aria-disabled (et non disabled) pour ne pas perdre le focus clavier
+   quand le bouton atteint une borne de l'échelle. */
+.text-scale-button[aria-disabled="true"] {
+  cursor: default;
+  opacity: 0.42;
+}
+
+.text-scale-button[aria-disabled="true"]:hover {
+  border-color: var(--line);
+  color: var(--muted);
+}
+
+/* Tailles fixes : les contrôles d'échelle ne doivent pas suivre l'échelle
+   qu'ils pilotent. */
+.icon-button .text-scale-glyph {
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.icon-button[aria-disabled="true"] {
+  cursor: default;
+  opacity: 0.42;
+}
+
+.icon-button[aria-disabled="true"]:hover {
+  background: transparent;
+  color: var(--muted);
+}
+
+.icon-button .text-scale-glyph--value {
+  color: var(--amber);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.icon-button:has(.text-scale-glyph--value) {
+  width: auto;
+  min-width: 24px;
+  flex: 0 0 auto;
+  padding: 0 5px;
+}
+
+.text-scale-reset {
+  min-width: 48px;
+  padding: 6px 5px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
 }
 
 .restore-pill {
@@ -529,7 +592,7 @@ button:disabled {
   background: transparent;
   color: var(--text);
   cursor: inherit;
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--feed-text-scale));
   font-weight: 650;
   text-align: left;
   text-overflow: ellipsis;
@@ -538,7 +601,8 @@ button:disabled {
 
 .panel-title-input {
   min-width: 0;
-  height: 22px;
+  height: auto;
+  min-height: 22px;
   flex: 1;
   padding: 2px 6px;
   border: 1px solid var(--amber);
@@ -546,7 +610,7 @@ button:disabled {
   outline: none;
   background: var(--panel);
   color: var(--text);
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--feed-text-scale));
   font-weight: 650;
 }
 
@@ -817,7 +881,7 @@ button:disabled {
   position: relative;
   display: grid;
   width: 100%;
-  grid-template-columns: 70px minmax(0, 1fr) 15px;
+  grid-template-columns: calc(70px * var(--feed-text-scale)) minmax(0, 1fr) 15px;
   gap: 10px;
   padding: 8px 10px 8px 8px;
   border-bottom: 1px solid var(--line-soft);
@@ -848,7 +912,9 @@ button:disabled {
 .article-row > time {
   padding-top: 1px;
   color: var(--muted-dim);
-  font: 9.5px/1.4 var(--mono);
+  font-family: var(--mono);
+  font-size: calc(10px * var(--feed-text-scale));
+  line-height: 1.4;
   font-variant-numeric: tabular-nums;
   text-align: right;
   white-space: nowrap;
@@ -872,7 +938,9 @@ button:disabled {
   margin-bottom: 3px;
   overflow: hidden;
   color: var(--muted-dim);
-  font: 8px/1.2 var(--mono);
+  font-family: var(--mono);
+  font-size: calc(9px * var(--feed-text-scale));
+  line-height: 1.2;
   letter-spacing: 0.09em;
   text-transform: uppercase;
   white-space: nowrap;
@@ -904,7 +972,7 @@ button:disabled {
 .article-copy > strong {
   display: -webkit-box;
   overflow: hidden;
-  font-size: 12px;
+  font-size: calc(14px * var(--feed-text-scale));
   font-weight: 650;
   line-height: 1.35;
   -webkit-box-orient: vertical;
@@ -921,7 +989,7 @@ button:disabled {
   margin-top: 3px;
   overflow: hidden;
   color: var(--muted);
-  font-size: 10.5px;
+  font-size: calc(11.5px * var(--feed-text-scale));
   line-height: 1.4;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -2203,7 +2271,7 @@ button:disabled {
   }
 
   .article-row {
-    grid-template-columns: 68px minmax(0, 1fr);
+    grid-template-columns: calc(68px * var(--feed-text-scale)) minmax(0, 1fr);
     padding-block: 7px;
   }
 
@@ -2230,7 +2298,7 @@ button:disabled {
   }
 
   .article-row {
-    grid-template-columns: 65px minmax(0, 1fr);
+    grid-template-columns: calc(65px * var(--feed-text-scale)) minmax(0, 1fr);
     gap: 7px;
   }
 

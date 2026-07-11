@@ -72,6 +72,8 @@ class FakeWebContents extends EventEmitter {
     this.stopCalls = 0;
     this.closeCalls = [];
     this.focusCalls = 0;
+    this.zoomLevel = 0;
+    this.zoomCalls = [];
     this.history = {
       back: false,
       forward: false,
@@ -126,6 +128,15 @@ class FakeWebContents extends EventEmitter {
 
   focus() {
     this.focusCalls += 1;
+  }
+
+  getZoomLevel() {
+    return this.zoomLevel;
+  }
+
+  setZoomLevel(level) {
+    this.zoomLevel = level;
+    this.zoomCalls.push(level);
   }
 
   close(options) {
@@ -709,6 +720,46 @@ test("denies permissions, downloads and popups while opening safe popup links in
   controller.sync([descriptor("locked-down")]);
   assert.equal(controller.focus("locked-down"), true);
   assert.equal(contents.focusCalls, 1);
+});
+
+// Doit rester aligné sur ZOOM_SHORTCUT_LEVEL_LIMIT dans web-panel-controller.mjs.
+const ZOOM_LIMIT_PROBE = 5;
+
+test("zooms the embedded page with Cmd/Ctrl +, -, 0 now that the menu roles are stripped", () => {
+  const { controller, views } = createHarness();
+  controller.sync([descriptor("news")]);
+  const contents = views[0].webContents;
+
+  let prevented = 0;
+  const event = { preventDefault: () => (prevented += 1) };
+  contents.emit("before-input-event", event, { type: "keyDown", key: "+", meta: true });
+  assert.deepEqual(contents.zoomCalls, [0.5], "Cmd + doit zoomer d'un cran");
+  contents.emit("before-input-event", event, { type: "keyDown", key: "=", control: true });
+  assert.deepEqual(contents.zoomCalls, [0.5, 1], "Ctrl = doit compter comme zoom avant");
+  contents.emit("before-input-event", event, { type: "keyDown", key: "-", meta: true });
+  assert.deepEqual(contents.zoomCalls, [0.5, 1, 0.5]);
+  // AZERTY : la touche 0 non shiftée produit key "à" mais code "Digit0".
+  contents.emit("before-input-event", event, {
+    type: "keyDown", key: "à", code: "Digit0", meta: true,
+  });
+  assert.deepEqual(contents.zoomCalls, [0.5, 1, 0.5, 0], "Cmd 0 doit réinitialiser");
+  assert.equal(prevented, 4, "chaque raccourci géré doit être consommé");
+
+  // Une frappe AltGr (ctrl+alt), un simple keyUp, ou Ctrl+Insert (Numpad0
+  // sans NumLock = copie) ne doivent rien déclencher.
+  contents.emit("before-input-event", event, {
+    type: "keyDown", key: "+", control: true, alt: true,
+  });
+  contents.emit("before-input-event", event, { type: "keyUp", key: "+", meta: true });
+  contents.emit("before-input-event", event, {
+    type: "keyDown", key: "Insert", code: "Numpad0", control: true,
+  });
+  assert.equal(contents.zoomCalls.length, 4);
+
+  // Le niveau reste borné.
+  contents.zoomLevel = ZOOM_LIMIT_PROBE;
+  contents.emit("before-input-event", event, { type: "keyDown", key: "+", meta: true });
+  assert.equal(contents.zoomCalls.at(-1), ZOOM_LIMIT_PROBE, "le plafond de zoom doit tenir");
 });
 
 test("documents the persistent web session while clearing background workers on shutdown", async () => {

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, net, protocol, session, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, session, shell } from "electron";
 import electronUpdater from "electron-updater";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1209,8 +1209,34 @@ if (!hasSingleInstanceLock) {
     mainWindow.focus();
   });
 
+  // Les rôles de zoom du menu par défaut captent Cmd/Ctrl +/-/0 avant le
+  // renderer ; on les retire pour laisser ces raccourcis au réglage de la
+  // taille du texte des fils.
+  const WINDOW_ZOOM_MENU_ROLES = new Set(["zoomin", "zoomout", "resetzoom"]);
+
+  function stripWindowZoomMenuItems() {
+    const menu = Menu.getApplicationMenu();
+    if (!menu) return;
+    const hasZoomRole = (menuItem) =>
+      WINDOW_ZOOM_MENU_ROLES.has(menuItem.role?.toLowerCase() ?? "");
+    const template = menu.items.map((item) => {
+      const submenuItems = item.submenu?.items ?? [];
+      if (!submenuItems.some(hasZoomRole)) return item;
+      const kept = submenuItems.filter((menuItem) => !hasZoomRole(menuItem));
+      return {
+        label: item.label,
+        submenu: kept.filter(
+          (menuItem, index) =>
+            menuItem.type !== "separator" || kept[index - 1]?.type !== "separator",
+        ),
+      };
+    });
+    Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  }
+
   app.whenReady().then(async () => {
     app.setName("VibeDeck");
+    stripWindowZoomMenuItems();
     protocol.handle(
       APP_PROTOCOL_SCHEME,
       createAppProtocolHandler({

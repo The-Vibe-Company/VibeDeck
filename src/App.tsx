@@ -84,6 +84,11 @@ const LINK_READER_ID = "reader:article";
 // pour rester réactif quand on s'arrête vraiment pour lire.
 const HOVER_SEEN_DELAY_MS = 1000;
 const MAX_DASHBOARD_WEB_PANELS = 6;
+const FEED_TEXT_SCALE_STORAGE_KEY = "vibedeck.feedTextScale";
+const FEED_TEXT_SCALE_OVERRIDES_STORAGE_KEY = "vibedeck.feedTextScale.overrides";
+const FEED_TEXT_SCALE_MIN = 0.8;
+const FEED_TEXT_SCALE_MAX = 1.6;
+const FEED_TEXT_SCALE_STEP = 0.1;
 const MIN_HORIZONTAL_SPLIT_WIDTH = MIN_PANEL_WIDTH * 2 + SPLIT_DIVIDER_SIZE;
 const MIN_VERTICAL_SPLIT_HEIGHT = MIN_PANEL_HEIGHT * 2 + SPLIT_DIVIDER_SIZE;
 const PANEL_FOCUSABLE_SELECTOR =
@@ -205,6 +210,39 @@ function sourceIsFresh(source: Source) {
   if (!Number.isFinite(lastSuccess)) return false;
   const allowedAge = Math.max(120, source.refreshIntervalSeconds * 2 + 15) * 1_000;
   return Date.now() - lastSuccess <= allowedAge;
+}
+
+function clampFeedTextScale(value: number) {
+  if (!Number.isFinite(value)) return 1;
+  const bounded = Math.min(FEED_TEXT_SCALE_MAX, Math.max(FEED_TEXT_SCALE_MIN, value));
+  return Math.round(bounded * 100) / 100;
+}
+
+function loadFeedTextScale() {
+  try {
+    const raw = window.localStorage.getItem(FEED_TEXT_SCALE_STORAGE_KEY);
+    return raw === null ? 1 : clampFeedTextScale(Number.parseFloat(raw));
+  } catch {
+    return 1;
+  }
+}
+
+function loadFeedTextScaleOverrides(): Record<string, number> {
+  try {
+    const raw = window.localStorage.getItem(FEED_TEXT_SCALE_OVERRIDES_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const overrides: Record<string, number> = {};
+    for (const [panelId, value] of Object.entries(parsed)) {
+      if (typeof value === "number" && Number.isFinite(value)) {
+        overrides[panelId] = clampFeedTextScale(value);
+      }
+    }
+    return overrides;
+  } catch {
+    return {};
+  }
 }
 
 function isTypingTarget(target: EventTarget | null) {
@@ -345,6 +383,8 @@ export default function App() {
   const [semanticSearchScope, setSemanticSearchScope] = useState<SemanticSearchScope>({ kind: "all" });
   const [activeSemanticSearch, setActiveSemanticSearch] = useState<ActiveSemanticSearch | null>(null);
   const [clock, setClock] = useState(() => new Date());
+  const [feedTextScale, setFeedTextScale] = useState(loadFeedTextScale);
+  const [feedTextScaleOverrides, setFeedTextScaleOverrides] = useState(loadFeedTextScaleOverrides);
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
   const readyUpdateVersion = updateState?.status === "ready"
     ? updateState.availableVersion ?? "suivante"
@@ -486,6 +526,67 @@ export default function App() {
     if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
     toastTimerRef.current = window.setTimeout(() => setToast(null), 2_600);
   }, []);
+
+  // useLayoutEffect : appliquer l'échelle avant le premier paint pour éviter
+  // un flash à 100 % quand une valeur est restaurée du stockage.
+  useLayoutEffect(() => {
+    document.documentElement.style.setProperty("--feed-text-scale", String(feedTextScale));
+    try {
+      window.localStorage.setItem(FEED_TEXT_SCALE_STORAGE_KEY, String(feedTextScale));
+    } catch {
+      // Stockage indisponible : le réglage ne vaut que pour la session en cours.
+    }
+  }, [feedTextScale]);
+
+  useLayoutEffect(() => {
+    try {
+      window.localStorage.setItem(
+        FEED_TEXT_SCALE_OVERRIDES_STORAGE_KEY,
+        JSON.stringify(feedTextScaleOverrides),
+      );
+    } catch {
+      // Stockage indisponible : le réglage ne vaut que pour la session en cours.
+    }
+  }, [feedTextScaleOverrides]);
+
+  useEffect(() => {
+    if (!state) return;
+    setFeedTextScaleOverrides((previous) => {
+      const kept = Object.fromEntries(
+        Object.entries(previous).filter(([panelId]) => panelById.has(panelId)),
+      );
+      return Object.keys(kept).length === Object.keys(previous).length ? previous : kept;
+    });
+  }, [panelById, state]);
+
+  const adjustFeedTextScale = useCallback(
+    (direction: -1 | 0 | 1, panelId: string | null = null) => {
+      if (panelId) {
+        if (direction === 0) {
+          setFeedTextScaleOverrides((previous) => {
+            if (!(panelId in previous)) return previous;
+            const { [panelId]: _cleared, ...rest } = previous;
+            return rest;
+          });
+          showToast(`Texte du fil : taille par défaut (${Math.round(feedTextScale * 100)} %)`);
+          return;
+        }
+        const current = feedTextScaleOverrides[panelId] ?? feedTextScale;
+        const next = clampFeedTextScale(current + direction * FEED_TEXT_SCALE_STEP);
+        if (next !== current) {
+          setFeedTextScaleOverrides((previous) => ({ ...previous, [panelId]: next }));
+        }
+        showToast(`Texte du fil : ${Math.round(next * 100)} %`);
+        return;
+      }
+      const next = direction === 0
+        ? 1
+        : clampFeedTextScale(feedTextScale + direction * FEED_TEXT_SCALE_STEP);
+      setFeedTextScale(next);
+      showToast(`Texte des fils (défaut) : ${Math.round(next * 100)} %`);
+    },
+    [feedTextScale, feedTextScaleOverrides, showToast],
+  );
 
   const applyServerState = useCallback((
     nextState: AppState,
@@ -1324,6 +1425,38 @@ export default function App() {
         beginDraft();
         return;
       }
+      // event.code pour le zéro : sur AZERTY la touche 0 non shiftée produit
+      // event.key === "à" ; !altKey pour laisser passer AltGr (ctrl+alt) ;
+      // "Insert" exclu car Numpad0 sans NumLock = Ctrl+Insert (copie).
+      const feedTextScaleReset =
+        event.key !== "Insert" &&
+        (event.key === "0" || event.code === "Digit0" || event.code === "Numpad0");
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        !semanticSearchOpen &&
+        (feedTextScaleReset || ["+", "=", "-", "_"].includes(event.key))
+      ) {
+        event.preventDefault();
+        // Le raccourci ajuste le fil survolé/focalisé ; sans fil ciblé, il
+        // ajuste la taille par défaut de tous les fils sans réglage propre.
+        const zoomEventPanelId =
+          event.target instanceof HTMLElement
+            ? event.target
+                .closest<HTMLElement>(".split-layout__leaf[data-panel-id]")
+                ?.getAttribute("data-panel-id") ?? null
+            : null;
+        const zoomCandidateId = zoomEventPanelId ?? focusedPanelId;
+        const zoomPanelId =
+          zoomCandidateId && panelById.get(zoomCandidateId)?.kind === "feed"
+            ? zoomCandidateId
+            : null;
+        adjustFeedTextScale(
+          feedTextScaleReset ? 0 : event.key === "-" || event.key === "_" ? -1 : 1,
+          zoomPanelId,
+        );
+        return;
+      }
       if (linkPreview) return;
       if (
         isTypingTarget(event.target) ||
@@ -1525,6 +1658,9 @@ export default function App() {
           }}
           searchQuery={activeSemanticSearch?.query ?? null}
           onClearSearch={clearSemanticSearchFilter}
+          textScale={feedTextScaleOverrides[panel.id] ?? feedTextScale}
+          textScaleOverride={feedTextScaleOverrides[panel.id] ?? null}
+          onTextScale={(direction) => adjustFeedTextScale(direction, panel.id)}
           {...common}
         />
       );
@@ -1592,6 +1728,37 @@ export default function App() {
         >
           <Search size={13} /> Rechercher
         </button>
+        <div className="text-scale-group" role="group" aria-label="Taille du texte des fils">
+          <button
+            type="button"
+            className="quiet-button text-scale-button"
+            aria-disabled={feedTextScale <= FEED_TEXT_SCALE_MIN || undefined}
+            onClick={() => adjustFeedTextScale(-1)}
+            aria-label="Réduire le texte des fils"
+            title={`Réduire la taille par défaut du texte des fils (${isMac ? "⌘" : "Ctrl"} −)`}
+          >
+            A−
+          </button>
+          <button
+            type="button"
+            className="quiet-button text-scale-reset"
+            onClick={() => adjustFeedTextScale(0)}
+            aria-label="Réinitialiser la taille du texte des fils"
+            title={`Taille par défaut du texte des fils : ${Math.round(feedTextScale * 100)} % — cliquer pour revenir à 100 % (${isMac ? "⌘" : "Ctrl"} 0). Chaque fil peut la surcharger via A−/A+ dans son en-tête.`}
+          >
+            {Math.round(feedTextScale * 100)} %
+          </button>
+          <button
+            type="button"
+            className="quiet-button text-scale-button"
+            aria-disabled={feedTextScale >= FEED_TEXT_SCALE_MAX || undefined}
+            onClick={() => adjustFeedTextScale(1)}
+            aria-label="Agrandir le texte des fils"
+            title={`Agrandir la taille par défaut du texte des fils (${isMac ? "⌘" : "Ctrl"} +)`}
+          >
+            A+
+          </button>
+        </div>
         {linkPreview && (
           <button
             type="button"
@@ -2281,6 +2448,7 @@ interface PanelFrameProps {
   onClose: () => void;
   closeDisabled?: boolean;
   primaryActions?: React.ReactNode;
+  style?: React.CSSProperties;
   children: React.ReactNode;
 }
 
@@ -2301,6 +2469,7 @@ function PanelFrame({
   onClose,
   closeDisabled = false,
   primaryActions,
+  style,
   children,
 }: PanelFrameProps) {
   const dragHandle = useSplitPanelDragHandle(panelId);
@@ -2336,6 +2505,7 @@ function PanelFrame({
       className={`dashboard-panel dashboard-panel--${panelClassKind}${
         focused ? " dashboard-panel--focused" : ""
       }`}
+      style={style}
       tabIndex={-1}
       onMouseDown={(event) => focusFromPointer(event.currentTarget)}
       onPointerEnter={(event) => {
@@ -2483,6 +2653,7 @@ function IconButton({
   label,
   onClick,
   disabled,
+  ariaDisabled,
   active,
   danger,
   children,
@@ -2490,6 +2661,7 @@ function IconButton({
   label: string;
   onClick: () => void;
   disabled?: boolean;
+  ariaDisabled?: boolean;
   active?: boolean;
   danger?: boolean;
   children: React.ReactNode;
@@ -2503,6 +2675,7 @@ function IconButton({
       aria-label={label}
       title={label}
       disabled={disabled}
+      aria-disabled={ariaDisabled || undefined}
       draggable={false}
       onClick={(event) => {
         event.stopPropagation();
@@ -2538,6 +2711,9 @@ function FeedPanelView({
   onSearch,
   searchQuery,
   onClearSearch,
+  textScale,
+  textScaleOverride,
+  onTextScale,
   ...frame
 }: {
   panel: FeedPanel;
@@ -2551,6 +2727,9 @@ function FeedPanelView({
   onSearch: () => void;
   searchQuery: string | null;
   onClearSearch: () => void;
+  textScale: number;
+  textScaleOverride: number | null;
+  onTextScale: (direction: -1 | 0 | 1) => void;
 } & StandardPanelActions) {
   const articleListRef = useRef<HTMLDivElement>(null);
   const hoverSeenTimerRef = useRef<{ id: string; handle: ReturnType<typeof setTimeout> } | null>(null);
@@ -2613,8 +2792,37 @@ function FeedPanelView({
       name={panel.name}
       count={`${allCount}`}
       {...frame}
+      style={
+        textScaleOverride !== null
+          ? ({ "--feed-text-scale": String(textScaleOverride) } as React.CSSProperties)
+          : undefined
+      }
       primaryActions={
         <>
+          <IconButton
+            label="Réduire le texte de ce fil"
+            ariaDisabled={textScale <= FEED_TEXT_SCALE_MIN}
+            onClick={() => onTextScale(-1)}
+          >
+            <span className="text-scale-glyph" aria-hidden="true">A−</span>
+          </IconButton>
+          {textScaleOverride !== null && (
+            <IconButton
+              label={`Texte de ce fil : ${Math.round(textScaleOverride * 100)} % — revenir à la taille par défaut`}
+              onClick={() => onTextScale(0)}
+            >
+              <span className="text-scale-glyph text-scale-glyph--value" aria-hidden="true">
+                {Math.round(textScaleOverride * 100)}%
+              </span>
+            </IconButton>
+          )}
+          <IconButton
+            label="Agrandir le texte de ce fil"
+            ariaDisabled={textScale >= FEED_TEXT_SCALE_MAX}
+            onClick={() => onTextScale(1)}
+          >
+            <span className="text-scale-glyph" aria-hidden="true">A+</span>
+          </IconButton>
           <IconButton label="Actualiser ce panel" disabled={refreshing} onClick={() => void onRefresh()}>
             <RefreshCw className={refreshing ? "is-spinning" : ""} size={13} />
           </IconButton>
