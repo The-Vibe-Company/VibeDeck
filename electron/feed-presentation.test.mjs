@@ -2,10 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  abbreviateSourceName,
   compareFeedItems,
   formatCheckedAt,
+  formatDayLabel,
   formatItemTime,
   formatNextRefresh,
+  sourceHue,
+  withDaySeparators,
 } from "../src/feed-presentation.ts";
 
 function item(overrides = {}) {
@@ -159,6 +163,68 @@ test("renders an explicit calendar context after sixty minutes", () => {
     formatCheckedAt(new Date(2026, 6, 9, 23, 10).toISOString(), now),
     "hier 23:10",
   );
+});
+
+test("derives a stable identity hue per source", () => {
+  assert.equal(sourceHue("source-a"), sourceHue("source-a"));
+  for (const seed of ["source-a", "source-b", "", "https://example.test/feed.xml"]) {
+    const hue = sourceHue(seed);
+    assert.equal(Number.isInteger(hue), true);
+    assert.equal(hue >= 0 && hue < 360, true);
+  }
+  assert.notEqual(sourceHue("source-a"), sourceHue("source-b"));
+});
+
+test("abbreviates source names to two letters", () => {
+  assert.equal(abbreviateSourceName("Le Monde"), "LM");
+  assert.equal(abbreviateSourceName("L’Équipe"), "LÉ");
+  assert.equal(abbreviateSourceName("L'Équipe"), "LÉ");
+  assert.equal(abbreviateSourceName("Libération"), "LI");
+  assert.equal(abbreviateSourceName("franceinfo"), "FR");
+  assert.equal(abbreviateSourceName("France 24"), "F2");
+  assert.equal(abbreviateSourceName(""), "—");
+  assert.equal(abbreviateSourceName("  ·  "), "—");
+});
+
+test("labels feed days relative to today", () => {
+  const now = new Date(2026, 6, 13, 14, 0, 0);
+
+  assert.equal(formatDayLabel(new Date(2026, 6, 13, 9, 0), now), "AUJOURD’HUI");
+  assert.equal(formatDayLabel(new Date(2026, 6, 12, 23, 30), now), "HIER · DIM 12 JUIL");
+  assert.equal(formatDayLabel(new Date(2026, 6, 8, 9, 5), now), "MER 8 JUIL");
+  assert.equal(formatDayLabel(new Date(2024, 11, 24, 9, 5), now), "MAR 24 DÉC 2024");
+});
+
+test("inserts a day separator at every day change, tolerating non-monotonic dates", () => {
+  const now = new Date(2026, 6, 13, 14, 0, 0);
+  const items = [
+    // Arrivée remontée en tête malgré une date d'hier.
+    item({ id: "arrival", isBaseline: false, publishedAt: new Date(2026, 6, 12, 22, 0).toISOString() }),
+    item({ id: "today-1", publishedAt: new Date(2026, 6, 13, 10, 0).toISOString() }),
+    item({ id: "today-2", publishedAt: new Date(2026, 6, 13, 9, 0).toISOString() }),
+    // Sans date : hérite du jour courant, aucun séparateur.
+    item({ id: "undated", publishedAt: null, updatedAt: null }),
+    item({ id: "yesterday", publishedAt: new Date(2026, 6, 12, 23, 0).toISOString() }),
+  ];
+
+  const rows = withDaySeparators(items, now);
+  assert.deepEqual(
+    rows.map((row) => (row.kind === "separator" ? `[${row.label}]` : row.item.id)),
+    [
+      "[HIER · DIM 12 JUIL]",
+      "arrival",
+      "[AUJOURD’HUI]",
+      "today-1",
+      "today-2",
+      "undated",
+      "[HIER · DIM 12 JUIL]",
+      "yesterday",
+    ],
+  );
+
+  const keys = rows.filter((row) => row.kind === "separator").map((row) => row.key);
+  assert.equal(new Set(keys).size, keys.length);
+  assert.deepEqual(withDaySeparators([], now), []);
 });
 
 test("formats the nearest scheduler refresh with retry and active states", () => {
