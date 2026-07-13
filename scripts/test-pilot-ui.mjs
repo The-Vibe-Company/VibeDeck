@@ -20,6 +20,7 @@ const SUBPIXEL_EPSILON = 0.5;
 const HOVER_SEEN_DELAY_MS = 1000;
 const newArticleTitle = "ARRIVÉE CONTRÔLÉE — invariant du viewport";
 const topArrivalTitle = "ARRIVÉE EN TÊTE — scroll nul";
+const pillArrivalTitle = "ARRIVÉE PASTILLE — rappel vers le haut";
 const sharedArrivalTitle = "ARRIVÉE PARTAGÉE — tampon indépendant par panel";
 const sharedSecondArrivalTitle = "ARRIVÉE PARTAGÉE — deuxième insertion";
 
@@ -110,6 +111,15 @@ async function readMetrics(page, articleId) {
       newInDom: Boolean(newRow),
       newRowHeight: newRow instanceof HTMLElement ? newRow.getBoundingClientRect().height : 0,
       newRowIndex: newRow ? rows.indexOf(newRow) : -1,
+      // En mode dense, une arrivée datée d'un autre jour insère aussi son
+      // séparateur de journée : la compensation doit couvrir les deux.
+      newRowInsertionHeight: newRow instanceof HTMLElement
+        ? newRow.getBoundingClientRect().height +
+          (newRow.previousElementSibling instanceof HTMLElement &&
+            newRow.previousElementSibling.classList.contains("article-day-separator")
+            ? newRow.previousElementSibling.getBoundingClientRect().height
+            : 0)
+        : 0,
     };
   }, articleId);
 }
@@ -529,6 +539,97 @@ try {
     "Les rôles de zoom fenêtre doivent être retirés du menu pour libérer Cmd/Ctrl +/−/0.",
   );
 
+  // Mode d'affichage DENSE/CONFORT : défaut dense, bascule par fil, persistance.
+  const filPanel = page.locator(".dashboard-panel--fil").first();
+  assert.equal(
+    await filPanel.getAttribute("data-density"),
+    "dense",
+    "Le mode dense doit être le défaut des fils.",
+  );
+  const firstDaySeparator = page.locator(".article-day-separator").first();
+  await firstDaySeparator.waitFor({ state: "visible" });
+  // « HIER » toléré : une suite qui enjambe minuit ne doit pas devenir rouge.
+  assert.match(
+    (await firstDaySeparator.textContent()) ?? "",
+    /AUJOURD’HUI|HIER/,
+    "Le fil dense doit ouvrir sur le séparateur du jour.",
+  );
+  assert.equal(
+    await page.locator(".article-summary").first().isHidden(),
+    true,
+    "Le résumé doit être masqué en mode dense.",
+  );
+  const identityHues = await page.locator(".article-row .article-identity").evaluateAll(
+    (dots) => [...new Set(dots.map((dot) => dot.style.getPropertyValue("--source-hue")))],
+  );
+  assert.equal(
+    identityHues.length,
+    2,
+    "Chaque média doit porter sa teinte d'identité stable dans les rangées denses.",
+  );
+  assert.equal(
+    await page.locator(".article-copy > strong").first().evaluate(
+      (title) => getComputedStyle(title).whiteSpace,
+    ),
+    "normal",
+    "Le titre dense ne doit jamais être tronqué : il passe à la ligne.",
+  );
+  await page.locator(".article-source__abbr").first().waitFor({ state: "visible" });
+  assert.match(
+    (await page.locator(".article-source__abbr").first().textContent()) ?? "",
+    /^[\p{Lu}\p{N}]{1,2}$/u,
+    "L'abréviation de source doit tenir en deux caractères majuscules.",
+  );
+  assert.equal(
+    await page.locator(".article-source__full").first().evaluate(
+      (element) => getComputedStyle(element).width,
+    ),
+    "1px",
+    "Le nom complet de la source doit rester accessible sans occuper la rangée dense.",
+  );
+  const denseModeButton = filPanel.getByRole("button", { name: "Dense" });
+  const comfortModeButton = filPanel.getByRole("button", { name: "Confort" });
+  await comfortModeButton.click();
+  await page.waitForFunction(() =>
+    document.querySelector(".dashboard-panel--fil")?.getAttribute("data-density") === "comfort");
+  await page.locator(".article-summary").first().waitFor({ state: "visible" });
+  assert.equal(
+    await page.locator(".article-day-separator").count(),
+    0,
+    "Le mode confort doit rester le layout historique, sans séparateurs.",
+  );
+  assert.deepEqual(
+    Object.values(await page.evaluate(() =>
+      JSON.parse(window.localStorage.getItem("vibedeck.feedDensity.overrides") ?? "{}"))),
+    ["comfort"],
+    "L'override de densité par fil doit être persisté.",
+  );
+  await denseModeButton.click();
+  await page.waitForFunction(() =>
+    document.querySelector(".dashboard-panel--fil")?.getAttribute("data-density") === "dense");
+  assert.deepEqual(
+    await page.evaluate(() =>
+      JSON.parse(window.localStorage.getItem("vibedeck.feedDensity.overrides") ?? "{}")),
+    {},
+    "Revenir au défaut doit retirer l'override du fil.",
+  );
+  await comfortModeButton.click({ modifiers: ["Alt"] });
+  await page.waitForFunction(() =>
+    document.querySelector(".dashboard-panel--fil")?.getAttribute("data-density") === "comfort");
+  assert.equal(
+    await page.evaluate(() => window.localStorage.getItem("vibedeck.feedDensity")),
+    "comfort",
+    "Alt+clic doit changer le défaut global de densité.",
+  );
+  await denseModeButton.click({ modifiers: ["Alt"] });
+  await page.waitForFunction(() =>
+    document.querySelector(".dashboard-panel--fil")?.getAttribute("data-density") === "dense");
+  assert.equal(
+    await page.evaluate(() => window.localStorage.getItem("vibedeck.feedDensity")),
+    "dense",
+    "Le défaut global doit revenir à dense pour la suite du parcours.",
+  );
+
   assert.equal(
     await page.locator('.article-row[tabindex="0"]').count(),
     1,
@@ -826,12 +927,32 @@ try {
   assert.ok(revealed.scrollTop > beforeArrival.scrollTop, "Le scroll doit compenser la ligne insérée.");
   assertWithin(
     revealed.scrollTop - beforeArrival.scrollTop,
-    revealed.newRowHeight,
+    revealed.newRowInsertionHeight,
     1,
-    "compensation du scroll",
+    "compensation du scroll (rangée + séparateur de jour)",
+  );
+  const arrivalsPill = page.locator(".arrivals-pill");
+  await arrivalsPill.waitFor({ state: "visible" });
+  assert.match(
+    (await arrivalsPill.textContent()) ?? "",
+    /1 nouveau · Afficher/,
+    "La pastille doit compter l'arrivée insérée au-dessus du viewport.",
+  );
+  assert.equal(
+    await page.evaluate(() => document.activeElement?.id ?? null),
+    reference.id,
+    "La pastille ne doit pas voler le focus à son apparition.",
   );
   const expectedAfterArrowDown = await page.evaluate(
-    (articleId) => document.getElementById(articleId)?.nextElementSibling?.id ?? null,
+    (articleId) => {
+      // Sauter les séparateurs de jour : autour de minuit, l'un d'eux peut
+      // s'intercaler entre deux articles adjacents du fil dense.
+      let sibling = document.getElementById(articleId)?.nextElementSibling ?? null;
+      while (sibling && !sibling.classList.contains("article-row")) {
+        sibling = sibling.nextElementSibling;
+      }
+      return sibling?.id ?? null;
+    },
     reference.id,
   );
   assert.ok(expectedAfterArrowDown, "L’article suivant après insertion doit exister.");
@@ -852,6 +973,7 @@ try {
     if (!(list instanceof HTMLElement)) throw new Error("Le fil principal est introuvable.");
     list.scrollTop = 0;
   });
+  await arrivalsPill.waitFor({ state: "detached" });
   articles = [
     {
       id: "top-arrival",
@@ -867,6 +989,65 @@ try {
     await page.locator(".article-list").evaluate((list) => list.scrollTop),
     0,
     "Une arrivée reçue en haut du fil doit conserver scrollTop à zéro.",
+  );
+  assert.equal(
+    await arrivalsPill.count(),
+    0,
+    "Une arrivée déjà visible en haut du fil ne doit pas afficher de pastille.",
+  );
+
+  // Pastille « nouveaux » : cliquer ramène en haut du fil et sélectionne la
+  // première rangée ; l'insertion, elle, n'attend jamais ce clic.
+  const pillReference = await page.evaluate(async () => {
+    const list = document.querySelector(".article-list");
+    const rows = [...document.querySelectorAll(".article-row")];
+    const row = rows[30];
+    if (!(list instanceof HTMLElement) || !(row instanceof HTMLElement)) {
+      throw new Error("La référence du scénario de pastille est introuvable.");
+    }
+    list.scrollTop = row.offsetTop - Math.round(list.clientHeight * 0.3);
+    row.focus();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    return { id: row.id };
+  });
+  articles = [
+    {
+      id: "pill-arrival",
+      title: pillArrivalTitle,
+      summary: "Cette arrivée alimente la pastille de rappel.",
+      publishedAt: new Date(),
+    },
+    ...articles,
+  ];
+  await page.evaluate((id) => window.vibedeck.refreshSource(id), sourceId);
+  await page.locator(".article-row").filter({ hasText: pillArrivalTitle }).first()
+    .waitFor({ state: "attached" });
+  await arrivalsPill.waitFor({ state: "visible" });
+  assert.match(
+    (await arrivalsPill.textContent()) ?? "",
+    /1 nouveau · Afficher/,
+    "La pastille doit compter la nouvelle arrivée hors viewport.",
+  );
+  assert.equal(
+    await page.evaluate(() => document.activeElement?.id ?? null),
+    pillReference.id,
+    "L'arrivée comptée par la pastille ne doit pas déplacer le focus.",
+  );
+  await arrivalsPill.click();
+  await page.waitForFunction(
+    () => document.querySelector(".article-list")?.scrollTop === 0,
+  );
+  await arrivalsPill.waitFor({ state: "detached" });
+  const firstRowIdAfterPill = await page.locator(".article-row").first().getAttribute("id");
+  assert.equal(
+    await page.evaluate(() => document.activeElement?.id ?? null),
+    firstRowIdAfterPill,
+    "Cliquer la pastille doit sélectionner la première rangée du fil.",
+  );
+  assert.equal(
+    await page.locator(".feed-arrivals").count(),
+    0,
+    "La pastille ne doit jamais devenir un bouton-barrière d'insertion.",
   );
 
   const readerSourceRow = page.locator(".article-row").first();
@@ -941,7 +1122,7 @@ try {
   );
   assert.equal(
     primaryRequestCount,
-    3,
+    4,
     "Réutiliser un connecteur existant dans un autre panel ne doit pas le retélécharger.",
   );
   const narrowWindow = await electronApp.browserWindow(page);
@@ -954,7 +1135,7 @@ try {
       document.querySelectorAll(
         `.split-layout__leaf[data-panel-id="${targetPanelId}"] .article-row`,
       ).length === count,
-    { targetPanelId: narrowPanelId, count: initialArticleCount + 2 },
+    { targetPanelId: narrowPanelId, count: initialArticleCount + 3 },
   );
   await page.waitForFunction(
     (targetPanelId) => {
@@ -1008,6 +1189,24 @@ try {
     (await compactReadState.textContent()) ?? "",
     /Nouveau|Vu|Ouvert/,
     "L’état de lecture doit rester explicite dans le panel le plus étroit.",
+  );
+
+  // La source dense reste minuscule dans un fil étroit : pastille seule sous
+  // 390 px, pastille + abréviation au-delà — et jamais de débordement latéral.
+  const narrowDensePanelWidth = await narrowLeaf.locator(".dashboard-panel").evaluate(
+    (panel) => panel.getBoundingClientRect().width,
+  );
+  assert.equal(
+    await narrowLeaf.locator(".article-source__abbr").first().isVisible(),
+    narrowDensePanelWidth >= 390,
+    `L'abréviation de source doit suivre le seuil de 390 px (largeur ${Math.round(narrowDensePanelWidth)}px).`,
+  );
+  assert.equal(
+    await narrowLeaf.locator(".article-list").evaluate(
+      (list) => list.scrollWidth <= list.clientWidth,
+    ),
+    true,
+    "Le fil dense étroit ne doit jamais déborder horizontalement.",
   );
 
   const searchOrigin = panelLeaf.locator(".article-row").nth(12);
@@ -1326,7 +1525,7 @@ try {
   );
   assert.equal(
     await panelLeaf.locator(".article-row").count(),
-    baselineArticleCount + 2,
+    baselineArticleCount + 3,
     "Une panne de rafraîchissement ne doit retirer aucun article en cache.",
   );
 
@@ -1611,9 +1810,11 @@ try {
   console.log(`✓ baseline: ${baselineArticleCount} articles interclassés, roving tabindex actif`);
   console.log("✓ échelle de texte: défaut global 14px, override par fil (clavier, en-tête, pastille), plafond annoncé, menu sans rôles zoom");
   console.log(`✓ viewport initial: scrollTop ${beforeArrival.scrollTop.toFixed(1)}px`);
-  console.log(`✓ arrivée automatique: même article à ${revealed.selectedTop.toFixed(1)}px, compensation ${revealed.newRowHeight.toFixed(1)}px`);
+  console.log(`✓ arrivée automatique: même article à ${revealed.selectedTop.toFixed(1)}px, compensation ${revealed.newRowInsertionHeight.toFixed(1)}px`);
   console.log("✓ arrivée en tête: scrollTop reste à zéro");
-  console.log("✓ date ancienne explicite et fraîcheur compacte visible sous 520px");
+  console.log("✓ mode dense par défaut: titre jamais tronqué, source réduite à pastille + abréviation, bascule Confort persistée");
+  console.log("✓ pastille « nouveaux »: compte hors viewport, clic ramène en haut, jamais de barrière d'insertion");
+  console.log("✓ date ancienne explicite et fraîcheur compacte dans un fil étroit");
   console.log("✓ lecteur natif: Échap rend le focus au fil et les flèches reprennent immédiatement");
   console.log("✓ contrôles protégés, double-flèche entre panels et Alt+flèche pour les réordonner");
   console.log("✓ arrivées partagées: insertion automatique et viewport restent indépendants par panel");

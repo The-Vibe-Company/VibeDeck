@@ -99,6 +99,71 @@ export function formatItemTime(item: FeedItem, now = new Date()) {
   return absoluteDateTime(value, now);
 }
 
+/** Teinte d’identité stable d’une source (FNV-1a sur l’id), dans [0, 360). */
+export function sourceHue(seed: string) {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash ^= seed.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0) % 360;
+}
+
+/** « Le Monde » → « LM », « L’Équipe » → « LÉ », « Libération » → « LI », vide → « — ». */
+export function abbreviateSourceName(name: string) {
+  const segments = name
+    .split(/[\s'’‐‑–—-]+/u)
+    .filter((segment) => /[\p{L}\p{N}]/u.test(segment));
+  if (segments.length === 0) return "—";
+  const letters =
+    segments.length >= 2
+      ? segments.slice(0, 2).map((segment) => [...segment][0])
+      : [...segments[0]].slice(0, 2);
+  return letters.join("").toLocaleUpperCase("fr-FR");
+}
+
+export function formatDayLabel(value: Date, now = new Date()) {
+  const dayDifference = Math.round((dayStart(now) - dayStart(value)) / 86_400_000);
+  if (dayDifference === 0) return "AUJOURD’HUI";
+  const formatted = new Intl.DateTimeFormat("fr-FR", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    ...(value.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
+  })
+    .format(value)
+    .replaceAll(".", "")
+    .toLocaleUpperCase("fr-FR");
+  return dayDifference === 1 ? `HIER · ${formatted}` : formatted;
+}
+
+export type FeedListRow =
+  | { kind: "separator"; key: string; label: string }
+  | { kind: "item"; item: FeedItem };
+
+/**
+ * Intercale un séparateur de journée quand le jour change entre deux rangées
+ * consécutives. Le tri remonte les arrivées en tête quelle que soit leur date :
+ * les jours peuvent donc être non monotones et un même libellé réapparaître.
+ * Les rangées sans date héritent du jour courant et n’émettent jamais de séparateur.
+ */
+export function withDaySeparators(items: FeedItem[], now = new Date()): FeedListRow[] {
+  const rows: FeedListRow[] = [];
+  let currentDayKey: number | null = null;
+  for (const item of items) {
+    const date = firstDate(item.publishedAt, item.updatedAt);
+    if (date) {
+      const dayKey = dayStart(date);
+      if (dayKey !== currentDayKey) {
+        rows.push({ kind: "separator", key: `sep-${item.id}`, label: formatDayLabel(date, now) });
+        currentDayKey = dayKey;
+      }
+    }
+    rows.push({ kind: "item", item });
+  }
+  return rows;
+}
+
 export function formatCheckedAt(value: string | null, now = new Date()) {
   const date = validDate(value);
   if (!date) return "jamais";

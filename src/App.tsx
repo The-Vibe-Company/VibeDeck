@@ -49,10 +49,13 @@ import {
   updateSplitRatio,
 } from "./dashboard";
 import {
+  abbreviateSourceName,
   compareFeedItems,
   formatCheckedAt,
   formatItemTime,
   formatNextRefresh,
+  sourceHue,
+  withDaySeparators,
 } from "./feed-presentation";
 import { saveFeedPanelConfiguration } from "./feed-settings";
 import { createLatestAsyncOperation } from "./latest-async-operation";
@@ -92,6 +95,10 @@ const FEED_TEXT_SCALE_OVERRIDES_STORAGE_KEY = "vibedeck.feedTextScale.overrides"
 const FEED_TEXT_SCALE_MIN = 0.8;
 const FEED_TEXT_SCALE_MAX = 1.6;
 const FEED_TEXT_SCALE_STEP = 0.1;
+const FEED_DENSITY_STORAGE_KEY = "vibedeck.feedDensity";
+const FEED_DENSITY_OVERRIDES_STORAGE_KEY = "vibedeck.feedDensity.overrides";
+
+type FeedDensity = "comfort" | "dense";
 const MIN_HORIZONTAL_SPLIT_WIDTH = MIN_PANEL_WIDTH * 2 + SPLIT_DIVIDER_SIZE;
 const MIN_VERTICAL_SPLIT_HEIGHT = MIN_PANEL_HEIGHT * 2 + SPLIT_DIVIDER_SIZE;
 const PANEL_FOCUSABLE_SELECTOR =
@@ -164,6 +171,9 @@ type FeedPanelUi = {
   visibleItemIds: Set<string>;
   automaticInsertionIds: Set<string>;
   automaticInsertionMetrics: { scrollHeight: number; scrollTop: number } | null;
+  // Arrivées promues au-dessus du viewport pendant que l'utilisateur était
+  // descendu dans la liste : alimente la pastille « N nouveaux · Afficher ».
+  pendingArrivalIds: Set<string>;
   searchItemIds: Set<string> | null;
 };
 
@@ -253,6 +263,34 @@ function loadFeedTextScaleOverrides(): Record<string, number> {
   }
 }
 
+function normalizeFeedDensity(value: unknown): FeedDensity {
+  return value === "comfort" ? "comfort" : "dense";
+}
+
+function loadFeedDensity(): FeedDensity {
+  try {
+    return normalizeFeedDensity(window.localStorage.getItem(FEED_DENSITY_STORAGE_KEY));
+  } catch {
+    return "dense";
+  }
+}
+
+function loadFeedDensityOverrides(): Record<string, FeedDensity> {
+  try {
+    const raw = window.localStorage.getItem(FEED_DENSITY_OVERRIDES_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const overrides: Record<string, FeedDensity> = {};
+    for (const [panelId, value] of Object.entries(parsed)) {
+      if (value === "comfort" || value === "dense") overrides[panelId] = value;
+    }
+    return overrides;
+  } catch {
+    return {};
+  }
+}
+
 function isTypingTarget(target: EventTarget | null) {
   return (
     target instanceof HTMLInputElement ||
@@ -315,6 +353,7 @@ function initialFeedUi(panel: FeedPanel, state: AppState): FeedPanelUi {
     visibleItemIds: new Set(panelItems(panel, state).map(({ id }) => id)),
     automaticInsertionIds: new Set(),
     automaticInsertionMetrics: null,
+    pendingArrivalIds: new Set(),
     searchItemIds: null,
   };
 }
@@ -394,6 +433,8 @@ export default function App() {
   const [clock, setClock] = useState(() => new Date());
   const [feedTextScale, setFeedTextScale] = useState(loadFeedTextScale);
   const [feedTextScaleOverrides, setFeedTextScaleOverrides] = useState(loadFeedTextScaleOverrides);
+  const [feedDensity, setFeedDensity] = useState(loadFeedDensity);
+  const [feedDensityOverrides, setFeedDensityOverrides] = useState(loadFeedDensityOverrides);
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
   const readyUpdateVersion = updateState?.status === "ready"
     ? updateState.availableVersion ?? "suivante"
@@ -569,6 +610,35 @@ export default function App() {
     });
   }, [panelById, state]);
 
+  useLayoutEffect(() => {
+    try {
+      window.localStorage.setItem(FEED_DENSITY_STORAGE_KEY, feedDensity);
+    } catch {
+      // Stockage indisponible : le réglage ne vaut que pour la session en cours.
+    }
+  }, [feedDensity]);
+
+  useLayoutEffect(() => {
+    try {
+      window.localStorage.setItem(
+        FEED_DENSITY_OVERRIDES_STORAGE_KEY,
+        JSON.stringify(feedDensityOverrides),
+      );
+    } catch {
+      // Stockage indisponible : le réglage ne vaut que pour la session en cours.
+    }
+  }, [feedDensityOverrides]);
+
+  useEffect(() => {
+    if (!state) return;
+    setFeedDensityOverrides((previous) => {
+      const kept = Object.fromEntries(
+        Object.entries(previous).filter(([panelId]) => panelById.has(panelId)),
+      );
+      return Object.keys(kept).length === Object.keys(previous).length ? previous : kept;
+    });
+  }, [panelById, state]);
+
   const adjustFeedTextScale = useCallback(
     (direction: -1 | 0 | 1, panelId: string | null = null) => {
       if (panelId) {
@@ -596,6 +666,32 @@ export default function App() {
       showToast(`Texte des fils (défaut) : ${Math.round(next * 100)} %`);
     },
     [feedTextScale, feedTextScaleOverrides, showToast],
+  );
+
+  const setFeedPanelDensity = useCallback(
+    (panelId: string, mode: FeedDensity, asGlobalDefault = false) => {
+      if (asGlobalDefault) {
+        setFeedDensity(mode);
+        setFeedDensityOverrides({});
+        showToast(
+          mode === "dense"
+            ? "Affichage dense (tous les fils)"
+            : "Affichage confort (tous les fils)",
+        );
+        return;
+      }
+      setFeedDensityOverrides((previous) => {
+        if (mode === feedDensity) {
+          if (!(panelId in previous)) return previous;
+          const { [panelId]: _cleared, ...rest } = previous;
+          return rest;
+        }
+        if (previous[panelId] === mode) return previous;
+        return { ...previous, [panelId]: mode };
+      });
+      showToast(mode === "dense" ? "Affichage dense" : "Affichage confort");
+    },
+    [feedDensity, showToast],
   );
 
   const applyServerState = useCallback((
@@ -659,15 +755,24 @@ export default function App() {
         }
         const visibleItemIds = new Set(existing.visibleItemIds);
         const automaticInsertionIds = new Set<string>();
+        const panelItemIds = new Set<string>();
         // The delivery buffer stays local to each panel, but every incoming row
         // is promoted in the same renderer update that receives it.
         for (const item of panelItems(panel, nextState)) {
+          panelItemIds.add(item.id);
           if (!visibleItemIds.has(item.id) && !item.isBaseline) {
             automaticInsertionIds.add(item.id);
           }
           visibleItemIds.add(item.id);
         }
         const hasAutomaticInsertions = automaticInsertionIds.size > 0;
+        let pendingArrivalIds = existing.pendingArrivalIds;
+        if (pendingArrivalIds.size > 0) {
+          // Purge par appartenance au panel : une source détachée ne doit pas
+          // laisser la pastille compter des articles qui ne sont plus au fil.
+          const kept = [...pendingArrivalIds].filter((id) => panelItemIds.has(id));
+          if (kept.length !== pendingArrivalIds.size) pendingArrivalIds = new Set(kept);
+        }
         next[panel.id] = {
           ...existing,
           visibleItemIds,
@@ -677,6 +782,7 @@ export default function App() {
           automaticInsertionMetrics: hasAutomaticInsertions
             ? automaticInsertionMetrics.get(panel.id) ?? null
             : existing.automaticInsertionMetrics,
+          pendingArrivalIds,
         };
       }
       return next;
@@ -1315,6 +1421,7 @@ export default function App() {
         visibleItemIds: current[panelId]?.visibleItemIds ?? new Set(),
         automaticInsertionIds: current[panelId]?.automaticInsertionIds ?? new Set(),
         automaticInsertionMetrics: current[panelId]?.automaticInsertionMetrics ?? null,
+        pendingArrivalIds: current[panelId]?.pendingArrivalIds ?? new Set(),
         searchItemIds: current[panelId]?.searchItemIds ?? null,
         ...patch,
       },
@@ -1340,6 +1447,7 @@ export default function App() {
         focusedItemId: restore?.focusedItemIdsByPanelId.get(panelId) ?? null,
         automaticInsertionIds: new Set(),
         automaticInsertionMetrics: null,
+        pendingArrivalIds: new Set(),
       },
     ])));
     semanticSearchRestoreRef.current = null;
@@ -1477,8 +1585,8 @@ export default function App() {
     setFeedUi((current) => Object.fromEntries(Object.entries(current).map(([panelId, ui]) => [
       panelId,
       scope.kind === "all" || scope.panelId === panelId
-        ? { ...ui, searchItemIds: resultIds, focusedItemId: null }
-        : { ...ui, searchItemIds: null },
+        ? { ...ui, searchItemIds: resultIds, focusedItemId: null, pendingArrivalIds: new Set<string>() }
+        : { ...ui, searchItemIds: null, pendingArrivalIds: new Set<string>() },
     ])));
     const appliedSearch = { query, scope, resultCount: result.items.length, result };
     activeSemanticSearchRef.current = appliedSearch;
@@ -1766,6 +1874,8 @@ export default function App() {
           textScale={feedTextScaleOverrides[panel.id] ?? feedTextScale}
           textScaleOverride={feedTextScaleOverrides[panel.id] ?? null}
           onTextScale={(direction) => adjustFeedTextScale(direction, panel.id)}
+          density={feedDensityOverrides[panel.id] ?? feedDensity}
+          onDensity={(mode, asGlobalDefault) => setFeedPanelDensity(panel.id, mode, asGlobalDefault)}
           {...common}
         />
       );
@@ -2554,6 +2664,7 @@ interface PanelFrameProps {
   closeDisabled?: boolean;
   primaryActions?: React.ReactNode;
   style?: React.CSSProperties;
+  dataDensity?: FeedDensity;
   children: React.ReactNode;
 }
 
@@ -2575,6 +2686,7 @@ function PanelFrame({
   closeDisabled = false,
   primaryActions,
   style,
+  dataDensity,
   children,
 }: PanelFrameProps) {
   const dragHandle = useSplitPanelDragHandle(panelId);
@@ -2611,6 +2723,7 @@ function PanelFrame({
         focused ? " dashboard-panel--focused" : ""
       }`}
       style={style}
+      data-density={dataDensity}
       tabIndex={-1}
       onMouseDown={(event) => focusFromPointer(event.currentTarget)}
       onPointerEnter={(event) => {
@@ -2819,6 +2932,8 @@ function FeedPanelView({
   textScale,
   textScaleOverride,
   onTextScale,
+  density,
+  onDensity,
   ...frame
 }: {
   panel: FeedPanel;
@@ -2835,6 +2950,8 @@ function FeedPanelView({
   textScale: number;
   textScaleOverride: number | null;
   onTextScale: (direction: -1 | 0 | 1) => void;
+  density: FeedDensity;
+  onDensity: (mode: FeedDensity, asGlobalDefault: boolean) => void;
 } & StandardPanelActions) {
   const articleListRef = useRef<HTMLDivElement>(null);
   const hoverSeenTimerRef = useRef<{ id: string; handle: ReturnType<typeof setTimeout> } | null>(null);
@@ -2885,6 +3002,19 @@ function FeedPanelView({
         list.scrollTop = 0;
       } else {
         list.scrollTop = previous.scrollTop + Math.max(0, list.scrollHeight - previous.scrollHeight);
+        // L'insertion a eu lieu au-dessus du viewport : compter ces arrivées
+        // pour la pastille « nouveaux », en ne retenant que celles réellement
+        // rendues dans le filtre courant.
+        const renderedIds = new Set(items.map(({ id }) => id));
+        const arrivedAbove = [...ui.automaticInsertionIds].filter((id) => renderedIds.has(id));
+        if (arrivedAbove.length > 0) {
+          onUi({
+            automaticInsertionIds: new Set(),
+            automaticInsertionMetrics: null,
+            pendingArrivalIds: new Set([...ui.pendingArrivalIds, ...arrivedAbove]),
+          });
+          return;
+        }
       }
     }
     onUi({ automaticInsertionIds: new Set(), automaticInsertionMetrics: null });
@@ -2902,6 +3032,7 @@ function FeedPanelView({
           ? ({ "--feed-text-scale": String(textScaleOverride) } as React.CSSProperties)
           : undefined
       }
+      dataDensity={density}
       primaryActions={
         <>
           <IconButton
@@ -2947,7 +3078,9 @@ function FeedPanelView({
             data-panel-focus-key="feed-filter:all"
             className={activeSourceFilter === "all" ? "is-active" : ""}
             aria-pressed={activeSourceFilter === "all"}
-            onClick={() => onUi({ sourceFilter: "all", focusedItemId: null })}
+            onClick={() =>
+              onUi({ sourceFilter: "all", focusedItemId: null, pendingArrivalIds: new Set() })
+            }
           >
             Toutes <span>· {allCount}</span>
           </button>
@@ -2962,6 +3095,7 @@ function FeedPanelView({
               onUi({
                 visibilityFilter: ui.visibilityFilter === "unseen" ? "all" : "unseen",
                 focusedItemId: null,
+                pendingArrivalIds: new Set(),
               })
             }
           >
@@ -2984,12 +3118,36 @@ function FeedPanelView({
                       : "en retard"
               }`}
               title={source.errorMessage ?? source.name}
-              onClick={() => onUi({ sourceFilter: source.id, focusedItemId: null })}
+              onClick={() =>
+                onUi({ sourceFilter: source.id, focusedItemId: null, pendingArrivalIds: new Set() })
+              }
             >
               <i className={`source-dot source-dot--${source.status}`} />
               {source.name}
             </button>
           ))}
+        </div>
+        <div className="feed-toolbar__density" role="group" aria-label="Densité d’affichage">
+          <button
+            type="button"
+            data-panel-focus-key="feed-density:dense"
+            className={density === "dense" ? "is-active" : ""}
+            aria-pressed={density === "dense"}
+            title="Affichage dense — Alt+clic : défaut pour tous les fils"
+            onClick={(event) => onDensity("dense", event.altKey)}
+          >
+            Dense
+          </button>
+          <button
+            type="button"
+            data-panel-focus-key="feed-density:comfort"
+            className={density === "comfort" ? "is-active" : ""}
+            aria-pressed={density === "comfort"}
+            title="Affichage confort — Alt+clic : défaut pour tous les fils"
+            onClick={(event) => onDensity("comfort", event.altKey)}
+          >
+            Confort
+          </button>
         </div>
         {sources.length > 0 && <FeedRefreshStatus sources={sources} />}
         {ui.searchItemIds && searchQuery && (
@@ -3042,7 +3200,9 @@ function FeedPanelView({
             title="Tout est vu"
             body="Aucune publication non vue dans ce filtre."
             action="Tout afficher"
-            onAction={() => onUi({ visibilityFilter: "all", focusedItemId: null })}
+            onAction={() =>
+              onUi({ visibilityFilter: "all", focusedItemId: null, pendingArrivalIds: new Set() })
+            }
           />
         ) : items.length === 0 ? (
           <PanelEmpty
@@ -3053,12 +3213,31 @@ function FeedPanelView({
             onAction={() => void onRefresh()}
           />
         ) : (
+          <>
           <div
             className="article-list"
             ref={articleListRef}
             onPointerLeave={clearHoverSeenTimer}
+            onScroll={(event) => {
+              // Revenu en haut : les arrivées comptées sont visibles, la
+              // pastille n'a plus rien à signaler.
+              if (event.currentTarget.scrollTop <= 2 && ui.pendingArrivalIds.size > 0) {
+                onUi({ pendingArrivalIds: new Set() });
+              }
+            }}
           >
-            {items.map((item) => {
+            {(density === "dense"
+              ? withDaySeparators(items)
+              : items.map((item) => ({ kind: "item" as const, item }))
+            ).map((row) => {
+              if (row.kind === "separator") {
+                return (
+                  <div key={row.key} className="article-day-separator" aria-hidden="true">
+                    {row.label}
+                  </div>
+                );
+              }
+              const { item } = row;
               const source = state.sources.find(({ id }) => id === item.sourceId);
               const seen = item.seenAt !== null;
               const opened = item.openedAt !== null;
@@ -3110,12 +3289,26 @@ function FeedPanelView({
                   >
                     {formatItemTime(item)}
                   </time>
+                  <i
+                    className="article-identity"
+                    aria-hidden="true"
+                    style={{ "--source-hue": String(sourceHue(item.sourceId)) } as React.CSSProperties}
+                  />
                   <span className="article-copy">
                     <span className="article-meta">
-                      <span className="article-source">{source?.name ?? "Source"}</span>
+                      <span className="article-source">
+                        <span className="article-source__full">{source?.name ?? "Source"}</span>
+                        <span className="article-source__abbr" aria-hidden="true">
+                          {abbreviateSourceName(source?.name ?? "Source")}
+                        </span>
+                      </span>
                       {!seen && !opened && <em>Nouveau</em>}
-                      {seen && !opened && <em className="is-seen">✓ Vu</em>}
-                      {opened && <em className="is-opened">✓ Ouvert</em>}
+                      {seen && !opened && (
+                        <em className="is-seen">✓<span className="article-state-label"> Vu</span></em>
+                      )}
+                      {opened && (
+                        <em className="is-opened">✓<span className="article-state-label"> Ouvert</span></em>
+                      )}
                     </span>
                     <strong>{item.title}</strong>
                     {item.summary && <span className="article-summary">{item.summary}</span>}
@@ -3125,6 +3318,28 @@ function FeedPanelView({
               );
             })}
           </div>
+          {ui.pendingArrivalIds.size > 0 && (
+            <button
+              type="button"
+              className="arrivals-pill"
+              data-panel-focus-key="feed-arrivals-pill"
+              aria-label={`${ui.pendingArrivalIds.size} ${
+                ui.pendingArrivalIds.size > 1 ? "nouveaux articles" : "nouvel article"
+              } au-dessus — afficher`}
+              onClick={() => {
+                const list = articleListRef.current;
+                if (!list) return;
+                list.querySelector<HTMLElement>(".article-row")?.focus({ preventScroll: true });
+                const firstChild = list.firstElementChild;
+                if (firstChild instanceof HTMLElement) smoothScrollIntoView(list, firstChild);
+                onUi({ pendingArrivalIds: new Set() });
+              }}
+            >
+              ▲ {ui.pendingArrivalIds.size}{" "}
+              {ui.pendingArrivalIds.size > 1 ? "nouveaux" : "nouveau"} · Afficher
+            </button>
+          )}
+          </>
         )}
       </div>
     </PanelFrame>
