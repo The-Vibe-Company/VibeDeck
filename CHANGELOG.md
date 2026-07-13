@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.6.0...v0.7.0) (2026-07-13)
+
+
+### Features
+
+* **fils:** mode dense par défaut et pastille « nouveaux » ([#27](https://github.com/The-Vibe-Company/VibeDeck/issues/27)) ([4fc9a4e](https://github.com/The-Vibe-Company/VibeDeck/commit/4fc9a4e51e4694c603e65e1c9ebe376aee6ead47))
+
 ## [0.6.0](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.5.0...v0.6.0) (2026-07-11)
 
 
