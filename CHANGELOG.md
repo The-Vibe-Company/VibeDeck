@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.7.1...v0.7.2) (2026-07-15)
+
+
+### Bug Fixes
+
+* **ci:** stabiliser le focus du test pilote macOS ([#31](https://github.com/The-Vibe-Company/VibeDeck/issues/31)) ([6805826](https://github.com/The-Vibe-Company/VibeDeck/commit/68058265b0de3c6860076c788d813467bed3aab3))
+
 ## [0.7.1](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.7.0...v0.7.1) (2026-07-15)
 
 
