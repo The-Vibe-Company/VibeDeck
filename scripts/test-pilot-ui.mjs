@@ -78,6 +78,64 @@ async function waitForLocalCondition(predicate, label, timeoutMs = 5_000) {
   }
 }
 
+async function nativeWebViewSnapshots(electronApp, expectedUrl) {
+  return electronApp.evaluate(async ({ BrowserWindow }, url) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    if (!window) throw new Error("La fenêtre pilote est introuvable.");
+    const views = window.contentView.children.filter(
+      (view) => "webContents" in view && view.webContents.getURL() === url,
+    );
+    return Promise.all(views.map(async (view) => ({
+        id: view.webContents.id,
+        url: view.webContents.getURL(),
+        visible: view.getVisible(),
+        stateProbe: await view.webContents.executeJavaScript(
+          "globalThis.__vibedeckPilotModalState ?? null",
+        ),
+        navigationStarts:
+          view.webContents.__vibedeckPilotModalNavigationProbe?.starts ?? null,
+      })));
+  }, expectedUrl);
+}
+
+async function setNativeWebViewStateProbe(electronApp, expectedUrl, stateProbe) {
+  await electronApp.evaluate(async ({ BrowserWindow }, { url, probe }) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    if (!window) throw new Error("La fenêtre pilote est introuvable.");
+    const views = window.contentView.children.filter(
+      (view) => "webContents" in view && view.webContents.getURL() === url,
+    );
+    if (views.length !== 1) {
+      throw new Error(`Une vue web était attendue, ${views.length} trouvée(s).`);
+    }
+    const contents = views[0].webContents;
+    const previousProbe = contents.__vibedeckPilotModalNavigationProbe;
+    if (previousProbe) contents.off("did-start-navigation", previousProbe.listener);
+    const navigationProbe = {
+      starts: 0,
+      listener: (_event, _url, _isInPlace, isMainFrame) => {
+        if (isMainFrame !== false) navigationProbe.starts += 1;
+      },
+    };
+    contents.__vibedeckPilotModalNavigationProbe = navigationProbe;
+    contents.on("did-start-navigation", navigationProbe.listener);
+    await contents.executeJavaScript(
+      `globalThis.__vibedeckPilotModalState = ${JSON.stringify(probe)}`,
+    );
+  }, { url: expectedUrl, probe: stateProbe });
+}
+
+async function waitForNativeWebView(electronApp, expectedUrl, visible, label, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  let snapshots = [];
+  do {
+    snapshots = await nativeWebViewSnapshots(electronApp, expectedUrl);
+    if (snapshots.length === 1 && snapshots[0].visible === visible) return snapshots[0];
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  } while (Date.now() < deadline);
+  throw new Error(`Délai dépassé : ${label}. Vues observées : ${JSON.stringify(snapshots)}`);
+}
+
 async function waitForDomFocus(page, locator, label, timeoutMs = 5_000) {
   const handle = await locator.elementHandle();
   assert.ok(handle, `${label} : élément introuvable.`);
@@ -917,6 +975,68 @@ try {
   assert.ok(previewWebPanelId, "La preview doit être confirmée depuis son URL main-owned.");
   const previewWebLeaf = page.locator(
     `.split-layout__leaf[data-panel-id="${previewWebPanelId}"]`,
+  );
+  await waitForNativeWebView(
+    electronApp,
+    previewUrl,
+    true,
+    "le panel web du layout splitté doit être visible avant la modale",
+  );
+  const expectedWebStateProbe = "état de page conservé pendant la modale";
+  await setNativeWebViewStateProbe(electronApp, previewUrl, expectedWebStateProbe);
+  const visibleWebView = await waitForNativeWebView(
+    electronApp,
+    previewUrl,
+    true,
+    "le marqueur d’état doit être lisible avant la modale",
+  );
+  assert.equal(visibleWebView.stateProbe, expectedWebStateProbe);
+  assert.equal(visibleWebView.navigationStarts, 0);
+  await publishUpdateState("ready", { availableVersion: "0.4.2" });
+  const splitUpdateCta = page.getByRole(
+    "button",
+    { name: "Mise à jour 0.4.2 prête", exact: true },
+  );
+  await splitUpdateCta.click();
+  const splitUpdateDialog = page.getByRole(
+    "alertdialog",
+    { name: "Installer VibeDeck 0.4.2 ?" },
+  );
+  await splitUpdateDialog.waitFor();
+  const hiddenWebView = await waitForNativeWebView(
+    electronApp,
+    previewUrl,
+    false,
+    "la confirmation de mise à jour doit masquer la vue web native",
+  );
+  assert.deepEqual(
+    {
+      id: hiddenWebView.id,
+      url: hiddenWebView.url,
+      stateProbe: hiddenWebView.stateProbe,
+      navigationStarts: hiddenWebView.navigationStarts,
+    },
+    {
+      id: visibleWebView.id,
+      url: visibleWebView.url,
+      stateProbe: visibleWebView.stateProbe,
+      navigationStarts: visibleWebView.navigationStarts,
+    },
+    "Masquer la vue web ne doit ni la recréer, ni la faire naviguer, ni perdre son état.",
+  );
+  await page.keyboard.press("Escape");
+  await splitUpdateDialog.waitFor({ state: "detached" });
+  await page.waitForTimeout(200);
+  const restoredWebView = await waitForNativeWebView(
+    electronApp,
+    previewUrl,
+    true,
+    "fermer la confirmation doit restaurer la vue web native",
+  );
+  assert.deepEqual(
+    restoredWebView,
+    visibleWebView,
+    "La vue web restaurée doit conserver son identité, son URL et sa visibilité.",
   );
   await previewWebLeaf.getByLabel("Fermer le panel").click();
   const closePreviewDialog = page.getByRole("alertdialog", { name: /Fermer/ });
