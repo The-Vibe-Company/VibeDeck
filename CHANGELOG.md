@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.5](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.7.4...v0.7.5) (2026-07-15)
+
+
+### Bug Fixes
+
+* **search:** autoriser le CDN Xet du modèle local ([#39](https://github.com/The-Vibe-Company/VibeDeck/issues/39)) ([084e74e](https://github.com/The-Vibe-Company/VibeDeck/commit/084e74ef470ed7ccd938bf14ba26477a03da6f85))
+* **veille:** rétablir l’ordre chronologique des articles ([#37](https://github.com/The-Vibe-Company/VibeDeck/issues/37)) ([1607bbe](https://github.com/The-Vibe-Company/VibeDeck/commit/1607bbe1d7e10288df2bd6b4f42caf6211f2858a))
+
 ## [0.7.4](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.7.3...v0.7.4) (2026-07-15)
 
 
