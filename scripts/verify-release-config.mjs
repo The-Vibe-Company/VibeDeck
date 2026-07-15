@@ -312,7 +312,11 @@ assert.ok(
   "Workflow Release Please manquant",
 );
 assert.equal(releasePleaseManifest["."], packageJson.version, "Manifest Release Please désynchronisé");
-assert.equal(releasePleaseConfig.draft, false, "Release Please doit créer une release publiée");
+assert.equal(
+  releasePleaseConfig.draft,
+  true,
+  "Release Please doit garder la release non publique jusqu’à la validation signée",
+);
 assert.equal(
   releasePleaseConfig["force-tag-creation"],
   true,
@@ -403,8 +407,8 @@ assert.match(
 );
 assert.match(
   releaseWorkflow,
-  /validate:\s*\n\s*runs-on: ubuntu-latest\s*\n\s*permissions:\s*\n(?:\s*#[^\n]*\n)*\s*contents: write/,
-  "Le job de validation doit pouvoir retirer latest avant les artefacts signés",
+  /validate:\s*\n\s*runs-on: ubuntu-latest\s*\n\s*permissions:\s*\n\s*contents: read/,
+  "Le job de validation ne doit disposer que d’un accès en lecture",
 );
 assert.match(
   releaseWorkflow,
@@ -426,15 +430,25 @@ assert.equal(
   2,
   "Chaque plateforme doit produire ses artefacts sans publication directe",
 );
-assert.match(
+assert.doesNotMatch(
   releaseWorkflow,
   /make_latest=false/,
-  "La release publiée ne doit pas rester latest avant les artefacts signés",
+  "Le workflow ne doit pas tenter de rétrograder une release déjà publiée",
+);
+assert.match(
+  releaseWorkflow,
+  /test "\$release_is_draft" = true/,
+  "La release doit rester non publiée pendant les builds signés",
+);
+assert.match(
+  releaseWorkflow,
+  /test "\$\(gh release view "\$RELEASE_TAG" --json isDraft --jq \.isDraft\)" = true[\s\S]*gh release upload[\s\S]*gh release edit "\$RELEASE_TAG" --draft=false --latest/,
+  "Les artefacts doivent être validés et uploadés avant l’unique publication finale",
 );
 assert.match(
   releaseWorkflow,
   /gh release edit "\$RELEASE_TAG" --draft=false --latest/,
-  "La release doit redevenir latest après validation finale",
+  "La release doit devenir latest après validation finale",
 );
 assert.match(
   releaseWorkflow,
