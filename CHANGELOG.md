@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.7.0...v0.7.1) (2026-07-15)
+
+
+### Bug Fixes
+
+* **veille:** interclasser les sources des rattrapages ([#29](https://github.com/The-Vibe-Company/VibeDeck/issues/29)) ([5800f36](https://github.com/The-Vibe-Company/VibeDeck/commit/5800f3657aa6c1102c354fd92e8b0b3159e59812))
+
 ## [0.7.0](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.6.0...v0.7.0) (2026-07-13)
 
 
