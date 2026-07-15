@@ -25,19 +25,19 @@ function newestTimestampFirst(first: number, second: number) {
 }
 
 /**
- * Keep genuine post-baseline arrivals at the head of the monitoring stream.
- * Within the baseline, use the publication chronology so sources loaded a few
- * milliseconds apart are genuinely interleaved instead of appearing in blocks.
+ * Keep genuine post-baseline arrival batches at the head of the monitoring
+ * stream. Sources refreshed together share a batch and are interleaved by
+ * publication chronology instead of appearing in completion-order blocks.
  */
 export function compareFeedItems(first: FeedItem, second: FeedItem) {
   if (first.isBaseline !== second.isBaseline) return first.isBaseline ? 1 : -1;
 
   if (!first.isBaseline) {
-    const detectionOrder = newestTimestampFirst(
-      firstTimestamp(first.observedAt, first.firstSeenAt),
-      firstTimestamp(second.observedAt, second.firstSeenAt),
+    const batchOrder = newestTimestampFirst(
+      firstTimestamp(first.arrivalBatchAt, first.observedAt, first.firstSeenAt),
+      firstTimestamp(second.arrivalBatchAt, second.observedAt, second.firstSeenAt),
     );
-    if (detectionOrder !== 0) return detectionOrder;
+    if (batchOrder !== 0) return batchOrder;
   }
 
   const chronologyOrder = newestTimestampFirst(

@@ -1371,10 +1371,7 @@ export default function App() {
       .filter((source): source is Source => Boolean(source));
     if (sources.length === 0) return;
     try {
-      await Promise.all(
-        sources.map((source) => window.vibedeck.refreshSource(source.id)),
-      );
-      const nextState = await window.vibedeck.getState();
+      const nextState = await window.vibedeck.refreshPanel(panel.id);
       const failedCount = nextState.sources.filter(
         (source) => panel.sourceIds.includes(source.id) && source.status === "error",
       ).length;
@@ -1723,6 +1720,13 @@ export default function App() {
 
       if (event.key.toLowerCase() === "r") {
         event.preventDefault();
+        if (
+          panel.sourceIds.some(
+            (sourceId) => sourceById.get(sourceId)?.status === "refreshing",
+          )
+        ) {
+          return;
+        }
         void refreshFeedPanel(panel);
         return;
       }
@@ -3209,8 +3213,8 @@ function FeedPanelView({
             icon={refreshing ? <LoaderCircle className="is-spinning" size={20} /> : <Rss size={20} />}
             title={refreshing ? "Récupération des actualités…" : "Aucune publication"}
             body="Les nouvelles publications apparaîtront ici automatiquement."
-            action="Actualiser"
-            onAction={() => void onRefresh()}
+            action={refreshing ? undefined : "Actualiser"}
+            onAction={refreshing ? undefined : () => void onRefresh()}
           />
         ) : (
           <>
@@ -4408,17 +4412,19 @@ function PanelEmpty({
   icon: React.ReactNode;
   title: string;
   body: string;
-  action: string;
-  onAction: () => void;
+  action?: string;
+  onAction?: () => void;
 }) {
   return (
     <div className="panel-empty">
       {icon}
       <strong>{title}</strong>
       <span>{body}</span>
-      <button type="button" onClick={onAction}>
-        {action}
-      </button>
+      {action && onAction ? (
+        <button type="button" onClick={onAction}>
+          {action}
+        </button>
+      ) : null}
     </div>
   );
 }

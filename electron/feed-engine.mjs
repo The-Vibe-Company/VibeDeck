@@ -1109,6 +1109,12 @@ export class FeedEngine {
     this.activeRefreshTasks = new Set();
     this.activeRefreshCount = 0;
     this.activeRefreshesByHost = new Map();
+    const latestArrivalBatchTimestamp = Date.parse(
+      this.database.getLatestArrivalBatchAt() ?? "",
+    );
+    this.lastArrivalBatchTimestamp = Number.isFinite(latestArrivalBatchTimestamp)
+      ? latestArrivalBatchTimestamp
+      : Number.NEGATIVE_INFINITY;
     this.feedConfigurationSaveActive = false;
     this.activeStandaloneFeedConfigurationMutations = 0;
     this.closed = false;
@@ -1123,6 +1129,15 @@ export class FeedEngine {
 
   #nowIso() {
     return this.#nowDate().toISOString();
+  }
+
+  createArrivalBatchAt() {
+    const timestamp = Math.max(
+      this.#nowDate().valueOf(),
+      this.lastArrivalBatchTimestamp + 1,
+    );
+    this.lastArrivalBatchTimestamp = timestamp;
+    return new Date(timestamp).toISOString();
   }
 
   #assertFeedConfigurationMutationIdle() {
@@ -1408,7 +1423,7 @@ export class FeedEngine {
     this.#abortNetworkRequests();
   }
 
-  #enqueueRefresh(sourceId, { force = false } = {}) {
+  #enqueueRefresh(sourceId, { force = false, arrivalBatchAt = null } = {}) {
     if (this.closed) {
       return Promise.reject(new RefreshCancelledError("Le moteur de veille est fermé."));
     }
@@ -1431,6 +1446,7 @@ export class FeedEngine {
       sourceId,
       hostname,
       force: Boolean(force),
+      arrivalBatchAt: arrivalBatchAt ?? this.createArrivalBatchAt(),
       state: "pending",
       promise,
       resolve,
@@ -1465,7 +1481,10 @@ export class FeedEngine {
 
   async #runRefreshTask(task) {
     try {
-      await this.#refreshOne(task.sourceId, { respectBackoff: !task.force });
+      await this.#refreshOne(task.sourceId, {
+        respectBackoff: !task.force,
+        arrivalBatchAt: task.arrivalBatchAt,
+      });
       if (this.closed) throw new RefreshCancelledError("Le moteur de veille est fermé.");
       task.resolve(this.getState());
     } catch (error) {
@@ -2041,11 +2060,15 @@ export class FeedEngine {
     });
   }
 
-  async #refreshOne(sourceId, { respectBackoff = true } = {}) {
+  async #refreshOne(
+    sourceId,
+    { respectBackoff = true, arrivalBatchAt = null } = {},
+  ) {
     if (this.closed) throw new RefreshCancelledError("Le moteur de veille est fermé.");
     const source = this.database.getSource(sourceId);
     if (!source) throw new Error("Source introuvable.");
     const startedAt = this.#nowIso();
+    const batchAt = arrivalBatchAt ?? startedAt;
     if (
       respectBackoff &&
       source.nextRetryAt &&
@@ -2070,6 +2093,7 @@ export class FeedEngine {
         sourceId,
         this.#materializeItems(sourceId, parsed.items, seenAt),
         seenAt,
+        batchAt,
       );
       this.database.setSourceStatus(
         sourceId,
@@ -2121,16 +2145,52 @@ export class FeedEngine {
     }
   }
 
-  refreshSource(sourceId, { force = false } = {}) {
-    return this.#enqueueRefresh(sourceId, { force });
+  refreshSource(sourceId, { force = false, arrivalBatchAt = null } = {}) {
+    return this.#enqueueRefresh(sourceId, { force, arrivalBatchAt });
   }
 
-  async refreshAll() {
+  async #refreshBatch(
+    sourceIds,
+    { force = false, arrivalBatchAt = null } = {},
+  ) {
     if (this.closed) throw new RefreshCancelledError("Le moteur de veille est fermé.");
-    const sourceIds = this.database.listSources({ attachedOnly: true }).map(({ id }) => id);
-    await Promise.all(sourceIds.map((sourceId) => this.#enqueueRefresh(sourceId)));
+    const batchAt = arrivalBatchAt ?? this.createArrivalBatchAt();
+    await Promise.all(
+      sourceIds.map((sourceId) =>
+        this.#enqueueRefresh(sourceId, { force, arrivalBatchAt: batchAt })),
+    );
     if (this.closed) throw new RefreshCancelledError("Le moteur de veille est fermé.");
     return this.getState();
+  }
+
+  refreshPanel(panelId, { force = false } = {}) {
+    const sourceIds = this.database.listPanelSourceIds(panelId);
+    if (sourceIds.some((sourceId) => this.refreshTasks.has(sourceId))) {
+      return Promise.reject(new Error("Une actualisation de ce panel est déjà en cours."));
+    }
+    return this.#refreshBatch(sourceIds, { force });
+  }
+
+  refreshSources(sourceIds, { arrivalBatchAt = null } = {}) {
+    const activeBatches = new Set(
+      sourceIds
+        .map((sourceId) => this.refreshTasks.get(sourceId)?.arrivalBatchAt)
+        .filter(Boolean),
+    );
+    if (activeBatches.size > 1) {
+      return Promise.reject(
+        new Error("Plusieurs cycles d’actualisation sont déjà en cours."),
+      );
+    }
+    return this.#refreshBatch(sourceIds, {
+      arrivalBatchAt:
+        activeBatches.values().next().value ?? arrivalBatchAt,
+    });
+  }
+
+  refreshAll() {
+    const sourceIds = this.database.listSources({ attachedOnly: true }).map(({ id }) => id);
+    return this.refreshSources(sourceIds);
   }
 }
 

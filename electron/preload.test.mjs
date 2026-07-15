@@ -144,6 +144,15 @@ test("saves a feed configuration through one main-owned IPC operation", async ()
   assert.equal(api.releaseFeedPanelConfigurationCheckpoint, undefined);
 });
 
+test("refreshes a complete feed panel through one main-owned IPC operation", async () => {
+  const { api, calls } = await loadPreloadApi();
+
+  await api.refreshPanel("panel-1");
+  assert.deepEqual(calls, [
+    ["aggregator:refresh-panel", "panel-1"],
+  ]);
+});
+
 test("clearWebData always requests a full profile clear without exposing a raw scope", async () => {
   const { api, calls } = await loadPreloadApi();
 

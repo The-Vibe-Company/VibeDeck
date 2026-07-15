@@ -874,6 +874,13 @@ function registerIpcHandlers() {
     broadcastState(state, { syncSemantic: true });
     return state;
   }));
+  registerHandle("aggregator:refresh-panel", (_event, panelId) => runEngineOperation(async () => {
+    const refresh = engine.refreshPanel(cleanId(panelId), { force: true });
+    broadcastState();
+    const state = await refresh;
+    broadcastState(state, { syncSemantic: true });
+    return state;
+  }));
   registerHandle("aggregator:refresh-all", () => runEngineOperation(async () => {
     const refresh = engine.refreshAll();
     broadcastState();
@@ -1428,7 +1435,8 @@ if (!hasSingleInstanceLock) {
     lastRendererState = engine.getState();
     refreshScheduler = createRefreshScheduler({
       getSources: () => engine.getState().sources,
-      refreshSource: (sourceId) => engine.refreshSource(sourceId),
+      refreshSources: (sourceIds, options) => engine.refreshSources(sourceIds, options),
+      createArrivalBatchAt: () => engine.createArrivalBatchAt(),
       onStateChange: () => broadcastState(undefined, { syncSemantic: true }),
     });
     updateController = createUpdateController({
