@@ -18,6 +18,9 @@ const releaseWorkflow = readFileSync(
   path.join(root, ".github/workflows/pilot-release.yml"),
   "utf8",
 );
+const releaseValidationJob = releaseWorkflow.match(
+  /\n  validate:[\s\S]*?(?=\n  macos:)/,
+)?.[0] ?? "";
 const releasePleaseWorkflow = readFileSync(
   path.join(root, ".github/workflows/release-please.yml"),
   "utf8",
@@ -407,8 +410,14 @@ assert.match(
 );
 assert.match(
   releaseWorkflow,
-  /validate:\s*\n\s*runs-on: ubuntu-latest\s*\n\s*permissions:\s*\n\s*contents: read/,
-  "Le job de validation ne doit disposer que d’un accès en lecture",
+  /validate:\s*\n\s*runs-on: ubuntu-latest\s*\n\s*permissions:\s*\n(?:\s*#[^\n]*\n)*\s*contents: write/,
+  "Le job de validation doit pouvoir inspecter une release non publique",
+);
+assert.ok(releaseValidationJob, "Le job de validation signé est introuvable");
+assert.doesNotMatch(
+  releaseValidationJob,
+  /gh (?:api\s+-X|release\s+(?:delete|edit|upload))\b/,
+  "Le job de validation ne doit jamais modifier une release",
 );
 assert.match(
   releaseWorkflow,

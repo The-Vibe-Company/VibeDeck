@@ -21,7 +21,9 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # GitHub masque les releases draft aux jetons sans accès en écriture.
+      # Ce job inspecte uniquement leur identité ; seul publish les modifie.
+      contents: write
     outputs:
       tag: ${{ steps.release.outputs.tag }}
       sha: ${{ steps.release.outputs.sha }}
