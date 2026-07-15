@@ -1,0 +1,23 @@
+electron/semantic-search.mjs
+  s_b1af4b392845ec::t_1b42f4a991309f 24-28
+electron/semantic-search.test.mjs
+  s_b1af4b392845ec::t_1b42f4a991309f 69-82
+electron/semantic-model-download.test.mjs
+  s_b1af4b392845ec::t_1b42f4a991309f 16,79,94,99,101,152,156,164-165,173,184
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "e2fdcc06b298df6c7df47f1c8e065df68fca046f",
+  "prompts": {},
+  "sessions": {
+    "s_b1af4b392845ec": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6602-aadf-7ac3-9f51-3fe6ad26d755",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
