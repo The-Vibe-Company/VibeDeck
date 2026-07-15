@@ -283,11 +283,29 @@ try {
   });
   assert.equal(await updateCta.count(), 0, "Le téléchargement reste silencieux.");
 
-  await page.getByRole("button", { name: "Outils" }).click();
+  const toolsButton = page.getByRole("button", { name: "Outils" });
+  await toolsButton.click();
   const toolsDialog = page.getByRole("dialog", { name: "Outils du poste" });
   await toolsDialog.getByRole("progressbar", { name: "Téléchargement de la version 0.4.0" }).waitFor();
   await toolsDialog.locator("footer").getByRole("button", { name: "Fermer" }).click();
   await toolsDialog.waitFor({ state: "detached" });
+  const toolsButtonHandle = await toolsButton.elementHandle();
+  assert.ok(toolsButtonHandle, "Le bouton Outils est introuvable après la fermeture.");
+  try {
+    const focusWait = await page.waitForFunction(
+      (button) => document.activeElement === button,
+      toolsButtonHandle,
+      { polling: "raf", timeout: 5_000 },
+    );
+    await focusWait.dispose();
+  } finally {
+    await toolsButtonHandle.dispose();
+  }
+  assert.equal(
+    await toolsButton.evaluate((button) => document.activeElement === button),
+    true,
+    "La fermeture des outils doit restaurer le focus avant l’action clavier suivante.",
+  );
 
   await publishUpdateState("ready", { availableVersion: "0.4.0" });
   await updateCta.waitFor();
