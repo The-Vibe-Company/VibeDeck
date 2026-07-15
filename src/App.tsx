@@ -448,6 +448,11 @@ export default function App() {
     : null;
   const updateNoticeDeferred = readyUpdateVersion !== null && dismissedUpdateVersion === readyUpdateVersion;
   const updateNoticeVisible = readyUpdateVersion !== null && !updateNoticeDeferred;
+  const nativeWebSurfacesBlocked =
+    Boolean(modal) ||
+    semanticSearchOpen ||
+    updateInstallConfirmationOpen ||
+    interactionActive;
 
   useEffect(() => {
     if (updateInstallConfirmationOpen && !readyUpdateVersion) {
@@ -941,9 +946,7 @@ export default function App() {
         );
         const canDisplay =
           Boolean(surface) &&
-          !modal &&
-          !semanticSearchOpen &&
-          !interactionActive &&
+          !nativeWebSurfacesBlocked &&
           !linkPreview &&
           !failedPanelIds.has(panel.id);
         const rect = surface?.getBoundingClientRect();
@@ -970,9 +973,7 @@ export default function App() {
           : { x: 0, y: 0, width: 0, height: 0 },
         visible:
           Boolean(surface) &&
-          !modal &&
-          !semanticSearchOpen &&
-          !interactionActive &&
+          !nativeWebSurfacesBlocked &&
           !linkPreview &&
           !failedPanelIds.has(preview.previewId),
       });
@@ -991,19 +992,15 @@ export default function App() {
           : { x: 0, y: 0, width: 0, height: 0 },
         visible:
           Boolean(surface) &&
-          !modal &&
-          !semanticSearchOpen &&
-          !interactionActive &&
+          !nativeWebSurfacesBlocked &&
           !failedPanelIds.has(LINK_READER_ID),
       });
     }
     window.vibedeck.syncWebPanels(descriptors);
   }, [
     failedWebPanelKey,
-    interactionActive,
     linkPreview,
-    modal,
-    semanticSearchOpen,
+    nativeWebSurfacesBlocked,
     state,
     webPreviewDrafts,
   ]);
