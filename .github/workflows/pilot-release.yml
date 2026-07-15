@@ -21,9 +21,7 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     permissions:
-      # La release est publiée par Release Please, mais elle ne doit pas devenir latest
-      # avant que les artefacts signés aient été validés et attachés.
-      contents: write
+      contents: read
     outputs:
       tag: ${{ steps.release.outputs.tag }}
       sha: ${{ steps.release.outputs.sha }}
@@ -53,9 +51,7 @@ jobs:
             fi
             sleep 5
           done
-          test "$release_is_draft" = false
-          release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$RELEASE_TAG" --jq .id)"
-          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/$release_id" -f make_latest=false >/dev/null
+          test "$release_is_draft" = true
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
@@ -230,7 +226,7 @@ jobs:
             test ! -e release/latest.yml
             test "$(find release -maxdepth 1 -type f -name '*.blockmap' | wc -l | tr -d ' ')" = 2
           fi
-          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = false
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
           npm run checksums:release
           npm run verify:checksums
           mapfile -t expected_artifact_paths < <(find release -maxdepth 1 -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' -o -name '*.blockmap' -o -name 'latest.yml' -o -name 'latest-mac.yml' -o -name 'SHA256SUMS.txt' \) | sort)

@@ -77,6 +77,61 @@ async function waitForLocalCondition(predicate, label, timeoutMs = 5_000) {
   }
 }
 
+async function waitForDomFocus(page, locator, label, timeoutMs = 5_000) {
+  const handle = await locator.elementHandle();
+  assert.ok(handle, `${label} : élément introuvable.`);
+  try {
+    const wait = await page.waitForFunction(
+      (element) => document.activeElement === element,
+      handle,
+      { polling: "raf", timeout: timeoutMs },
+    );
+    await wait.dispose();
+  } catch (error) {
+    throw new Error(`Délai dépassé : ${label}.`, { cause: error });
+  } finally {
+    await handle.dispose();
+  }
+}
+
+async function waitForEnabled(page, locator, label, timeoutMs = 5_000) {
+  const handle = await locator.elementHandle();
+  assert.ok(handle, `${label} : élément introuvable.`);
+  try {
+    const wait = await page.waitForFunction(
+      (element) =>
+        element instanceof HTMLButtonElement &&
+        !element.disabled &&
+        element.getAttribute("aria-disabled") !== "true",
+      handle,
+      { polling: "raf", timeout: timeoutMs },
+    );
+    await wait.dispose();
+  } catch (error) {
+    throw new Error(`Délai dépassé : ${label}.`, { cause: error });
+  } finally {
+    await handle.dispose();
+  }
+}
+
+async function waitForInputValue(page, locator, expectedValue, label, timeoutMs = 5_000) {
+  const handle = await locator.elementHandle();
+  assert.ok(handle, `${label} : champ introuvable.`);
+  try {
+    const wait = await page.waitForFunction(
+      ({ element, value }) =>
+        element instanceof HTMLInputElement && element.value === value,
+      { element: handle, value: expectedValue },
+      { polling: "raf", timeout: timeoutMs },
+    );
+    await wait.dispose();
+  } catch (error) {
+    throw new Error(`Délai dépassé : ${label}.`, { cause: error });
+  } finally {
+    await handle.dispose();
+  }
+}
+
 async function hoverRow(row) {
   await row.hover();
   await row.dispatchEvent("pointermove", { pointerType: "mouse" });
@@ -289,18 +344,11 @@ try {
   await toolsDialog.getByRole("progressbar", { name: "Téléchargement de la version 0.4.0" }).waitFor();
   await toolsDialog.locator("footer").getByRole("button", { name: "Fermer" }).click();
   await toolsDialog.waitFor({ state: "detached" });
-  const toolsButtonHandle = await toolsButton.elementHandle();
-  assert.ok(toolsButtonHandle, "Le bouton Outils est introuvable après la fermeture.");
-  try {
-    const focusWait = await page.waitForFunction(
-      (button) => document.activeElement === button,
-      toolsButtonHandle,
-      { polling: "raf", timeout: 5_000 },
-    );
-    await focusWait.dispose();
-  } finally {
-    await toolsButtonHandle.dispose();
-  }
+  await waitForDomFocus(
+    page,
+    toolsButton,
+    "la fermeture des outils doit restaurer le focus avant l’action clavier suivante",
+  );
   assert.equal(
     await toolsButton.evaluate((button) => document.activeElement === button),
     true,
@@ -314,15 +362,7 @@ try {
   const updateDialog = page.getByRole("alertdialog", { name: "Installer VibeDeck 0.4.0 ?" });
   await updateDialog.waitFor();
   const laterButton = updateDialog.getByRole("button", { name: "Plus tard" });
-  await laterButton.evaluate(
-    (button) => new Promise((resolve) => {
-      const waitForFocus = () => {
-        if (document.activeElement === button) resolve(undefined);
-        else window.requestAnimationFrame(waitForFocus);
-      };
-      waitForFocus();
-    }),
-  );
+  await waitForDomFocus(page, laterButton, "le report doit recevoir le focus initial");
   assert.equal(
     await laterButton.evaluate((button) => document.activeElement === button),
     true,
@@ -330,15 +370,7 @@ try {
   );
   await page.keyboard.press("Escape");
   await updateDialog.waitFor({ state: "detached" });
-  await updateCta.evaluate(
-    (button) => new Promise((resolve) => {
-      const waitForFocus = () => {
-        if (document.activeElement === button) resolve(undefined);
-        else window.requestAnimationFrame(waitForFocus);
-      };
-      waitForFocus();
-    }),
-  );
+  await waitForDomFocus(page, updateCta, "la fermeture doit restaurer le focus du CTA");
   assert.equal(
     await updateCta.evaluate((button) => document.activeElement === button),
     true,
@@ -351,14 +383,10 @@ try {
   await updateCta.waitFor({ state: "detached" });
   assert.equal(await updateCta.count(), 0, "Le report masque seulement le CTA de cette version.");
   const deferredTools = page.getByRole("button", { name: "Outils — mise à jour 0.4.0 prête" });
-  await deferredTools.evaluate(
-    (button) => new Promise((resolve) => {
-      const waitForFocus = () => {
-        if (document.activeElement === button) resolve(undefined);
-        else window.requestAnimationFrame(waitForFocus);
-      };
-      waitForFocus();
-    }),
+  await waitForDomFocus(
+    page,
+    deferredTools,
+    "le report de la mise à jour doit rendre le focus aux outils",
   );
   await deferredTools.click();
   await toolsDialog.getByRole("button", { name: "Installer" }).waitFor();
@@ -374,26 +402,18 @@ try {
   const nextUpdateDialog = page.getByRole("alertdialog", { name: "Installer VibeDeck 0.4.1 ?" });
   await nextUpdateDialog.waitFor();
   await toolsDialog.waitFor({ state: "detached" });
-  await nextUpdateDialog.getByRole("button", { name: "Plus tard" }).evaluate(
-    (button) => new Promise((resolve) => {
-      const waitForFocus = () => {
-        if (document.activeElement === button) resolve(undefined);
-        else window.requestAnimationFrame(waitForFocus);
-      };
-      waitForFocus();
-    }),
+  await waitForDomFocus(
+    page,
+    nextUpdateDialog.getByRole("button", { name: "Plus tard" }),
+    "la confirmation ouverte depuis les outils doit recevoir son focus initial",
   );
   await page.keyboard.press("Escape");
   await nextUpdateDialog.waitFor({ state: "detached" });
   await toolsDialog.waitFor({ state: "visible" });
-  await installFromTools.evaluate(
-    (button) => new Promise((resolve) => {
-      const waitForFocus = () => {
-        if (document.activeElement === button) resolve(undefined);
-        else window.requestAnimationFrame(waitForFocus);
-      };
-      waitForFocus();
-    }),
+  await waitForDomFocus(
+    page,
+    installFromTools,
+    "la confirmation ouverte depuis les outils doit restaurer son focus",
   );
   assert.equal(
     await installFromTools.evaluate((button) => document.activeElement === button),
@@ -735,6 +755,11 @@ try {
   await draftLeaf.waitFor({ state: "visible" });
   await draftLeaf.getByRole("button", { name: /Fil agrégé/ }).click();
   const draftFeedName = draftLeaf.getByLabel("Nom du fil");
+  await waitForDomFocus(
+    page,
+    draftFeedName,
+    "entrer dans le constructeur de Fil doit focaliser son premier champ",
+  );
   assert.equal(
     await draftFeedName.evaluate((input) => document.activeElement === input),
     true,
@@ -869,8 +894,28 @@ try {
   const webDraftLeaf = page.locator('.split-layout__leaf[data-panel-id^="draft:"]');
   await webDraftLeaf.waitFor({ state: "visible" });
   await webDraftLeaf.getByRole("button", { name: /Page web/ }).click();
-  await webDraftLeaf.getByLabel("URL de la page web").fill(`${origin}/preview.html`);
-  await webDraftLeaf.getByRole("button", { name: "Prévisualiser" }).click();
+  const webNameInput = webDraftLeaf.getByLabel("Nom du panel web");
+  await waitForDomFocus(
+    page,
+    webNameInput,
+    "entrer dans le constructeur de page web doit focaliser son premier champ",
+  );
+  const previewUrl = `${origin}/preview.html`;
+  const webUrlInput = webDraftLeaf.getByLabel("URL de la page web");
+  const previewButton = webDraftLeaf.getByRole("button", { name: "Prévisualiser" });
+  await webUrlInput.fill(previewUrl);
+  await waitForInputValue(
+    page,
+    webUrlInput,
+    previewUrl,
+    "l’URL de prévisualisation doit être reflétée par l’état contrôlé du formulaire",
+  );
+  await waitForEnabled(
+    page,
+    previewButton,
+    "le bouton Prévisualiser doit être activé avant le clic",
+  );
+  await previewButton.click();
   await webDraftLeaf.locator(".web-preview-frame__status").filter({ hasText: "Prêt" })
     .waitFor({ state: "visible" });
   await webDraftLeaf.getByRole("button", { name: "Créer ce panel" }).click();
