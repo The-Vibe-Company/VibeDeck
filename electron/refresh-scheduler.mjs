@@ -13,11 +13,16 @@ export function sourceIsDue(source, now = Date.now()) {
 
 export function createRefreshScheduler({
   getSources,
-  refreshSource,
+  refreshSources,
+  createArrivalBatchAt = (timestamp) => new Date(timestamp).toISOString(),
   onStateChange = () => undefined,
   now = () => Date.now(),
 }) {
-  if (typeof getSources !== "function" || typeof refreshSource !== "function") {
+  if (
+    typeof getSources !== "function" ||
+    typeof refreshSources !== "function" ||
+    typeof createArrivalBatchAt !== "function"
+  ) {
     throw new TypeError("Dépendances du planificateur de veille invalides.");
   }
   let currentPass = null;
@@ -31,9 +36,10 @@ export function createRefreshScheduler({
       if (!Number.isFinite(timestamp)) throw new Error("Horloge de rafraîchissement invalide.");
       const dueSources = getSources().filter((source) => sourceIsDue(source, timestamp));
       if (dueSources.length === 0) return;
-      const tasks = dueSources.map(({ id }) => refreshSource(id));
+      const arrivalBatchAt = createArrivalBatchAt(timestamp);
+      const task = refreshSources(dueSources.map(({ id }) => id), { arrivalBatchAt });
       onStateChange();
-      await Promise.allSettled(tasks);
+      await Promise.allSettled([task]);
       onStateChange();
     })().finally(() => {
       currentPass = null;

@@ -25,6 +25,7 @@ function item(overrides = {}) {
     updatedAt: null,
     firstSeenAt: "2026-07-10T12:00:00.000Z",
     observedAt: "2026-07-10T12:00:00.000Z",
+    arrivalBatchAt: "2026-07-10T12:00:00.000Z",
     lastSeenAt: "2026-07-10T12:00:00.000Z",
     isBaseline: true,
     isNew: false,
@@ -84,7 +85,7 @@ test("interleaves baseline items by publication chronology across sources", () =
   ]);
 });
 
-test("keeps post-baseline arrivals ahead by immutable detection time", () => {
+test("keeps later arrival batches ahead even when their publication is older", () => {
   const items = [
     item({ id: "baseline", publishedAt: "2026-07-10T12:30:00.000Z" }),
     item({
@@ -95,6 +96,7 @@ test("keeps post-baseline arrivals ahead by immutable detection time", () => {
       publishedAt: "2020-01-01T00:00:00.000Z",
       firstSeenAt: "2026-07-10T12:10:00.000Z",
       observedAt: "2026-07-10T12:10:00.000Z",
+      arrivalBatchAt: "2026-07-10T12:10:00.000Z",
     }),
     item({
       id: "arrival-earlier",
@@ -104,6 +106,7 @@ test("keeps post-baseline arrivals ahead by immutable detection time", () => {
       publishedAt: "2026-07-10T12:29:00.000Z",
       firstSeenAt: "2026-07-10T12:09:00.000Z",
       observedAt: "2026-07-10T12:09:00.000Z",
+      arrivalBatchAt: "2026-07-10T12:09:00.000Z",
     }),
   ];
 
@@ -114,6 +117,32 @@ test("keeps post-baseline arrivals ahead by immutable detection time", () => {
   ]);
 });
 
+test("interleaves sources within one arrival batch by publication chronology", () => {
+  const items = [
+    item({
+      id: "source-a",
+      sourceId: "source-a",
+      isBaseline: false,
+      publishedAt: "2026-07-10T11:30:00.000Z",
+      observedAt: "2026-07-10T12:00:01.000Z",
+      arrivalBatchAt: "2026-07-10T12:00:00.000Z",
+    }),
+    item({
+      id: "source-b",
+      sourceId: "source-b",
+      isBaseline: false,
+      publishedAt: "2026-07-10T11:45:00.000Z",
+      observedAt: "2026-07-10T12:00:02.000Z",
+      arrivalBatchAt: "2026-07-10T12:00:00.000Z",
+    }),
+  ];
+
+  assert.deepEqual(items.sort(compareFeedItems).map(({ id }) => id), [
+    "source-b",
+    "source-a",
+  ]);
+});
+
 test("falls through to the stable ID order when every timestamp is malformed", () => {
   const items = [
     item({
@@ -121,6 +150,7 @@ test("falls through to the stable ID order when every timestamp is malformed", (
       publishedAt: "not-a-date",
       updatedAt: null,
       observedAt: "not-a-date",
+      arrivalBatchAt: "not-a-date",
       firstSeenAt: "not-a-date",
     }),
     item({
@@ -128,6 +158,7 @@ test("falls through to the stable ID order when every timestamp is malformed", (
       publishedAt: null,
       updatedAt: "not-a-date",
       observedAt: "not-a-date",
+      arrivalBatchAt: "not-a-date",
       firstSeenAt: "not-a-date",
     }),
   ];

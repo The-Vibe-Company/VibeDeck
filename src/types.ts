@@ -15,6 +15,8 @@ export interface FeedItem {
   updatedAt: string | null;
   firstSeenAt: string;
   observedAt: string;
+  /** Main-owned refresh cycle in which this article was first detected. */
+  arrivalBatchAt: string;
   lastSeenAt: string;
   isBaseline: boolean;
   isNew: boolean;
@@ -303,6 +305,7 @@ export interface VibeDeckApi {
   ) => Promise<AppState>;
   removeSource: (panelId: string, sourceId: string) => Promise<AppState>;
   refreshSource: (sourceId: string) => Promise<AppState>;
+  refreshPanel: (panelId: string) => Promise<AppState>;
   refreshAll: () => Promise<AppState>;
   markItemsSeen: (itemIds: string[]) => Promise<AppState>;
   markItemOpened: (itemId: string) => Promise<AppState>;

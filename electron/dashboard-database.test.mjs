@@ -190,7 +190,7 @@ test("migrates every legacy panel into a feed layout without losing sources or a
       database.getEndpointCache("https://cache.test/feed").finalUrl,
       "https://cache.test/feed",
     );
-    assert.equal(database.database.prepare("PRAGMA user_version").get().user_version, 6);
+    assert.equal(database.database.prepare("PRAGMA user_version").get().user_version, 7);
     assert.deepEqual(
       database.database.prepare("PRAGMA table_info(panels)").all().map(({ name }) => name),
       [
@@ -210,6 +210,7 @@ test("migrates every legacy panel into a feed layout without losing sources or a
     assert.equal(state.items[0].seenAt, legacyNow);
     assert.equal(state.items[0].openedAt, null);
     assert.equal(state.items[0].observedAt, legacyNow);
+    assert.equal(state.items[0].arrivalBatchAt, legacyNow);
     assert.equal(state.sources[0].baselineCompletedAt, legacyNow);
     assert.equal(state.sources[0].consecutiveFailures, 0);
     assert.equal(state.sources[0].nextRetryAt, null);
@@ -227,6 +228,7 @@ test("migrates every legacy panel into a feed layout without losing sources or a
     assert.equal(itemColumns.includes("is_baseline"), true);
     assert.equal(itemColumns.includes("seen_at"), true);
     assert.equal(itemColumns.includes("opened_at"), true);
+    assert.equal(itemColumns.includes("arrival_batch_at"), true);
     assert.deepEqual(
       database.database
         .prepare("PRAGMA table_info(pilot_sessions)")
@@ -267,7 +269,7 @@ test("upgrades a version 4 database through daily pilot usage without changing i
 
   const migrated = createLocalFeedDatabase(databasePath);
   try {
-    assert.equal(migrated.database.prepare("PRAGMA user_version").get().user_version, 6);
+    assert.equal(migrated.database.prepare("PRAGMA user_version").get().user_version, 7);
     assert.equal(migrated.getState().panels[0].id, panel.id);
     assert.equal(
       migrated.database
@@ -309,7 +311,7 @@ test("migrates version 5 session totals to their local start day without losing 
     usageTimeZone: "Europe/Paris",
   });
   try {
-    assert.equal(migrated.database.prepare("PRAGMA user_version").get().user_version, 6);
+    assert.equal(migrated.database.prepare("PRAGMA user_version").get().user_version, 7);
     const diagnostics = migrated.getPilotDiagnostics("2026-07-12T08:00:00.000Z");
     assert.deepEqual(diagnostics.usage, {
       totalActiveDurationMs: 1_050_000,
@@ -347,6 +349,96 @@ test("migrates version 5 session totals to their local start day without losing 
         .get().total,
       1_050_000,
     );
+  } finally {
+    migrated.close();
+    cleanup();
+  }
+});
+
+test("migrates version 6 catch-up arrivals into shared minute batches without losing state", async () => {
+  const { databasePath, cleanup } = temporaryDatabase();
+  const feed = (hostname, publishedAt) => `<?xml version="1.0"?><rss version="2.0"><channel>
+    <title>${hostname}</title><item><title>${hostname}</title>
+    <link>https://${hostname}/article</link>
+    <pubDate>${new Date(publishedAt).toUTCString()}</pubDate></item>
+  </channel></rss>`;
+  const engine = createFeedEngine({
+    dbPath: databasePath,
+    now: () => new Date("2026-07-15T09:00:00.000Z"),
+    fetchImpl: async (input) => {
+      const hostname = new URL(String(input)).hostname;
+      return response(feed(
+        hostname,
+        hostname === "a.test"
+          ? "2026-07-15T08:50:00.000Z"
+          : "2026-07-15T08:55:00.000Z",
+      ));
+    },
+  });
+  let panelId;
+  let sourceA;
+  let sourceB;
+  try {
+    const created = await engine.createPanel({ kind: "feed", name: "Rattrapage" });
+    panelId = created.panels[0].id;
+    sourceA = (await engine.addSource(panelId, "https://a.test/feed.xml")).sourceId;
+    sourceB = (await engine.addSource(panelId, "https://b.test/feed.xml")).sourceId;
+  } finally {
+    engine.close();
+  }
+
+  const versionSix = new DatabaseSync(databasePath);
+  versionSix
+    .prepare(`
+      UPDATE items
+      SET is_baseline = 0, first_seen_at = ?, last_seen_at = ?, seen_at = ?, opened_at = ?
+      WHERE source_id = ?
+    `)
+    .run(
+      "2026-07-15T09:07:24.930Z",
+      "2026-07-15T09:07:24.930Z",
+      "2026-07-15T09:08:00.000Z",
+      "2026-07-15T09:09:00.000Z",
+      sourceA,
+    );
+  versionSix
+    .prepare(`
+      UPDATE items
+      SET is_baseline = 0, first_seen_at = ?, last_seen_at = ?, seen_at = NULL, opened_at = NULL
+      WHERE source_id = ?
+    `)
+    .run(
+      "2026-07-15T09:07:25.145Z",
+      "2026-07-15T09:07:25.145Z",
+      sourceB,
+    );
+  versionSix.exec(`
+    ALTER TABLE items DROP COLUMN arrival_batch_at;
+    PRAGMA user_version = 6;
+  `);
+  versionSix.close();
+
+  const migrated = createLocalFeedDatabase(databasePath);
+  try {
+    const state = migrated.getState("2026-07-15T09:10:00.000Z");
+    assert.equal(migrated.database.prepare("PRAGMA user_version").get().user_version, 7);
+    assert.equal(state.panels.find(({ id }) => id === panelId).sourceIds.length, 2);
+    assert.equal(state.items.length, 2);
+    assert.deepEqual(state.items.map(({ sourceId }) => sourceId), [sourceB, sourceA]);
+    assert.deepEqual(
+      [...new Set(state.items.map(({ arrivalBatchAt }) => arrivalBatchAt))],
+      ["2026-07-15T09:07:00.000Z"],
+    );
+    const itemA = state.items.find(({ sourceId }) => sourceId === sourceA);
+    const itemB = state.items.find(({ sourceId }) => sourceId === sourceB);
+    assert.equal(itemA.observedAt, "2026-07-15T09:07:24.930Z");
+    assert.equal(itemA.seenAt, "2026-07-15T09:08:00.000Z");
+    assert.equal(itemA.openedAt, "2026-07-15T09:09:00.000Z");
+    assert.equal(itemA.isNew, false);
+    assert.equal(itemB.observedAt, "2026-07-15T09:07:25.145Z");
+    assert.equal(itemB.seenAt, null);
+    assert.equal(itemB.openedAt, null);
+    assert.equal(itemB.isNew, true);
   } finally {
     migrated.close();
     cleanup();
@@ -700,6 +792,7 @@ test("establishes a seen baseline then persists distinct seen and opened article
     assert.equal(baseline.openedAt, null);
     assert.equal(baseline.firstSeenAt, "2026-07-09T12:00:00.000Z");
     assert.equal(baseline.observedAt, "2026-07-09T12:00:00.000Z");
+    assert.equal(baseline.arrivalBatchAt, "2026-07-09T12:00:00.000Z");
     assert.equal(baseline.publishedAt, "2026-07-09T10:30:00.000Z");
 
     currentFeed = UPDATED_RSS_FIXTURE;
@@ -711,6 +804,7 @@ test("establishes a seen baseline then persists distinct seen and opened article
     assert.equal(state.items[0].id, arrival.id);
     assert.equal(original.firstSeenAt, "2026-07-09T12:00:00.000Z");
     assert.equal(original.observedAt, "2026-07-09T12:00:00.000Z");
+    assert.equal(original.arrivalBatchAt, "2026-07-09T12:00:00.000Z");
     assert.equal(original.publishedAt, "2026-07-09T10:30:00.000Z");
     assert.equal(arrival.isBaseline, false);
     assert.equal(arrival.isNew, true);
@@ -718,6 +812,7 @@ test("establishes a seen baseline then persists distinct seen and opened article
     assert.equal(arrival.openedAt, null);
     assert.equal(arrival.firstSeenAt, "2026-07-09T12:05:00.000Z");
     assert.equal(arrival.observedAt, "2026-07-09T12:05:00.000Z");
+    assert.equal(arrival.arrivalBatchAt, "2026-07-09T12:05:00.000Z");
     assert.equal(arrival.publishedAt, "2020-07-09T12:04:00.000Z");
 
     now = new Date("2026-07-09T12:06:00.000Z");
@@ -843,6 +938,103 @@ test("interleaves source baselines by publication while keeping later arrivals f
     assert.equal(state.items[0].isBaseline, false);
   } finally {
     engine.close();
+  }
+});
+
+test("shares exact arrival batches across panel and global refreshes", async () => {
+  let clock = Date.parse("2026-07-10T12:00:00.000Z");
+  let phase = 0;
+  const rss = (hostname) => {
+    const articles = [
+      { id: "baseline", date: "2026-07-10T10:00:00.000Z" },
+      ...(phase >= 1
+        ? [{
+            id: "panel",
+            date: hostname === "b.test"
+              ? "2026-07-10T11:50:00.000Z"
+              : "2026-07-10T11:40:00.000Z",
+          }]
+        : []),
+      ...(phase >= 2
+        ? [{
+            id: "all",
+            date: hostname === "b.test"
+              ? "2026-07-10T11:30:00.000Z"
+              : "2026-07-10T11:20:00.000Z",
+          }]
+        : []),
+      ...(phase >= 3 && hostname === "a.test"
+        ? [{ id: "single", date: "2020-01-01T00:00:00.000Z" }]
+        : []),
+    ];
+    return `<?xml version="1.0"?><rss version="2.0"><channel><title>${hostname}</title>
+      ${articles.map(({ id, date }) => `<item><title>${hostname}-${id}</title>
+        <link>https://${hostname}/${id}</link>
+        <pubDate>${new Date(date).toUTCString()}</pubDate></item>`).join("")}
+    </channel></rss>`;
+  };
+  const engine = createFeedEngine({
+    now: () => new Date(clock += 10),
+    fetchImpl: async (input) => response(rss(new URL(String(input)).hostname), {
+      headers: { "content-type": "application/rss+xml", "cache-control": "no-cache" },
+    }),
+  });
+  try {
+    const created = await engine.createPanel({ kind: "feed", name: "Cycles" });
+    const panelId = created.panels[0].id;
+    const sourceA = (await engine.addSource(panelId, "https://a.test/feed.xml")).sourceId;
+    await engine.addSource(panelId, "https://b.test/feed.xml");
+
+    phase = 1;
+    let state = await engine.refreshPanel(panelId, { force: true });
+    const panelArrivals = state.items.filter(({ title }) => title.endsWith("-panel"));
+    assert.deepEqual(panelArrivals.map(({ title }) => title), ["b.test-panel", "a.test-panel"]);
+    assert.equal(new Set(panelArrivals.map(({ arrivalBatchAt }) => arrivalBatchAt)).size, 1);
+    assert.equal(new Set(panelArrivals.map(({ observedAt }) => observedAt)).size, 2);
+    const panelBatch = panelArrivals[0].arrivalBatchAt;
+
+    phase = 2;
+    state = await engine.refreshAll();
+    const globalArrivals = state.items.filter(({ title }) => title.endsWith("-all"));
+    assert.deepEqual(globalArrivals.map(({ title }) => title), ["b.test-all", "a.test-all"]);
+    assert.equal(new Set(globalArrivals.map(({ arrivalBatchAt }) => arrivalBatchAt)).size, 1);
+    const globalBatch = globalArrivals[0].arrivalBatchAt;
+    assert.ok(globalBatch > panelBatch);
+
+    phase = 3;
+    state = await engine.refreshSource(sourceA, { force: true });
+    assert.equal(state.items[0].title, "a.test-single");
+    assert.ok(state.items[0].arrivalBatchAt > globalBatch);
+    assert.equal(state.items[0].publishedAt, "2020-01-01T00:00:00.000Z");
+  } finally {
+    engine.close();
+  }
+});
+
+test("restores the arrival batch high-water mark after a backward-clock restart", async () => {
+  const { databasePath, cleanup } = temporaryDatabase();
+  const fixedNow = new Date("2026-07-10T12:00:00.010Z");
+  const fetchImpl = async () => response(RSS_FIXTURE, {
+    headers: { "content-type": "application/rss+xml" },
+  });
+  let engine = createFeedEngine({ dbPath: databasePath, now: () => fixedNow, fetchImpl });
+  try {
+    const created = await engine.createPanel({ kind: "feed", name: "Horloge" });
+    await engine.addSource(created.panels[0].id, "https://clock.test/feed.xml");
+  } finally {
+    engine.close();
+  }
+
+  engine = createFeedEngine({
+    dbPath: databasePath,
+    now: () => new Date("2026-07-10T11:59:00.000Z"),
+    fetchImpl,
+  });
+  try {
+    assert.equal(engine.createArrivalBatchAt(), "2026-07-10T12:00:00.011Z");
+  } finally {
+    engine.close();
+    cleanup();
   }
 });
 

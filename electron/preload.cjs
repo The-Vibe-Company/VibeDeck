@@ -42,6 +42,8 @@ contextBridge.exposeInMainWorld("vibedeck", {
     ipcRenderer.invoke("aggregator:remove-source", panelId, sourceId),
   refreshSource: (sourceId) =>
     ipcRenderer.invoke("aggregator:refresh-source", sourceId),
+  refreshPanel: (panelId) =>
+    ipcRenderer.invoke("aggregator:refresh-panel", panelId),
   refreshAll: () => ipcRenderer.invoke("aggregator:refresh-all"),
   markItemsSeen: (itemIds) =>
     ipcRenderer.invoke("aggregator:mark-items-seen", itemIds),

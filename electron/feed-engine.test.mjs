@@ -203,6 +203,19 @@ test("exposes an immutable catalogue with only verified capabilities", () => {
   }
 });
 
+test("allocates strictly increasing refresh cycles when the clock stalls or moves backward", () => {
+  let now = new Date("2026-07-10T12:00:00.010Z");
+  const engine = createFeedEngine({ now: () => now });
+  try {
+    assert.equal(engine.createArrivalBatchAt(), "2026-07-10T12:00:00.010Z");
+    assert.equal(engine.createArrivalBatchAt(), "2026-07-10T12:00:00.011Z");
+    now = new Date("2026-07-10T11:59:59.000Z");
+    assert.equal(engine.createArrivalBatchAt(), "2026-07-10T12:00:00.012Z");
+  } finally {
+    engine.close();
+  }
+});
+
 test("probes a direct feed through a bounded projection without changing visible state", async () => {
   const engine = createFeedEngine({
     fetchImpl: async () =>
@@ -1735,24 +1748,51 @@ test("coalesces concurrent source refreshes including a manual force and refresh
   const engine = createFeedEngine({ fetchImpl: controlled.fetchImpl });
   try {
     const [sourceId] = await importRefreshSources(engine, [
-      "https://coalesce.test/feed.xml",
+      "https://coalesce-a.test/feed.xml",
+      "https://coalesce-b.test/feed.xml",
     ]);
     const first = engine.refreshSource(sourceId);
     const forced = engine.refreshSource(sourceId, { force: true });
     assert.strictEqual(forced, first);
     const all = engine.refreshAll();
-    await waitForCondition(() => controlled.stats().started === 1, "requête mutualisée");
+    await waitForCondition(() => controlled.stats().started === 2, "requêtes mutualisées");
     controlled.releasePending();
     const [state] = await Promise.all([first, forced, all]);
 
-    assert.equal(controlled.stats().started, 1);
+    assert.equal(controlled.stats().started, 2);
     assert.equal(state.sources[0].status, "healthy");
+    assert.equal(new Set(state.items.map(({ arrivalBatchAt }) => arrivalBatchAt)).size, 1);
     assert.equal(
       engine.database
         .listPilotEvents({ limit: 100 })
         .filter(({ type }) => type === "source_refresh_succeeded").length,
-      1,
+      2,
     );
+  } finally {
+    controlled.releasePending();
+    engine.close();
+  }
+});
+
+test("rejects an overlapping panel refresh before starting idle sibling sources", async () => {
+  const controlled = controlledRefreshFetch();
+  const engine = createFeedEngine({ fetchImpl: controlled.fetchImpl });
+  try {
+    const [activeSourceId] = await importRefreshSources(engine, [
+      "https://overlap-a.test/feed.xml",
+      "https://overlap-b.test/feed.xml",
+    ]);
+    const activeRefresh = engine.refreshSource(activeSourceId);
+    await waitForCondition(() => controlled.stats().started === 1, "source active");
+
+    await assert.rejects(
+      engine.refreshPanel("refresh-queue-panel", { force: true }),
+      /actualisation de ce panel est déjà en cours/,
+    );
+    assert.equal(controlled.stats().started, 1);
+
+    controlled.releasePending();
+    await activeRefresh;
   } finally {
     controlled.releasePending();
     engine.close();

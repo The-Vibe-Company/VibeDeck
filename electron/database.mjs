@@ -29,7 +29,7 @@ const MAX_SPLIT_RATIO = 0.9;
 const MIN_REFRESH_INTERVAL_SECONDS = 30;
 const MAX_REFRESH_INTERVAL_SECONDS = 3_600;
 const DEFAULT_REFRESH_INTERVAL_SECONDS = 60;
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 const CONFIGURATION_FORMAT = "vibedeck-dashboard";
 const CONFIGURATION_VERSION = 1;
 
@@ -619,6 +619,7 @@ function toItem(row) {
     // Immutable detection time. `lastSeenAt` separately tracks the latest
     // connector observation of the same canonical item.
     observedAt: row.first_seen_at,
+    arrivalBatchAt: row.arrival_batch_at ?? row.first_seen_at,
     lastSeenAt: row.last_seen_at,
     isBaseline,
     seenAt,
@@ -722,6 +723,7 @@ export class LocalFeedDatabase {
           published_at TEXT,
           updated_at TEXT,
           first_seen_at TEXT NOT NULL,
+          arrival_batch_at TEXT,
           last_seen_at TEXT NOT NULL,
           is_baseline INTEGER NOT NULL DEFAULT 0 CHECK (is_baseline IN (0, 1)),
           seen_at TEXT,
@@ -855,6 +857,9 @@ export class LocalFeedDatabase {
       if (!itemColumns.has("opened_at")) {
         this.database.exec("ALTER TABLE items ADD COLUMN opened_at TEXT;");
       }
+      if (!itemColumns.has("arrival_batch_at")) {
+        this.database.exec("ALTER TABLE items ADD COLUMN arrival_batch_at TEXT;");
+      }
 
       if (
         previousVersion < 4 ||
@@ -929,6 +934,21 @@ export class LocalFeedDatabase {
           }
         }
         this.#trimPilotUsageDays();
+      }
+
+      if (previousVersion < 7 || !itemColumns.has("arrival_batch_at")) {
+        // Pre-v7 rows have no exact refresh-cycle identifier. The one-time UTC
+        // minute heuristic repairs historical catch-up blocks while leaving the
+        // immutable detection timestamps and read/open state untouched.
+        this.database.exec(`
+          UPDATE items
+          SET arrival_batch_at = CASE
+            WHEN is_baseline = 0
+              THEN substr(first_seen_at, 1, 16) || ':00.000Z'
+            ELSE first_seen_at
+          END
+          WHERE arrival_batch_at IS NULL
+        `);
       }
 
       const dashboard = this.database.prepare("SELECT 1 FROM dashboard_state WHERE id = 1").get();
@@ -2091,6 +2111,28 @@ export class LocalFeedDatabase {
       .run(panelId, sourceId);
   }
 
+  listPanelSourceIds(panelId) {
+    if (!this.hasPanel(panelId, "feed")) throw new Error("Panel de flux introuvable.");
+    return this.database
+      .prepare(`
+        SELECT source_id
+        FROM panel_sources
+        WHERE panel_id = ?
+        ORDER BY position ASC
+      `)
+      .all(panelId)
+      .map(({ source_id: sourceId }) => sourceId);
+  }
+
+  getLatestArrivalBatchAt() {
+    return this.database
+      .prepare(`
+        SELECT MAX(COALESCE(arrival_batch_at, first_seen_at)) AS arrival_batch_at
+        FROM items
+      `)
+      .get()?.arrival_batch_at ?? null;
+  }
+
   setSourceStatus(sourceId, status, values = {}, now = new Date().toISOString()) {
     const hasErrorMessage = Object.hasOwn(values, "errorMessage");
     const hasConsecutiveFailures = Object.hasOwn(values, "consecutiveFailures");
@@ -2135,18 +2177,28 @@ export class LocalFeedDatabase {
     if (result.changes === 0) throw new Error("Source introuvable.");
   }
 
-  upsertItems(sourceId, items, seenAt = new Date().toISOString()) {
+  upsertItems(
+    sourceId,
+    items,
+    seenAt = new Date().toISOString(),
+    arrivalBatchAt = seenAt,
+  ) {
     const source = this.database
       .prepare("SELECT baseline_completed_at FROM sources WHERE id = ?")
       .get(sourceId);
     if (!source) throw new Error("Source introuvable.");
     const normalizedSeenAt = cleanTimestamp(seenAt, "Date d’observation");
+    const normalizedArrivalBatchAt = cleanTimestamp(
+      arrivalBatchAt,
+      "Cycle de rafraîchissement",
+    );
     const isInitialImport = source.baseline_completed_at === null;
     const statement = this.database.prepare(`
       INSERT INTO items (
         id, source_id, canonical_url, title, summary, image_url,
-        published_at, updated_at, first_seen_at, last_seen_at, is_baseline, seen_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        published_at, updated_at, first_seen_at, arrival_batch_at,
+        last_seen_at, is_baseline, seen_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(source_id, canonical_url) DO UPDATE SET
         title = excluded.title,
         summary = COALESCE(excluded.summary, items.summary),
@@ -2176,6 +2228,7 @@ export class LocalFeedDatabase {
           nullable(item.publishedAt),
           nullable(item.updatedAt),
           item.firstSeenAt ?? normalizedSeenAt,
+          normalizedArrivalBatchAt,
           normalizedSeenAt,
           isInitialImport ? 1 : 0,
           isInitialImport ? normalizedSeenAt : null,
@@ -2454,9 +2507,8 @@ export class LocalFeedDatabase {
             ROW_NUMBER() OVER (
               PARTITION BY items.source_id
               ORDER BY items.is_baseline ASC,
-                CASE WHEN items.is_baseline = 0 THEN items.first_seen_at END DESC,
-                CASE WHEN items.is_baseline = 1 THEN
-                  COALESCE(items.published_at, items.updated_at, items.first_seen_at)
+                CASE WHEN items.is_baseline = 0 THEN
+                  COALESCE(items.arrival_batch_at, items.first_seen_at)
                 END DESC,
                 COALESCE(items.published_at, items.updated_at, items.first_seen_at) DESC,
                 items.first_seen_at DESC,
@@ -2469,9 +2521,8 @@ export class LocalFeedDatabase {
         ) AS ranked
         WHERE ranked.source_rank <= 500
         ORDER BY ranked.is_baseline ASC,
-          CASE WHEN ranked.is_baseline = 0 THEN ranked.first_seen_at END DESC,
-          CASE WHEN ranked.is_baseline = 1 THEN
-            COALESCE(ranked.published_at, ranked.updated_at, ranked.first_seen_at)
+          CASE WHEN ranked.is_baseline = 0 THEN
+            COALESCE(ranked.arrival_batch_at, ranked.first_seen_at)
           END DESC,
           COALESCE(ranked.published_at, ranked.updated_at, ranked.first_seen_at) DESC,
           ranked.first_seen_at DESC,
