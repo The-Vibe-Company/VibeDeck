@@ -2507,9 +2507,7 @@ export class LocalFeedDatabase {
             ROW_NUMBER() OVER (
               PARTITION BY items.source_id
               ORDER BY items.is_baseline ASC,
-                CASE WHEN items.is_baseline = 0 THEN
-                  COALESCE(items.arrival_batch_at, items.first_seen_at)
-                END DESC,
+                CASE WHEN items.is_baseline = 0 THEN items.first_seen_at END DESC,
                 COALESCE(items.published_at, items.updated_at, items.first_seen_at) DESC,
                 items.first_seen_at DESC,
                 items.id ASC
@@ -2521,9 +2519,6 @@ export class LocalFeedDatabase {
         ) AS ranked
         WHERE ranked.source_rank <= 500
         ORDER BY ranked.is_baseline ASC,
-          CASE WHEN ranked.is_baseline = 0 THEN
-            COALESCE(ranked.arrival_batch_at, ranked.first_seen_at)
-          END DESC,
           COALESCE(ranked.published_at, ranked.updated_at, ranked.first_seen_at) DESC,
           ranked.first_seen_at DESC,
           ranked.id ASC

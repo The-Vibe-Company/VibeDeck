@@ -19,6 +19,7 @@ const SUBPIXEL_EPSILON = 0.5;
 // Doit rester aligné sur HOVER_SEEN_DELAY_MS dans src/App.tsx.
 const HOVER_SEEN_DELAY_MS = 1000;
 const newArticleTitle = "ARRIVÉE CONTRÔLÉE — invariant du viewport";
+const oldArrivalTitle = "ARRIVÉE ANCIENNE — rang chronologique";
 const topArrivalTitle = "ARRIVÉE EN TÊTE — scroll nul";
 const pillArrivalTitle = "ARRIVÉE PASTILLE — rappel vers le haut";
 const sharedArrivalTitle = "ARRIVÉE PARTAGÉE — tampon indépendant par panel";
@@ -161,20 +162,9 @@ async function readMetrics(page, articleId) {
       activeId: document.activeElement?.id ?? null,
       focusedId: focused?.id ?? null,
       selectedTop: selected.getBoundingClientRect().top,
-      scrollHeight: list.scrollHeight,
       scrollTop: list.scrollTop,
       newInDom: Boolean(newRow),
-      newRowHeight: newRow instanceof HTMLElement ? newRow.getBoundingClientRect().height : 0,
       newRowIndex: newRow ? rows.indexOf(newRow) : -1,
-      // En mode dense, une arrivée datée d'un autre jour insère aussi son
-      // séparateur de journée : la compensation doit couvrir les deux.
-      newRowInsertionHeight: newRow instanceof HTMLElement
-        ? newRow.getBoundingClientRect().height +
-          (newRow.previousElementSibling instanceof HTMLElement &&
-            newRow.previousElementSibling.classList.contains("article-day-separator")
-            ? newRow.previousElementSibling.getBoundingClientRect().height
-            : 0)
-        : 0,
     };
   }, articleId);
 }
@@ -964,8 +954,7 @@ try {
       id: "new-controlled-arrival",
       title: newArticleTitle,
       summary: "Une arrivée ajoutée après la baseline.",
-      // An old editorial timestamp must not demote a genuinely new detection.
-      publishedAt: new Date(baselineTime - 10 * 24 * 60 * 60 * 1_000),
+      publishedAt: new Date(),
     },
     ...articles,
   ];
@@ -988,12 +977,6 @@ try {
   assert.equal(revealed.focusedId, reference.id, "La sélection clavier doit rester sur le même article.");
   assertWithin(revealed.selectedTop, beforeArrival.selectedTop, 1, "position après insertion");
   assert.ok(revealed.scrollTop > beforeArrival.scrollTop, "Le scroll doit compenser la ligne insérée.");
-  assertWithin(
-    revealed.scrollTop - beforeArrival.scrollTop,
-    revealed.newRowInsertionHeight,
-    1,
-    "compensation du scroll (rangée + séparateur de jour)",
-  );
   const arrivalsPill = page.locator(".arrivals-pill");
   await arrivalsPill.waitFor({ state: "visible" });
   assert.match(
@@ -1025,18 +1008,46 @@ try {
     expectedAfterArrowDown,
   );
 
-  assert.match(
-    (await page.locator(".article-row").first().locator("time").textContent()) ?? "",
-    /^\d{2}\/\d{2}(?:\/\d{2})? \d{2}:\d{2}$/,
-    "Une date ancienne doit rester explicite dans le fil.",
-  );
-
   await page.evaluate(() => {
     const list = document.querySelector(".article-list");
     if (!(list instanceof HTMLElement)) throw new Error("Le fil principal est introuvable.");
     list.scrollTop = 0;
   });
   await arrivalsPill.waitFor({ state: "detached" });
+  articles = [
+    {
+      id: "old-controlled-arrival",
+      title: oldArrivalTitle,
+      summary: "Cette arrivée reste nouvelle sans devancer une arrivée éditorialement plus récente.",
+      publishedAt: new Date(baselineTime - 10 * 24 * 60 * 60 * 1_000),
+    },
+    ...articles,
+  ];
+  await page.evaluate((id) => window.vibedeck.refreshSource(id), sourceId);
+  const oldArrivalRow = page.locator(".article-row").filter({ hasText: oldArrivalTitle });
+  await oldArrivalRow.waitFor({ state: "visible" });
+  assert.deepEqual(
+    await page.locator(".article-row").evaluateAll((rows, titles) => titles.map((title) =>
+      rows.findIndex((row) => row.textContent?.includes(title))), [newArticleTitle, oldArrivalTitle]),
+    [0, 1],
+    "Une arrivée ancienne doit suivre l’arrivée éditorialement plus récente tout en restant devant la baseline.",
+  );
+  assert.match(
+    (await oldArrivalRow.locator("time").textContent()) ?? "",
+    /^\d{2}\/\d{2}(?:\/\d{2})? \d{2}:\d{2}$/,
+    "Une date éditoriale ancienne doit rester explicite dans le fil.",
+  );
+  assert.equal(
+    await page.locator(".article-list").evaluate((list) => list.scrollTop),
+    0,
+    "Une arrivée classée sous la première ligne ne doit pas déplacer le viewport déjà en tête.",
+  );
+  assert.equal(
+    await arrivalsPill.count(),
+    0,
+    "Une arrivée ancienne déjà visible ne doit pas afficher de pastille.",
+  );
+
   articles = [
     {
       id: "top-arrival",
@@ -1185,7 +1196,7 @@ try {
   );
   assert.equal(
     primaryRequestCount,
-    4,
+    5,
     "Réutiliser un connecteur existant dans un autre panel ne doit pas le retélécharger.",
   );
   const narrowWindow = await electronApp.browserWindow(page);
@@ -1198,7 +1209,7 @@ try {
       document.querySelectorAll(
         `.split-layout__leaf[data-panel-id="${targetPanelId}"] .article-row`,
       ).length === count,
-    { targetPanelId: narrowPanelId, count: initialArticleCount + 3 },
+    { targetPanelId: narrowPanelId, count: initialArticleCount + 4 },
   );
   await page.waitForFunction(
     (targetPanelId) => {
@@ -1588,7 +1599,7 @@ try {
   );
   assert.equal(
     await panelLeaf.locator(".article-row").count(),
-    baselineArticleCount + 3,
+    baselineArticleCount + 4,
     "Une panne de rafraîchissement ne doit retirer aucun article en cache.",
   );
 
@@ -1873,7 +1884,7 @@ try {
   console.log(`✓ baseline: ${baselineArticleCount} articles interclassés, roving tabindex actif`);
   console.log("✓ échelle de texte: défaut global 14px, override par fil (clavier, en-tête, pastille), plafond annoncé, menu sans rôles zoom");
   console.log(`✓ viewport initial: scrollTop ${beforeArrival.scrollTop.toFixed(1)}px`);
-  console.log(`✓ arrivée automatique: même article à ${revealed.selectedTop.toFixed(1)}px, compensation ${revealed.newRowInsertionHeight.toFixed(1)}px`);
+  console.log(`✓ arrivée automatique: même article à ${revealed.selectedTop.toFixed(1)}px, compensation ${(revealed.scrollTop - beforeArrival.scrollTop).toFixed(1)}px`);
   console.log("✓ arrivée en tête: scrollTop reste à zéro");
   console.log("✓ mode dense par défaut: titre jamais tronqué, source réduite à pastille + abréviation, bascule Confort persistée");
   console.log("✓ pastille « nouveaux »: compte hors viewport, clic ramène en haut, jamais de barrière d'insertion");

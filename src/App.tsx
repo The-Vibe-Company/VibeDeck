@@ -51,6 +51,7 @@ import {
 import {
   abbreviateSourceName,
   compareFeedItems,
+  feedItemIdsBeforeAnchor,
   formatCheckedAt,
   formatItemTime,
   formatNextRefresh,
@@ -164,13 +165,19 @@ type WebPreviewDraft = {
   normalizedUrl: string;
 };
 
+type AutomaticInsertionMetrics = {
+  scrollTop: number;
+  anchorItemId: string | null;
+  anchorViewportTop: number | null;
+};
+
 type FeedPanelUi = {
   sourceFilter: string;
   visibilityFilter: "all" | "unseen";
   focusedItemId: string | null;
   visibleItemIds: Set<string>;
   automaticInsertionIds: Set<string>;
-  automaticInsertionMetrics: { scrollHeight: number; scrollTop: number } | null;
+  automaticInsertionMetrics: AutomaticInsertionMetrics | null;
   // Arrivées promues au-dessus du viewport pendant que l'utilisateur était
   // descendu dans la liste : alimente la pastille « N nouveaux · Afficher ».
   pendingArrivalIds: Set<string>;
@@ -699,10 +706,7 @@ export default function App() {
     forceLayout = false,
     replaceFeedUi = false,
   ) => {
-    const automaticInsertionMetrics = new Map<
-      string,
-      { scrollHeight: number; scrollTop: number }
-    >();
+    const automaticInsertionMetrics = new Map<string, AutomaticInsertionMetrics>();
     for (const panel of nextState.panels) {
       if (panel.kind !== "feed") continue;
       const existing = feedUiRef.current[panel.id];
@@ -714,9 +718,19 @@ export default function App() {
         `.split-layout__leaf[data-panel-id="${CSS.escape(panel.id)}"] .article-list`,
       );
       if (list) {
+        const listTop = list.getBoundingClientRect().top;
+        const anchorRow = [...list.querySelectorAll<HTMLElement>(".article-row")]
+          .find((row) => row.getBoundingClientRect().bottom > listTop);
+        const anchorPrefix = `article-${panel.id}-`;
+        const anchorItemId = anchorRow?.id.startsWith(anchorPrefix)
+          ? anchorRow.id.slice(anchorPrefix.length)
+          : null;
         automaticInsertionMetrics.set(panel.id, {
-          scrollHeight: list.scrollHeight,
           scrollTop: list.scrollTop,
+          anchorItemId,
+          anchorViewportTop: anchorRow
+            ? anchorRow.getBoundingClientRect().top - listTop
+            : null,
         });
       }
     }
@@ -3005,12 +3019,24 @@ function FeedPanelView({
         cancelSmoothScroll(list);
         list.scrollTop = 0;
       } else {
-        list.scrollTop = previous.scrollTop + Math.max(0, list.scrollHeight - previous.scrollHeight);
-        // L'insertion a eu lieu au-dessus du viewport : compter ces arrivées
-        // pour la pastille « nouveaux », en ne retenant que celles réellement
-        // rendues dans le filtre courant.
-        const renderedIds = new Set(items.map(({ id }) => id));
-        const arrivedAbove = [...ui.automaticInsertionIds].filter((id) => renderedIds.has(id));
+        const anchor = previous.anchorItemId
+          ? document.getElementById(`article-${panel.id}-${previous.anchorItemId}`)
+          : null;
+        if (anchor && list.contains(anchor) && previous.anchorViewportTop !== null) {
+          const currentAnchorTop = anchor.getBoundingClientRect().top - list.getBoundingClientRect().top;
+          // Chromium peut déjà avoir appliqué son scroll anchoring natif. Ajuster
+          // relativement à la position courante évite de compenser deux fois ou
+          // d’annuler cette compensation automatique.
+          list.scrollTop += currentAnchorTop - previous.anchorViewportTop;
+        }
+        // Ne compter que les arrivées réellement rendues avant l’ancre : une
+        // date éditoriale ancienne peut désormais les placer dans ou sous le
+        // viewport sans nécessiter de compensation ni de pastille.
+        const arrivedAbove = feedItemIdsBeforeAnchor(
+          items,
+          ui.automaticInsertionIds,
+          previous.anchorItemId,
+        );
         if (arrivedAbove.length > 0) {
           onUi({
             automaticInsertionIds: new Set(),

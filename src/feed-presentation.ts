@@ -25,20 +25,11 @@ function newestTimestampFirst(first: number, second: number) {
 }
 
 /**
- * Keep genuine post-baseline arrival batches at the head of the monitoring
- * stream. Sources refreshed together share a batch and are interleaved by
- * publication chronology instead of appearing in completion-order blocks.
+ * Keep genuine post-baseline arrivals ahead of the initial history, then use
+ * the editorial chronology across every source and refresh cycle.
  */
 export function compareFeedItems(first: FeedItem, second: FeedItem) {
   if (first.isBaseline !== second.isBaseline) return first.isBaseline ? 1 : -1;
-
-  if (!first.isBaseline) {
-    const batchOrder = newestTimestampFirst(
-      firstTimestamp(first.arrivalBatchAt, first.observedAt, first.firstSeenAt),
-      firstTimestamp(second.arrivalBatchAt, second.observedAt, second.firstSeenAt),
-    );
-    if (batchOrder !== 0) return batchOrder;
-  }
 
   const chronologyOrder = newestTimestampFirst(
     firstTimestamp(first.publishedAt, first.updatedAt, first.observedAt, first.firstSeenAt),
@@ -53,6 +44,18 @@ export function compareFeedItems(first: FeedItem, second: FeedItem) {
   if (observationOrder !== 0) return observationOrder;
 
   return stableIdOrder(first, second);
+}
+
+export function feedItemIdsBeforeAnchor(
+  items: FeedItem[],
+  candidateIds: Iterable<string>,
+  anchorItemId: string | null,
+) {
+  if (!anchorItemId) return [];
+  const anchorIndex = items.findIndex(({ id }) => id === anchorItemId);
+  if (anchorIndex <= 0) return [];
+  const idsBeforeAnchor = new Set(items.slice(0, anchorIndex).map(({ id }) => id));
+  return [...candidateIds].filter((id) => idsBeforeAnchor.has(id));
 }
 
 function validDate(value: string | null | undefined) {
