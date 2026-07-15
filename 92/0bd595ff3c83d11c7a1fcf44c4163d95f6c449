@@ -1,0 +1,22 @@
+scripts/verify-release-config.mjs
+  s_efbbccae033104::t_ab09352690be99 413-414
+  s_efbbccae033104::t_207c3864b0c528 21-23,415-420
+.github/workflows/pilot-release.yml
+  s_efbbccae033104::t_ab09352690be99 24-26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "920bd595ff3c83d11c7a1fcf44c4163d95f6c449",
+  "prompts": {},
+  "sessions": {
+    "s_efbbccae033104": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6593-c0b5-77e0-98f5-8a13ddcc1c04",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
