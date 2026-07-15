@@ -1,0 +1,51 @@
+electron/feed-presentation.test.mjs
+  s_eb2fb98f689590::t_07d73cd5b5b483 7,164-179
+  s_eb2fb98f689590::t_98c9b0bc156523 89,91,93,97-110,113,117-130,135-159,180
+  s_2df1f61006b570::t_f97d7a5c52d9cc 181
+PILOT_RELEASE.md
+  s_eb2fb98f689590::t_092de99a970b3d 132
+scripts/test-pilot-ui.mjs
+  s_eb2fb98f689590::t_0f0d0d1dc11f00 22,957,1017-1050
+  s_eb2fb98f689590::t_81dabfa099d27d 1199,1212,1602
+  s_eb2fb98f689590::t_c9a484dc8742d5 1887
+README.md
+  s_eb2fb98f689590::t_092de99a970b3d 17-18
+electron/database.mjs
+  s_eb2fb98f689590::t_c9a484dc8742d5 2510
+src/App.tsx
+  s_eb2fb98f689590::t_b5bed1f4a42a2c 3027-3030
+  s_eb2fb98f689590::t_c9a484dc8742d5 168-173,180,709,721-727,730-733,3022-3026,3031-3034
+  s_eb2fb98f689590::t_07d73cd5b5b483 54,3035-3039
+electron/dashboard-database.test.mjs
+  s_eb2fb98f689590::t_092de99a970b3d 13,1007,1009-1025
+  s_eb2fb98f689590::t_b311b2bbd63ba9 1031-1072
+  s_eb2fb98f689590::t_81dabfa099d27d 1008
+  s_2df1f61006b570::t_e73bb2d989636f 1026-1030
+src/feed-presentation.ts
+  s_eb2fb98f689590::t_092de99a970b3d 28-29
+  s_eb2fb98f689590::t_07d73cd5b5b483 49-60
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "0d2ee2713f17450cb18324d902b633ed63050098",
+  "prompts": {},
+  "sessions": {
+    "s_2df1f61006b570": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f65c6-b31f-7951-b63a-0d54c95d0e7d",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    },
+    "s_eb2fb98f689590": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f65da-cf95-7672-a10b-84ebb2850d3b",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
