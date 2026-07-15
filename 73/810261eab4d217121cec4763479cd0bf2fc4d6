@@ -1,0 +1,80 @@
+src/App.tsx
+  s_b1188588f39182::t_2767f5895814c5 1723-1729
+  s_b1188588f39182::t_68a9bde87c0328 3216-3217,4415-4416,4423-4427
+  s_b1188588f39182::t_54017e51adb60d 1374
+electron/feed-engine.mjs
+  s_b1188588f39182::t_2767f5895814c5 2167-2171
+  s_b1188588f39182::t_bacdcf21c8e350 1112-1117,2152-2155,2157,2160,2175-2185,2188
+  s_b1188588f39182::t_54017e51adb60d 1426,1484-1487,2063-2066,2071,2096,2148-2149,2158-2159,2161,2165-2166,2172-2173
+  s_b1188588f39182::t_f7eb30016b7d80 1134-1142,1449
+  s_b1188588f39182::t_68a9bde87c0328 2174,2186-2187,2189-2194
+electron/preload.cjs
+  s_b1188588f39182::t_54017e51adb60d 45-46
+electron/feed-presentation.test.mjs
+  s_b1188588f39182::t_ca245fb4b33fc1 28,88,99,109,120-145,153,161
+src/types.ts
+  s_b1188588f39182::t_7816609c705e1e 18-19,308
+README.md
+  s_b1188588f39182::t_b499f38e96e839 17
+  s_b1188588f39182::t_f7eb30016b7d80 18
+PILOT_RELEASE.md
+  s_b1188588f39182::t_b499f38e96e839 132
+src/feed-presentation.ts
+  s_b1188588f39182::t_7816609c705e1e 28-30,36-38,40
+electron/database.mjs
+  s_b1188588f39182::t_52a9b5c522ada4 940-942
+  s_b1188588f39182::t_54017e51adb60d 2114-2126
+  s_b1188588f39182::t_7816609c705e1e 32,622,726,860-862,939,943-952,2180-2185,2191-2194,2199-2201,2231,2510-2511,2524-2525
+  s_b1188588f39182::t_bacdcf21c8e350 2127-2135
+  s_48f42bfbc57a73::t_7d0feca2ab797a 953
+electron/main.mjs
+  s_b1188588f39182::t_f7eb30016b7d80 1439
+  s_b1188588f39182::t_54017e51adb60d 877-883
+  s_b1188588f39182::t_68a9bde87c0328 1438
+electron/preload.test.mjs
+  s_b1188588f39182::t_ca245fb4b33fc1 147-155
+electron/feed-engine.test.mjs
+  s_b1188588f39182::t_bacdcf21c8e350 1751-1752,1758,1762,1764,1769
+  s_b1188588f39182::t_f7eb30016b7d80 206-218,1771,1773-1775
+  s_b1188588f39182::t_2767f5895814c5 1772,1777-1790,1792-1795
+  s_48f42bfbc57a73::t_143ae4fc414c80 1770,1776
+electron/refresh-scheduler.mjs
+  s_b1188588f39182::t_f7eb30016b7d80 17,21-22,24-25,39
+  s_b1188588f39182::t_68a9bde87c0328 16,23,40,42
+electron/dashboard-database.test.mjs
+  s_b1188588f39182::t_195c26b0b0ecf2 358-447
+  s_b1188588f39182::t_bacdcf21c8e350 1014-1040
+  s_b1188588f39182::t_74bc1ad774f91e 795,807
+  s_b1188588f39182::t_ca245fb4b33fc1 193,213,231,272,314,815
+  s_b1188588f39182::t_7adcd92187d538 944-1013
+electron/refresh-scheduler.test.mjs
+  s_b1188588f39182::t_ca245fb4b33fc1 38,58,63,71,76
+  s_b1188588f39182::t_68a9bde87c0328 46-47,59-62,72-75,88
+  s_b1188588f39182::t_f7eb30016b7d80 81,83-84,98
+  s_b1188588f39182::t_9aa6e15876139a 78-80,82,85-87,89-97,99
+  s_b1188588f39182::t_57836cf0e0c1d8 77
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "73810261eab4d217121cec4763479cd0bf2fc4d6",
+  "prompts": {},
+  "sessions": {
+    "s_48f42bfbc57a73": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5c42-3570-7980-a9c7-aec5efbb6fdc",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    },
+    "s_b1188588f39182": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f650a-1335-7ae1-ac3b-bb2aafd8e9e0",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
