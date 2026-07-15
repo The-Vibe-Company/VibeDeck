@@ -13,7 +13,7 @@ import {
 const MODEL_ROOT = "https://huggingface.co/Xenova/multilingual-e5-small/resolve/revision";
 const INITIAL_URL = `${MODEL_ROOT}/config.json`;
 const SECOND_HUGGING_FACE_URL = `${MODEL_ROOT}/config-final.json`;
-const CDN_URL = "https://us.aws.cdn.hf.co/models/config-final.json";
+const XET_CDN_URL = "https://cas-bridge.xethub.hf.co/xet-bridge-us/model";
 const PUBLIC_ENDPOINTS = Object.freeze([{ address: "93.184.216.34", family: "ipv4" }]);
 
 async function temporaryDirectory(t) {
@@ -76,7 +76,7 @@ test("downloads an allowed Hugging Face redirect chain after every preflight", a
   const harness = createHarness({
     responses: [
       response(null, { status: 302, headers: { location: SECOND_HUGGING_FACE_URL } }),
-      response(null, { status: 307, headers: { location: CDN_URL } }),
+      response(null, { status: 307, headers: { location: XET_CDN_URL } }),
       response(body, {
         headers: { "content-length": String(body.length) },
       }),
@@ -91,14 +91,14 @@ test("downloads an allowed Hugging Face redirect chain after every preflight", a
 
   assert.deepEqual(
     harness.fetchCalls.map(([url]) => url),
-    [INITIAL_URL, SECOND_HUGGING_FACE_URL, CDN_URL],
+    [INITIAL_URL, SECOND_HUGGING_FACE_URL, XET_CDN_URL],
   );
   assert.ok(harness.fetchCalls.every(([, init]) => init.redirect === "manual"));
   assert.deepEqual(
     harness.hostCalls.map(([hostname]) => hostname),
-    ["huggingface.co", "huggingface.co", "us.aws.cdn.hf.co"],
+    ["huggingface.co", "huggingface.co", "cas-bridge.xethub.hf.co"],
   );
-  assert.deepEqual(harness.proxyCalls, [INITIAL_URL, SECOND_HUGGING_FACE_URL, CDN_URL]);
+  assert.deepEqual(harness.proxyCalls, [INITIAL_URL, SECOND_HUGGING_FACE_URL, XET_CDN_URL]);
   assert.deepEqual(await readFile(destination), body);
   if (process.platform !== "win32") assert.equal((await stat(destination)).mode & 0o077, 0);
 });
@@ -149,11 +149,11 @@ test("fails closed for private DNS, proxied routes, auto-following adapters, and
       name: "private redirect DNS",
       options: {
         endpoints: (hostname) => ({
-          endpoints: hostname === "us.aws.cdn.hf.co"
+          endpoints: hostname === "cas-bridge.xethub.hf.co"
             ? [{ address: "192.168.1.8", family: "ipv4" }]
             : PUBLIC_ENDPOINTS,
         }),
-        responses: [response(null, { status: 302, headers: { location: CDN_URL } })],
+        responses: [response(null, { status: 302, headers: { location: XET_CDN_URL } })],
       },
       expected: /ne peut pas être résolu/,
       expectedFetches: 1,
@@ -161,8 +161,8 @@ test("fails closed for private DNS, proxied routes, auto-following adapters, and
     {
       name: "proxied redirect",
       options: {
-        proxyRoute: (url) => url === CDN_URL ? "PROXY proxy.example:8080" : "DIRECT",
-        responses: [response(null, { status: 302, headers: { location: CDN_URL } })],
+        proxyRoute: (url) => url === XET_CDN_URL ? "PROXY proxy.example:8080" : "DIRECT",
+        responses: [response(null, { status: 302, headers: { location: XET_CDN_URL } })],
       },
       expected: /connexion directe/,
       expectedFetches: 1,
@@ -170,7 +170,7 @@ test("fails closed for private DNS, proxied routes, auto-following adapters, and
     {
       name: "adapter auto-follow",
       options: {
-        responses: [response("unexpected", { url: CDN_URL, redirected: true })],
+        responses: [response("unexpected", { url: XET_CDN_URL, redirected: true })],
       },
       expected: /suivi une redirection/,
       expectedFetches: 1,
@@ -181,7 +181,7 @@ test("fails closed for private DNS, proxied routes, auto-following adapters, and
         maxRedirects: 1,
         responses: [
           response(null, { status: 302, headers: { location: SECOND_HUGGING_FACE_URL } }),
-          response(null, { status: 302, headers: { location: CDN_URL } }),
+          response(null, { status: 302, headers: { location: XET_CDN_URL } }),
         ],
       },
       expected: /trop de redirections/,

@@ -21,7 +21,11 @@ const MODEL_FILES = Object.freeze([
 ].map(([file, size, sha256]) => Object.freeze({ file, size, sha256 })));
 
 const SEARCH_SCHEMA_VERSION = 1;
-const ALLOWED_MODEL_HOSTS = new Set(["huggingface.co", "us.aws.cdn.hf.co"]);
+const ALLOWED_MODEL_HOSTS = new Set([
+  "huggingface.co",
+  "us.aws.cdn.hf.co",
+  "cas-bridge.xethub.hf.co",
+]);
 const SEARCH_MODES = new Set(["lexical", "hybrid"]);
 
 export class SearchSupersededError extends Error {

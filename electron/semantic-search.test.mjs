@@ -66,6 +66,18 @@ test("merges lexical and semantic candidates with stable reciprocal ranks", () =
 
 test("allows only the explicit HTTPS model origins", () => {
   assert.equal(assertModelDownloadUrl("https://huggingface.co/Xenova/model").hostname, "huggingface.co");
-  assert.throws(() => assertModelDownloadUrl("https://example.test/model"), /refusée/);
-  assert.throws(() => assertModelDownloadUrl("http://huggingface.co/model"), /refusée/);
+  assert.equal(assertModelDownloadUrl("https://us.aws.cdn.hf.co/model").hostname, "us.aws.cdn.hf.co");
+  assert.equal(
+    assertModelDownloadUrl("https://cas-bridge.xethub.hf.co/model").hostname,
+    "cas-bridge.xethub.hf.co",
+  );
+  for (const unsafeUrl of [
+    "https://example.test/model",
+    "http://huggingface.co/model",
+    "https://token@cas-bridge.xethub.hf.co/model",
+    "https://other.xethub.hf.co/model",
+    "https://cas-bridge.xethub.hf.co.attacker.test/model",
+  ]) {
+    assert.throws(() => assertModelDownloadUrl(unsafeUrl), /refusée/);
+  }
 });
