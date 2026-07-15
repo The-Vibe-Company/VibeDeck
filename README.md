@@ -14,8 +14,8 @@ Application locale de veille pour journalistes. À la création, chaque panel re
 - pack de démarrage « Veille concurrents » avec Le Monde, Le Figaro et Le Parisien ;
 - catalogue visuel local de ces trois connecteurs validés, avec leurs capacités réelles « Fil optimisé » et « Lecture facilitée », partagé entre création et configuration d’un fil ;
 - premier import traité comme une baseline déjà vue, sans fausse alerte ;
-- baseline interclassée par date éditoriale entre les médias ; chaque cycle d’arrivées réellement nouvelles reste au-dessus des cycles précédents, avec ses sources interclassées par date éditoriale plutôt que par ordre de fin de téléchargement ;
-- à la migration du cache v6, les arrivées antérieures sans identifiant de cycle sont regroupées une seule fois par minute UTC de détection ; les nouveaux cycles utilisent ensuite un identifiant temporel exact, partagé et strictement croissant ;
+- baseline interclassée par date éditoriale entre les médias ; les arrivées réellement nouvelles restent au-dessus de cette baseline et sont interclassées globalement par date éditoriale, indépendamment de leur cycle de rafraîchissement ;
+- à la migration du cache v6, les arrivées antérieures sans identifiant de cycle sont regroupées une seule fois par minute UTC de détection ; les nouveaux cycles conservent ensuite un identifiant temporel exact, partagé et strictement croissant, sans prendre priorité sur la chronologie éditoriale ;
 - arrivées suivantes insérées automatiquement sans déplacer le viewport ni la sélection, avec un tampon technique indépendant dans chaque panel qui partage la source ;
 - états persistants et distincts `Nouveau`, `Vu` et `Ouvert`, avec filtre `Non vus` ;
 - fraîcheur calculée sur la source la moins récente et erreurs datées sans masquer le cache ;

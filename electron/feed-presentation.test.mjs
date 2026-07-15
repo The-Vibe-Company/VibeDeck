@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   abbreviateSourceName,
   compareFeedItems,
+  feedItemIdsBeforeAnchor,
   formatCheckedAt,
   formatDayLabel,
   formatItemTime,
@@ -85,11 +86,65 @@ test("interleaves baseline items by publication chronology across sources", () =
   ]);
 });
 
-test("keeps later arrival batches ahead even when their publication is older", () => {
+test("sorts arrivals globally by editorial chronology across refresh batches", () => {
+  const items = [
+    item({ id: "baseline-1-min", publishedAt: "2026-07-10T12:59:00.000Z" }),
+    item({
+      id: "arrival-3-min",
+      isBaseline: false,
+      isNew: true,
+      seenAt: null,
+      publishedAt: "2026-07-10T12:57:00.000Z",
+      firstSeenAt: "2026-07-10T13:03:00.000Z",
+      observedAt: "2026-07-10T13:03:00.000Z",
+      arrivalBatchAt: "2026-07-10T13:03:00.000Z",
+    }),
+    item({
+      id: "arrival-2-min",
+      isBaseline: false,
+      isNew: true,
+      seenAt: null,
+      publishedAt: "2026-07-10T12:58:00.000Z",
+      firstSeenAt: "2026-07-10T13:00:00.000Z",
+      observedAt: "2026-07-10T13:00:00.000Z",
+      arrivalBatchAt: "2026-07-10T13:00:00.000Z",
+    }),
+    item({
+      id: "arrival-12-min",
+      isBaseline: false,
+      isNew: true,
+      seenAt: null,
+      publishedAt: "2026-07-10T12:48:00.000Z",
+      firstSeenAt: "2026-07-10T13:04:00.000Z",
+      observedAt: "2026-07-10T13:04:00.000Z",
+      arrivalBatchAt: "2026-07-10T13:04:00.000Z",
+    }),
+    item({
+      id: "arrival-6-min",
+      isBaseline: false,
+      isNew: true,
+      seenAt: null,
+      publishedAt: "2026-07-10T12:54:00.000Z",
+      firstSeenAt: "2026-07-10T13:01:00.000Z",
+      observedAt: "2026-07-10T13:01:00.000Z",
+      arrivalBatchAt: "2026-07-10T13:01:00.000Z",
+    }),
+  ];
+
+  assert.deepEqual(items.sort(compareFeedItems).map(({ id }) => id), [
+    "arrival-2-min",
+    "arrival-3-min",
+    "arrival-6-min",
+    "arrival-12-min",
+    "baseline-1-min",
+  ]);
+});
+
+test("keeps an old post-baseline arrival ahead of newer baseline history", () => {
   const items = [
     item({ id: "baseline", publishedAt: "2026-07-10T12:30:00.000Z" }),
     item({
-      id: "arrival-later",
+      id: "old-arrival",
       isBaseline: false,
       isNew: true,
       seenAt: null,
@@ -98,23 +153,30 @@ test("keeps later arrival batches ahead even when their publication is older", (
       observedAt: "2026-07-10T12:10:00.000Z",
       arrivalBatchAt: "2026-07-10T12:10:00.000Z",
     }),
-    item({
-      id: "arrival-earlier",
-      isBaseline: false,
-      isNew: true,
-      seenAt: null,
-      publishedAt: "2026-07-10T12:29:00.000Z",
-      firstSeenAt: "2026-07-10T12:09:00.000Z",
-      observedAt: "2026-07-10T12:09:00.000Z",
-      arrivalBatchAt: "2026-07-10T12:09:00.000Z",
-    }),
   ];
 
   assert.deepEqual(items.sort(compareFeedItems).map(({ id }) => id), [
-    "arrival-later",
-    "arrival-earlier",
+    "old-arrival",
     "baseline",
   ]);
+});
+
+test("counts only arrivals inserted before the preserved viewport anchor", () => {
+  const items = [
+    item({ id: "arrival-above", isBaseline: false }),
+    item({ id: "anchor", isBaseline: false }),
+    item({ id: "arrival-below", isBaseline: false }),
+  ];
+
+  assert.deepEqual(
+    feedItemIdsBeforeAnchor(
+      items,
+      new Set(["arrival-above", "arrival-below", "filtered-out"]),
+      "anchor",
+    ),
+    ["arrival-above"],
+  );
+  assert.deepEqual(feedItemIdsBeforeAnchor(items, ["arrival-below"], null), []);
 });
 
 test("interleaves sources within one arrival batch by publication chronology", () => {

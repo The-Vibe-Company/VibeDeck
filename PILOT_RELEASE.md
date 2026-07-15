@@ -129,7 +129,7 @@ Avant le premier shift :
 - aucune fausse nouveauté issue de la baseline ;
 - une première réponse valide mais vide laisse la baseline en attente jusqu’aux premiers articles ;
 - aucune insertion qui déplace le viewport ou la sélection ;
-- après une reprise, les sources rattrapées dans le même cycle sont interclassées par date éditoriale sans perdre la priorité du cycle ;
+- après une reprise, les arrivées sont interclassées par date éditoriale entre toutes les sources et tous les cycles, tout en restant au-dessus de la baseline ;
 - une source utilisée dans deux panels conserve un tampon d’arrivées indépendant dans chacun ;
 - état global calculé sur la source la moins fraîche ;
 - cache visible lorsque le réseau échoue ;

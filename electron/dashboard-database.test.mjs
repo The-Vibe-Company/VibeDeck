@@ -10,6 +10,7 @@ import {
   splitActiveUsageByLocalDay,
 } from "./database.mjs";
 import { createFeedEngine } from "./feed-engine.mjs";
+import { compareFeedItems } from "../src/feed-presentation.ts";
 
 const RSS_FIXTURE = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0"><channel><title>Source test</title><item>
@@ -1003,9 +1004,72 @@ test("shares exact arrival batches across panel and global refreshes", async () 
 
     phase = 3;
     state = await engine.refreshSource(sourceA, { force: true });
-    assert.equal(state.items[0].title, "a.test-single");
-    assert.ok(state.items[0].arrivalBatchAt > globalBatch);
-    assert.equal(state.items[0].publishedAt, "2020-01-01T00:00:00.000Z");
+    const singleArrival = state.items.find(({ title }) => title === "a.test-single");
+    assert.ok(singleArrival);
+    assert.ok(singleArrival.arrivalBatchAt > globalBatch);
+    assert.equal(singleArrival.publishedAt, "2020-01-01T00:00:00.000Z");
+    assert.deepEqual(
+      state.items.filter(({ isBaseline }) => !isBaseline).map(({ title }) => title),
+      [
+        "b.test-panel",
+        "a.test-panel",
+        "b.test-all",
+        "a.test-all",
+        "a.test-single",
+      ],
+    );
+    assert.deepEqual(
+      state.items.map(({ id }) => id),
+      [...state.items].sort(compareFeedItems).map(({ id }) => id),
+      "SQLite and renderer ordering must stay aligned",
+    );
+  } finally {
+    engine.close();
+  }
+});
+
+test("keeps a newly detected old article inside the bounded state window", async () => {
+  let now = new Date("2026-07-10T12:00:00.000Z");
+  let articles = [{ id: "baseline", date: "2026-07-10T11:59:00.000Z" }];
+  const feed = () => `<?xml version="1.0"?><rss version="2.0"><channel><title>Window</title>
+    ${articles.map(({ id, date }) => `<item><title>${id}</title>
+      <link>https://window.test/${id}</link>
+      <pubDate>${new Date(date).toUTCString()}</pubDate></item>`).join("")}
+  </channel></rss>`;
+  const engine = createFeedEngine({
+    now: () => now,
+    fetchImpl: async () => response(feed(), {
+      headers: { "content-type": "application/rss+xml", "cache-control": "no-cache" },
+    }),
+  });
+  try {
+    const created = await engine.createPanel({ kind: "feed", name: "Fenêtre bornée" });
+    const panelId = created.panels[0].id;
+    const sourceId = (await engine.addSource(panelId, "https://window.test/feed.xml")).sourceId;
+
+    articles = Array.from({ length: 500 }, (_, index) => ({
+      id: `arrival-${String(index).padStart(3, "0")}`,
+      date: new Date(Date.parse("2026-07-10T11:58:00.000Z") - index * 60_000).toISOString(),
+    }));
+    now = new Date("2026-07-10T12:01:00.000Z");
+    await engine.refreshSource(sourceId, { force: true });
+
+    articles = [
+      { id: "newly-detected-old", date: "2020-01-01T00:00:00.000Z" },
+      ...articles,
+    ];
+    now = new Date("2026-07-10T12:02:00.000Z");
+    const state = await engine.refreshSource(sourceId, { force: true });
+    const oldArrival = state.items.find(({ title }) => title === "newly-detected-old");
+    assert.ok(oldArrival);
+    assert.equal(oldArrival.isBaseline, false);
+    assert.equal(oldArrival.isNew, true);
+    assert.equal(state.items.length, 500);
+    assert.equal(state.items.at(-1).id, oldArrival.id);
+    assert.deepEqual(
+      state.items.map(({ id }) => id),
+      [...state.items].sort(compareFeedItems).map(({ id }) => id),
+    );
   } finally {
     engine.close();
   }
