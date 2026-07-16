@@ -1,0 +1,21 @@
+src/App.tsx
+  s_fe504c239c5b64::t_27acae9670891f 3605-3606
+src/styles.css
+  s_fe504c239c5b64::t_c02c35d45bfaf6 1180-1183
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "8e55feb41b259acc3b1e3a97c62db81fe8938cde",
+  "prompts": {},
+  "sessions": {
+    "s_fe504c239c5b64": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07b14b55-4605-4257-bf28-0e4d413344e3",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
