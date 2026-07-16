@@ -2240,14 +2240,6 @@ function semanticSearchScopesEqual(
     (first.kind === "all" || (second.kind === "panel" && first.panelId === second.panelId));
 }
 
-function orderSemanticSearchResult(result: SemanticSearchResult | null) {
-  if (!result) return null;
-  return {
-    ...result,
-    items: [...result.items].sort(compareFeedItems),
-  };
-}
-
 function SearchPalette({
   status,
   scope,
@@ -2291,12 +2283,11 @@ function SearchPalette({
       ? { key: searchDraftKey(initialQuery, scope), result: initialResult }
       : null,
   );
-  const resultsRef = useRef<SemanticSearchResult | null>(null);
+  const resultsRef = useRef<SemanticSearchResult | null>(initialResult);
   const resultsKeyRef = useRef(initialResult ? searchDraftKey(initialQuery, scope) : null);
   const skipInitialSearchRef = useRef(Boolean(initialResult && initialQuery.trim().length >= 2));
   const [query, setQuery] = useState(initialQuery);
-  const [results, setResults] = useState<SemanticSearchResult | null>(() =>
-    orderSemanticSearchResult(initialResult));
+  const [results, setResults] = useState<SemanticSearchResult | null>(initialResult);
   const [activeItemId, setActiveItemId] = useState<string | null>(null);
   const [lexicalPending, setLexicalPending] = useState(false);
   const [hybridPending, setHybridPending] = useState(false);
@@ -2312,13 +2303,11 @@ function SearchPalette({
 
   function acceptResult(key: string, result: SemanticSearchResult) {
     if (draftKeyRef.current !== key) return;
-    const orderedResult = orderSemanticSearchResult(result);
-    if (!orderedResult) return;
     resultsKeyRef.current = key;
-    resultsRef.current = orderedResult;
-    setResults(orderedResult);
+    resultsRef.current = result;
+    setResults(result);
     setActiveItemId((current) =>
-      current && orderedResult.items.some(({ id }) => id === current) ? current : null,
+      current && result.items.some(({ id }) => id === current) ? current : null,
     );
   }
 

@@ -21,6 +21,8 @@ const MODEL_FILES = Object.freeze([
 ].map(([file, size, sha256]) => Object.freeze({ file, size, sha256 })));
 
 const SEARCH_SCHEMA_VERSION = 1;
+const LEXICAL_BM25_WEIGHTS = Object.freeze([0, 3, 1]);
+const HYBRID_RRF_WEIGHTS = Object.freeze([0.6, 0.4]);
 const ALLOWED_MODEL_HOSTS = new Set([
   "huggingface.co",
   "us.aws.cdn.hf.co",
@@ -109,13 +111,20 @@ export function quantizeVector(vector) {
   return { vector: Buffer.from(values.buffer), norm };
 }
 
-export function reciprocalRankFusion(rankings, k = 60) {
-  const scores = new Map();
-  for (const ranking of rankings) {
-    ranking.forEach((itemId, index) => {
-      scores.set(itemId, (scores.get(itemId) ?? 0) + 1 / (k + index + 1));
-    });
+export function reciprocalRankFusion(rankings, { weights = rankings.map(() => 1), k = 60 } = {}) {
+  if (weights.length !== rankings.length) {
+    throw new RangeError("Chaque classement doit avoir un poids de fusion.");
   }
+  const scores = new Map();
+  rankings.forEach((ranking, rankingIndex) => {
+    const weight = weights[rankingIndex];
+    if (!Number.isFinite(weight) || weight <= 0) {
+      throw new RangeError("Poids de fusion invalide.");
+    }
+    ranking.forEach((itemId, index) => {
+      scores.set(itemId, (scores.get(itemId) ?? 0) + weight / (k + index + 1));
+    });
+  });
   return [...scores.entries()]
     .sort((first, second) => second[1] - first[1] || first[0].localeCompare(second[0]))
     .map(([itemId]) => itemId);
@@ -131,6 +140,29 @@ function ftsQuery(query) {
     ?.slice(0, 32)
     .map((term) => `"${term.replaceAll('"', "")}"`)
     .join(" OR ") ?? "";
+}
+
+export function lexicalCandidateIds(database, query, sourceIds) {
+  const expression = ftsQuery(query);
+  if (!expression || sourceIds.length === 0) return [];
+  return database
+    .prepare(`
+      SELECT item_id
+      FROM documents_fts
+      WHERE documents_fts MATCH ?
+        AND item_id IN (
+          SELECT item_id FROM documents
+          WHERE source_id IN (${sourceIds.map(() => "?").join(",")})
+        )
+      ORDER BY bm25(documents_fts, ${LEXICAL_BM25_WEIGHTS.join(", ")}), item_id ASC
+      LIMIT 201
+    `)
+    .all(expression, ...sourceIds)
+    .map(({ item_id }) => item_id);
+}
+
+export function hybridCandidateIds(lexical, semantic) {
+  return reciprocalRankFusion([lexical, semantic], { weights: HYBRID_RRF_WEIGHTS });
 }
 
 function workerRequest(worker, action, payload, transferList = []) {
@@ -412,22 +444,7 @@ export class SemanticSearchService {
   }
 
   #lexicalCandidateIds(query, sourceIds) {
-    const expression = ftsQuery(query);
-    if (!expression) return [];
-    return this.database
-      .prepare(`
-        SELECT item_id
-        FROM documents_fts
-        WHERE documents_fts MATCH ?
-          AND item_id IN (
-            SELECT item_id FROM documents
-            WHERE source_id IN (${sourceIds.map(() => "?").join(",")})
-          )
-        ORDER BY bm25(documents_fts)
-        LIMIT 201
-      `)
-      .all(expression, ...sourceIds)
-      .map(({ item_id }) => item_id);
+    return lexicalCandidateIds(this.database, query, sourceIds);
   }
 
   #hydrateResult(itemIds, mode) {
@@ -445,10 +462,7 @@ export class SemanticSearchService {
       query: `query: ${normalized}`,
       sourceIds,
     });
-    const resultIds = reciprocalRankFusion([
-      lexical,
-      semantic.map(([itemId]) => itemId),
-    ]);
+    const resultIds = hybridCandidateIds(lexical, semantic.map(([itemId]) => itemId));
     return this.#hydrateResult(resultIds, "hybrid");
   }
 

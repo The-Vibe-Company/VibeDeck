@@ -56,7 +56,7 @@ function semanticCandidates(queryVector, sourceIds) {
     }
     scores.push([id.slice(id.indexOf("\u0000") + 1), score]);
   }
-  scores.sort((first, second) => second[1] - first[1]);
+  scores.sort((first, second) => second[1] - first[1] || first[0].localeCompare(second[0]));
   const bestScore = scores[0]?.[1] ?? -1;
   const threshold = Math.max(0.72, bestScore - 0.1);
   return scores.filter(([, score]) => score >= threshold).slice(0, 201);
