@@ -3602,12 +3602,8 @@ function FeedPanelView({
               <span className="article-source__full">{source?.name ?? "Source"}</span>
             </span>
             {!seen && !opened && <em>Nouveau</em>}
-            {seen && !opened && (
-              <em className="is-seen">✓<span className="article-state-label"> Vu</span></em>
-            )}
-            {opened && (
-              <em className="is-opened">✓<span className="article-state-label"> Ouvert</span></em>
-            )}
+            {seen && !opened && <em className="is-seen">Vu</em>}
+            {opened && <em className="is-opened">Ouvert</em>}
           </span>
         </span>
         <time

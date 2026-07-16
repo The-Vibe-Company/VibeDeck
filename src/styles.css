@@ -1134,22 +1134,6 @@ button:disabled {
   text-transform: uppercase;
 }
 
-.article-meta em {
-  color: var(--amber);
-  font-style: normal;
-}
-
-.article-meta em.is-seen,
-.article-meta em.is-opened {
-  color: var(--muted-dim);
-  letter-spacing: 0;
-  text-transform: none;
-}
-
-.article-meta em.is-opened {
-  color: var(--muted);
-}
-
 .article-copy > strong {
   display: block;
   /* Mesure calibrée : ~90 caractères par ligne devenaient illisibles ;
@@ -1193,29 +1177,11 @@ button:disabled {
   white-space: nowrap;
 }
 
+/* Le poids et la couleur du titre portent déjà le signal Nouveau/Vu/Ouvert
+   à l'œil (pastille + graisse) ; le libellé quitte l'écran (motif
+   sr-only, comme le nom de la source) mais les trois états restent
+   distincts pour les aides techniques. */
 .article-meta > em {
-  flex: 0 0 auto;
-  /* 9px × 2.2 ≈ la hauteur de la première ligne du titre : la coche
-     s'aligne optiquement sur le fer du titre. */
-  line-height: 2.2;
-}
-
-/* Le liseré ambre + la graisse portent déjà le signal « Nouveau » : le
-   libellé quitte l'écran (mais reste dans le nom accessible) pour rendre
-   chaque pixel au titre. Les coches « vu / ouvert » restent visibles. */
-.article-meta > em:not(.is-seen):not(.is-opened) {
-  position: absolute;
-  overflow: hidden;
-  width: 1px;
-  height: 1px;
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
-
-/* La coche seule suffit à l'écran ; le libellé « Vu / Ouvert » reste dans
-   l'arbre d'accessibilité (motif sr-only, comme le nom de la source) pour
-   que les trois états demeurent distincts hors du visuel. */
-.article-state-label {
   position: absolute;
   overflow: hidden;
   width: 1px;
