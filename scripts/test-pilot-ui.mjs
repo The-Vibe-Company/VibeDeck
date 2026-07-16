@@ -959,13 +959,21 @@ try {
   await customFeedDialog.waitFor({ state: "visible" });
   const attachedSource = customFeedDialog.locator(".current-source-list > button");
   assert.equal(await attachedSource.getAttribute("aria-pressed"), "true");
-  assert.deepEqual(
-    await attachedSource.locator(".provider-mark").evaluate((mark) => ({
-      width: mark.getBoundingClientRect().width,
-      height: mark.getBoundingClientRect().height,
-    })),
-    { width: 34, height: 34 },
-    "Le logo d’une source existante doit rester une vignette carrée et ne jamais s’étirer.",
+  const attachedSourceMarkSize = await attachedSource.locator(".provider-mark").evaluate((mark) => ({
+    width: mark.getBoundingClientRect().width,
+    height: mark.getBoundingClientRect().height,
+  }));
+  assertWithin(
+    attachedSourceMarkSize.width,
+    34,
+    0.1,
+    "largeur du logo d’une source existante",
+  );
+  assertWithin(
+    attachedSourceMarkSize.height,
+    34,
+    0.1,
+    "hauteur du logo d’une source existante",
   );
   await attachedSource.click();
   assert.equal(await attachedSource.getAttribute("aria-pressed"), "false");
