@@ -32,6 +32,7 @@ import {
   resolveReaderArticle,
 } from "./article-reader.mjs";
 import { createSemanticModelDownloader } from "./semantic-model-download.mjs";
+import { resolvePackagedSemanticModelPaths } from "./semantic-model-storage.mjs";
 import {
   SemanticSearchService,
   assertModelDownloadUrl,
@@ -1530,8 +1531,17 @@ if (!hasSingleInstanceLock) {
         app.exit(1);
       },
     });
+    const semanticSearchRootPath = path.join(app.getPath("userData"), "semantic-search");
+    const packagedSemanticModelPaths = app.isPackaged
+      ? resolvePackagedSemanticModelPaths({
+          appDataPath: app.getPath("appData"),
+          userDataPath: app.getPath("userData"),
+        })
+      : null;
     semanticSearch = new SemanticSearchService({
-      rootPath: path.join(app.getPath("userData"), "semantic-search"),
+      rootPath: semanticSearchRootPath,
+      modelPath: packagedSemanticModelPaths?.modelPath,
+      legacyModelPaths: packagedSemanticModelPaths?.legacyModelPaths,
       getDocuments: () => semanticSearchSourceIds({ kind: "all" }).length
         ? engine.getSemanticSearchDocuments(semanticSearchSourceIds({ kind: "all" }))
         : [],
