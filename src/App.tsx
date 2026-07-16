@@ -3900,6 +3900,7 @@ function CustomSourceTester({
   function invalidate(nextInput?: string, nextKind?: ConnectorPreference) {
     latestProbe.invalidate();
     testedKeyRef.current = null;
+    onResolutionPendingChange(Boolean((nextInput ?? input).trim()));
     const probeId = probeIdRef.current;
     probeIdRef.current = null;
     if (probeId) void window.vibedeck.cancelSourceProbe(probeId).catch(() => undefined);
