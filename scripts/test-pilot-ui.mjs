@@ -593,13 +593,48 @@ try {
     .evaluate((panel) => panel.style.getPropertyValue("--feed-text-scale").trim());
   const firstTitleFontSize = () => page.locator(".article-copy > strong").first()
     .evaluate((title) => getComputedStyle(title).fontSize);
+  // Mesure calibrée : la colonne de titre est exprimée en ch, donc elle suit
+  // A±. Jamais de px absolu ici : le ch dépend des métriques de la fonte.
+  const firstTitleMeasure = () => page.locator(".article-copy > strong").first()
+    .evaluate((title) => {
+      const row = title.closest(".article-row");
+      const time = row.querySelector("time");
+      const rowRect = row.getBoundingClientRect();
+      const timeRect = time.getBoundingClientRect();
+      return {
+        width: Number.parseFloat(getComputedStyle(title).width),
+        wrapStyle: getComputedStyle(title).getPropertyValue("text-wrap-style"),
+        // 7a : l'heure ferme la ligne à droite (margin-left:auto), reliée
+        // au titre par le vide — pas de colonne fixe, pas de centrage.
+        timeToRowRightEdge: rowRect.right - timeRect.right,
+      };
+    });
   assert.equal(await defaultTextScale(), "1");
   assert.equal(await panelTextScaleOverride(), "", "Un fil neuf suit la taille par défaut.");
   assert.equal(await firstTitleFontSize(), "14px", "Le titre par défaut doit faire 14px.");
+  const baselineMeasure = await firstTitleMeasure();
+  assert.equal(
+    baselineMeasure.wrapStyle,
+    "pretty",
+    "Le titre doit composer en text-wrap: pretty (pas de mot orphelin).",
+  );
+  assert.ok(
+    Number.isFinite(baselineMeasure.width) && baselineMeasure.width > 0,
+    "Le titre doit avoir une mesure calibrée (56ch résolu en px).",
+  );
+  assert.ok(
+    baselineMeasure.timeToRowRightEdge < 20,
+    "L'heure doit fermer la ligne contre le bord droit de la rangée (padding uniquement).",
+  );
   const growTextButton = page.getByRole("button", { name: "Agrandir le texte des fils" });
   await growTextButton.click();
   assert.equal(await defaultTextScale(), "1.1");
   assert.equal(await firstTitleFontSize(), "15.4px", "A+ global doit agrandir les titres.");
+  const grownMeasure = await firstTitleMeasure();
+  assert.ok(
+    Math.abs(grownMeasure.width - baselineMeasure.width * 1.1) < 0.5,
+    "La mesure du titre (ch) doit suivre l'échelle du texte (×1.1 après A+).",
+  );
   assert.equal(
     await page.evaluate(() => window.localStorage.getItem("vibedeck.feedTextScale")),
     "1.1",
@@ -654,25 +689,25 @@ try {
     "Les rôles de zoom fenêtre doivent être retirés du menu pour libérer Cmd/Ctrl +/−/0.",
   );
 
-  // Mode d'affichage DENSE/CONFORT : défaut dense, bascule par fil, persistance.
+  // Layout unique des fils : le mode dense est le seul layout, sans bascule.
   const filPanel = page.locator(".dashboard-panel--fil").first();
-  assert.equal(
-    await filPanel.getAttribute("data-density"),
-    "dense",
-    "Le mode dense doit être le défaut des fils.",
-  );
   const firstDaySeparator = page.locator(".article-day-separator").first();
   await firstDaySeparator.waitFor({ state: "visible" });
   // « HIER » toléré : une suite qui enjambe minuit ne doit pas devenir rouge.
   assert.match(
     (await firstDaySeparator.textContent()) ?? "",
     /AUJOURD’HUI|HIER/,
-    "Le fil dense doit ouvrir sur le séparateur du jour.",
+    "Le fil doit ouvrir sur le séparateur du jour.",
   );
   assert.equal(
-    await page.locator(".article-summary").first().isHidden(),
-    true,
-    "Le résumé doit être masqué en mode dense.",
+    await page.locator(".article-summary").count(),
+    0,
+    "Le résumé n'existe plus dans la rangée : le titre est roi.",
+  );
+  assert.equal(
+    await filPanel.getByRole("button", { name: "Confort" }).count(),
+    0,
+    "La bascule Dense/Confort doit avoir disparu du toolbar.",
   );
   assert.equal(
     await page.locator(".article-row .article-provider .provider-mark--fallback").count() > 0,
@@ -684,7 +719,7 @@ try {
       (title) => getComputedStyle(title).whiteSpace,
     ),
     "normal",
-    "Le titre dense ne doit jamais être tronqué : il passe à la ligne.",
+    "Le titre ne doit jamais être tronqué : il passe à la ligne.",
   );
   assert.equal(
     await page.locator(".article-source__abbr").count(),
@@ -696,49 +731,7 @@ try {
       (element) => getComputedStyle(element).width,
     ),
     "1px",
-    "Le nom complet de la source doit rester accessible sans occuper la rangée dense.",
-  );
-  const denseModeButton = filPanel.getByRole("button", { name: "Dense" });
-  const comfortModeButton = filPanel.getByRole("button", { name: "Confort" });
-  await comfortModeButton.click();
-  await page.waitForFunction(() =>
-    document.querySelector(".dashboard-panel--fil")?.getAttribute("data-density") === "comfort");
-  await page.locator(".article-summary").first().waitFor({ state: "visible" });
-  assert.equal(
-    await page.locator(".article-day-separator").count(),
-    0,
-    "Le mode confort doit rester le layout historique, sans séparateurs.",
-  );
-  assert.deepEqual(
-    Object.values(await page.evaluate(() =>
-      JSON.parse(window.localStorage.getItem("vibedeck.feedDensity.overrides") ?? "{}"))),
-    ["comfort"],
-    "L'override de densité par fil doit être persisté.",
-  );
-  await denseModeButton.click();
-  await page.waitForFunction(() =>
-    document.querySelector(".dashboard-panel--fil")?.getAttribute("data-density") === "dense");
-  assert.deepEqual(
-    await page.evaluate(() =>
-      JSON.parse(window.localStorage.getItem("vibedeck.feedDensity.overrides") ?? "{}")),
-    {},
-    "Revenir au défaut doit retirer l'override du fil.",
-  );
-  await comfortModeButton.click({ modifiers: ["Alt"] });
-  await page.waitForFunction(() =>
-    document.querySelector(".dashboard-panel--fil")?.getAttribute("data-density") === "comfort");
-  assert.equal(
-    await page.evaluate(() => window.localStorage.getItem("vibedeck.feedDensity")),
-    "comfort",
-    "Alt+clic doit changer le défaut global de densité.",
-  );
-  await denseModeButton.click({ modifiers: ["Alt"] });
-  await page.waitForFunction(() =>
-    document.querySelector(".dashboard-panel--fil")?.getAttribute("data-density") === "dense");
-  assert.equal(
-    await page.evaluate(() => window.localStorage.getItem("vibedeck.feedDensity")),
-    "dense",
-    "Le défaut global doit revenir à dense pour la suite du parcours.",
+    "Le nom complet de la source doit rester accessible sans occuper la rangée.",
   );
 
   assert.equal(
@@ -1535,32 +1528,44 @@ try {
     },
     panelId,
   );
-  await page.evaluate(() => new Promise(
-    (resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)),
-  ));
-  assert.equal(
-    await panelLeaf.getByLabel("Plus d’actions", { exact: true }).evaluate(
-      (trigger) => document.activeElement === trigger,
-    ),
-    true,
-    "Masquer un contrôle secondaire focalisé doit transférer le vrai focus vers Plus d’actions.",
+  // Le transfert de focus suit la requête container + un requestAnimationFrame :
+  // sur un runner lent (Windows CI), la frame peut dépasser un double rAF —
+  // attendre le focus réel plutôt qu'un délai fixe.
+  await waitForDomFocus(
+    page,
+    panelLeaf.getByLabel("Plus d’actions", { exact: true }),
+    "Masquer un contrôle secondaire focalisé doit transférer le vrai focus vers Plus d’actions",
   );
   await page.keyboard.press("Enter");
   const thresholdMenu = page.getByRole("menu", { name: "Actions secondaires du panel" });
   await thresholdMenu.waitFor({ state: "visible" });
   await narrowWindow.evaluate((window) => window.setSize(1_600, 820));
   await thresholdMenu.waitFor({ state: "detached" });
-  assert.equal(
-    await panelLeaf.locator(".dashboard-panel").evaluate((panel) => {
-      const active = document.activeElement;
-      return active instanceof HTMLElement &&
-        panel.contains(active) &&
-        Boolean(active.closest(".panel-action--secondary")) &&
-        active.getClientRects().length > 0;
-    }),
-    true,
-    "Repasser au mode large doit fermer le menu et focaliser une action directe visible.",
-  );
+  {
+    const panelHandle = await panelLeaf.locator(".dashboard-panel").elementHandle();
+    assert.ok(panelHandle, "Le panel large doit rester présent.");
+    try {
+      const wait = await page.waitForFunction(
+        (panel) => {
+          const active = document.activeElement;
+          return active instanceof HTMLElement &&
+            panel.contains(active) &&
+            Boolean(active.closest(".panel-action--secondary")) &&
+            active.getClientRects().length > 0;
+        },
+        panelHandle,
+        { polling: "raf", timeout: 5_000 },
+      );
+      await wait.dispose();
+    } catch (error) {
+      throw new Error(
+        "Repasser au mode large doit fermer le menu et focaliser une action directe visible.",
+        { cause: error },
+      );
+    } finally {
+      await panelHandle.dispose();
+    }
+  }
   await narrowWindow.evaluate((window) => window.setSize(900, 820));
   await page.waitForFunction(
     (targetPanelId) => {
@@ -2031,32 +2036,32 @@ try {
   );
   await page.keyboard.press("Escape");
   await adaptiveMenu.waitFor({ state: "detached" });
-  assert.equal(
-    await overflowTrigger.evaluate((trigger) => document.activeElement === trigger),
-    true,
-    "Échap doit fermer le menu et restituer le focus à son déclencheur.",
+  // Même restitution que Tab/Maj+Tab : le focus part dans un
+  // requestAnimationFrame, attendre le focus réel plutôt que l'instantané.
+  await waitForDomFocus(
+    page,
+    overflowTrigger,
+    "Échap doit fermer le menu et restituer le focus à son déclencheur",
   );
   await overflowTrigger.click();
   await adaptiveMenu.waitFor({ state: "visible" });
   await page.keyboard.press("Tab");
   await adaptiveMenu.waitFor({ state: "detached" });
-  assert.equal(
-    await panelLeaf.getByLabel("Agrandir", { exact: true }).evaluate(
-      (button) => document.activeElement === button,
-    ),
-    true,
-    "Tab doit fermer le menu portalisé et poursuivre sur le contrôle visible suivant.",
+  // Le focus de sortie part dans un requestAnimationFrame : fenêtre cachée,
+  // la frame peut retarder — attendre le focus réel plutôt que l'instantané.
+  await waitForDomFocus(
+    page,
+    panelLeaf.getByLabel("Agrandir", { exact: true }),
+    "Tab doit fermer le menu portalisé et poursuivre sur le contrôle visible suivant",
   );
   await overflowTrigger.click();
   await adaptiveMenu.waitFor({ state: "visible" });
   await page.keyboard.press("Shift+Tab");
   await adaptiveMenu.waitFor({ state: "detached" });
-  assert.equal(
-    await panelLeaf.getByLabel("Rechercher dans ce fil", { exact: true }).evaluate(
-      (button) => document.activeElement === button,
-    ),
-    true,
-    "Maj + Tab doit fermer le menu portalisé et revenir au contrôle visible précédent.",
+  await waitForDomFocus(
+    page,
+    panelLeaf.getByLabel("Rechercher dans ce fil", { exact: true }),
+    "Maj + Tab doit fermer le menu portalisé et revenir au contrôle visible précédent",
   );
   await overflowTrigger.click();
   await adaptiveMenu.waitFor({ state: "visible" });
@@ -2552,7 +2557,7 @@ try {
   console.log(`✓ viewport initial: scrollTop ${beforeArrival.scrollTop.toFixed(1)}px`);
   console.log(`✓ arrivée automatique: même article à ${revealed.selectedTop.toFixed(1)}px, compensation ${(revealed.scrollTop - beforeArrival.scrollTop).toFixed(1)}px`);
   console.log("✓ arrivée en tête: scrollTop reste à zéro");
-  console.log("✓ mode dense par défaut: titre jamais tronqué, source réduite à son icône, bascule Confort persistée");
+  console.log("✓ layout unique: titre jamais tronqué, mesure 56ch qui suit A±, source réduite à son icône");
   console.log("✓ pastille « nouveaux »: compte hors viewport, clic ramène en haut, jamais de barrière d'insertion");
   console.log("✓ en-têtes 28 px, menu adaptatif et fraîcheur signalée dans un fil étroit");
   console.log("✓ lecteur natif: Échap rend le focus au fil et les flèches reprennent immédiatement");

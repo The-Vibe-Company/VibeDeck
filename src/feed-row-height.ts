@@ -38,44 +38,34 @@ export function resetFeedRowHeightCache() {
 export function estimateFeedRowHeight(
   item: FeedItem | null,
   width: number,
-  density: "dense" | "comfort",
   textScale: number,
   hasDaySeparator: boolean,
 ) {
   const separatorHeight = hasDaySeparator ? 20 * textScale : 0;
-  if (!item) return separatorHeight + (density === "dense" ? 34 : 82) * textScale;
-  const read = item.seenAt !== null || item.openedAt !== null;
   const titleSize = 14 * textScale;
-  const titleLineHeight = titleSize * 1.35;
-  const titleWeight = read ? (density === "dense" ? 450 : 550) : 650;
+  const titleLineHeight = titleSize * 1.42;
+  // 0.65em de padding haut et bas, résolus dans la fonte de la rangée.
+  const rowPadding = 1.3 * titleSize;
+  if (!item) return separatorHeight + rowPadding + titleLineHeight + 1;
+  const read = item.seenAt !== null || item.openedAt !== null;
+  const titleWeight = read ? 480 : 680;
   const titleFont = `${titleWeight} ${titleSize}px "Libre Franklin Variable"`;
-
-  if (density === "dense") {
-    const chromeWidth = 20 + 80 * textScale + 44 + 21 + 18;
-    const titleWidth = Math.max(24, width - chromeWidth);
-    const titleHeight = textLines(item.title, titleFont, titleWidth, titleLineHeight) * titleLineHeight;
-    return separatorHeight + Math.max(20, titleHeight) + 11;
-  }
-
-  const contentWidth = Math.max(24, width - 70 * textScale - 15 - 20 - 18);
-  const titleHeight = textLines(
-    item.title,
-    titleFont,
-    contentWidth,
-    titleLineHeight,
-    2,
-  ) * titleLineHeight;
-  const metaHeight = 9 * textScale * 1.2 + 3;
-  const summarySize = 11.5 * textScale;
-  const summaryLineHeight = summarySize * 1.4;
-  const summaryHeight = item.summary
-    ? 3 + textLines(
-        item.summary,
-        `400 ${summarySize}px "Libre Franklin Variable"`,
-        contentWidth,
-        summaryLineHeight,
-        2,
-      ) * summaryLineHeight
-    : 0;
-  return separatorHeight + 17 + metaHeight + titleHeight + summaryHeight;
+  // Chrome horizontal de la rangée 7a (boîte de réception) : pastille
+  // non-lu, icône, gaps flex, coche éventuelle, et la largeur approchée
+  // de l'heure — celle-ci ne cadre plus une colonne fixe (l'heure flotte
+  // via margin-left:auto), l'estimation reste volontairement large :
+  // measureElement corrige après le rendu réel de chaque rangée.
+  const chromeWidth =
+    0.5 * titleSize +
+    20 * textScale +
+    (read ? 4 : 3) * 0.8 * titleSize +
+    (read ? 14 * textScale : 0) +
+    46 * textScale;
+  // La colonne du titre plafonne à 56ch (≈ 0.6em par caractère en Libre
+  // Franklin). L'estimation n'a pas besoin d'être exacte : le virtualiseur
+  // mesure ensuite chaque rangée rendue (measureElement).
+  const measureCap = 56 * 0.6 * titleSize;
+  const titleWidth = Math.max(24, Math.min(measureCap, width - chromeWidth));
+  const titleHeight = textLines(item.title, titleFont, titleWidth, titleLineHeight) * titleLineHeight;
+  return separatorHeight + Math.max(20 * textScale, titleHeight) + rowPadding + 1;
 }

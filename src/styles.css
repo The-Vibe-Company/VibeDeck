@@ -936,36 +936,6 @@ button:disabled {
   border-style: dashed;
 }
 
-.feed-toolbar__density {
-  display: inline-flex;
-  flex: 0 0 auto;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-}
-
-.feed-toolbar__density > button {
-  height: 18px;
-  padding: 0 6px;
-  border: none;
-  background: transparent;
-  color: var(--muted-dim);
-  cursor: pointer;
-  font: 8.5px/1 var(--mono);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.feed-toolbar__density > button:hover {
-  color: var(--text);
-}
-
-.feed-toolbar__density > button.is-active {
-  background: var(--raised);
-  color: var(--text);
-  font-weight: 600;
-}
-
 .source-dot {
   display: inline-block;
   width: 5px;
@@ -1071,17 +1041,26 @@ button:disabled {
   background: var(--panel);
 }
 
+/* ---- Rangée d'article (design « 7a — boîte de réception ») ----
+   Le pattern client mail : pastille non-lu, icône du média, puis le
+   titre plafonné à 56ch, jamais tronqué. L'heure seule ferme la ligne à
+   droite, reliée par le vide (margin-left:auto) — aucun point de
+   bascule, la même rangée fonctionne à 260px comme à 2000px. La rangée
+   porte la fonte du titre (14px × échelle) : gouttière, espacements et
+   mesure sont exprimés en em/ch et suivent donc A± ensemble. */
+
 .article-row {
   position: relative;
-  display: grid;
+  display: flex;
+  align-items: flex-start;
   width: 100%;
-  grid-template-columns: calc(70px * var(--feed-text-scale)) minmax(0, 1fr) 15px;
-  gap: 10px;
-  padding: 8px 10px 8px 8px;
+  gap: 0.8em;
+  padding: 0.65em 1em 0.65em 0.7em;
   border-bottom: 1px solid var(--line-soft);
   background: transparent;
   color: var(--text);
   cursor: pointer;
+  font-size: calc(14px * var(--feed-text-scale));
   text-align: left;
 }
 
@@ -1103,12 +1082,17 @@ button:disabled {
   color: var(--text-read);
 }
 
+/* L'heure ferme la ligne à droite ; margin-left:auto absorbe tout
+   l'espace libre entre le titre et elle — c'est ce vide, pas une
+   colonne, qui varie avec la largeur du panel (« zéro breakpoint »). */
 .article-row > time {
-  padding-top: 1px;
+  margin-left: auto;
+  flex: 0 0 auto;
   color: var(--muted-dim);
   font-family: var(--mono);
   font-size: calc(10px * var(--feed-text-scale));
-  line-height: 1.4;
+  /* 10px × 2 = la hauteur de la première ligne du titre (14px × 1.42). */
+  line-height: 2;
   font-variant-numeric: tabular-nums;
   text-align: right;
   white-space: nowrap;
@@ -1119,139 +1103,72 @@ button:disabled {
   color: var(--muted-dim);
 }
 
-.article-copy {
-  display: block;
-  min-width: 0;
+/* Pastille non-lu : seul signal ambre de la rangée, avant l'icône. */
+.article-unread-dot {
+  width: 0.5em;
+  height: 0.5em;
+  margin-top: 0.5em;
+  border-radius: 50%;
+  background: transparent;
+  flex: 0 0 auto;
+}
+
+.article-row:not(.article-row--seen):not(.article-row--opened) .article-unread-dot {
+  background: var(--amber);
+}
+
+/* Les conteneurs intermédiaires s'effacent : leurs enfants deviennent des
+   éléments flex directs de la rangée, dans l'ordre du DOM (titre puis
+   méta, réordonnés dans le JSX pour suivre visuellement le titre). */
+.article-copy,
+.article-meta {
+  display: contents;
 }
 
 .article-meta {
-  display: flex;
-  min-width: 0;
-  align-items: baseline;
-  gap: 7px;
-  margin-bottom: 3px;
-  overflow: hidden;
   color: var(--muted-dim);
   font-family: var(--mono);
   font-size: calc(9px * var(--feed-text-scale));
   line-height: 1.2;
   letter-spacing: 0.09em;
   text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.article-meta em {
-  flex: 0 0 auto;
-  color: var(--amber);
-  font-style: normal;
-}
-
-.article-source {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.article-meta em.is-seen,
-.article-meta em.is-opened {
-  color: var(--muted-dim);
-  letter-spacing: 0;
-  text-transform: none;
-}
-
-.article-meta em.is-opened {
-  color: var(--muted);
 }
 
 .article-copy > strong {
-  display: -webkit-box;
-  overflow: hidden;
+  display: block;
+  /* Mesure calibrée : ~90 caractères par ligne devenaient illisibles ;
+     max-width la plafonne, résolue dans la fonte du titre elle suit
+     automatiquement A±. min-width:0 autorise le rétrécissement flex en
+     dessous du contenu, condition du retour à la ligne. Le titre ne
+     grandit pas au-delà de son contenu (flex-grow:0 par défaut) : c'est
+     le vide avant l'heure qui absorbe le reste, jamais le titre. */
+  min-width: 0;
+  max-width: 56ch;
+  overflow-wrap: break-word;
   font-size: calc(14px * var(--feed-text-scale));
-  font-weight: 650;
-  line-height: 1.35;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  font-weight: 680;
+  line-height: 1.42;
+  text-wrap: pretty;
 }
 
 .article-row--seen .article-copy > strong,
 .article-row--opened .article-copy > strong {
-  font-weight: 550;
+  font-weight: 480;
 }
-
-.article-summary {
-  display: -webkit-box;
-  margin-top: 3px;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: calc(11.5px * var(--feed-text-scale));
-  line-height: 1.4;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.article-row--seen .article-summary,
-.article-row--opened .article-summary {
-  color: var(--muted-dim);
-}
-
-.article-open {
-  margin-top: 12px;
-  color: var(--muted-dim);
-  opacity: 0;
-  transition: opacity 100ms ease, color 100ms ease;
-}
-
-.article-row:hover .article-open,
-.article-row:focus-visible .article-open {
-  color: var(--amber-light);
-  opacity: 1;
-}
-
-/* ---- Mode dense : une rangée par article, colonnes explicites ----
-   Le titre est roi : il démarre juste après l'icône du média et n'est
-   jamais tronqué (retour à la ligne). L'heure, compacte, ferme la ligne. */
 
 .article-provider {
-  display: none;
-}
-
-.dashboard-panel[data-density="dense"] .article-row {
-  grid-template-columns:
-    20px
-    minmax(0, 1fr)
-    max-content
-    max-content;
-  align-items: start;
-  gap: 7px;
-  padding-block: 5px;
-  border-left: 2px solid transparent;
-}
-
-/* L'ambre reste un signal : liseré uniquement pour le non-vu. */
-.dashboard-panel[data-density="dense"]
-  .article-row:not(.article-row--seen):not(.article-row--opened) {
-  border-left-color: var(--amber);
-}
-
-/* Les conteneurs de la variante confort s'effacent : leurs enfants deviennent
-   des cellules de la grille de la rangée, dans des colonnes explicites. */
-.dashboard-panel[data-density="dense"] .article-copy,
-.dashboard-panel[data-density="dense"] .article-meta {
-  display: contents;
-}
-
-.dashboard-panel[data-density="dense"] .article-provider {
   display: block;
-  width: 20px;
-  height: 20px;
-  grid-area: 1 / 1;
+  flex: 0 0 auto;
 }
 
-.dashboard-panel[data-density="dense"] .article-provider .provider-mark {
-  border-radius: 5px;
+.article-provider .provider-mark {
+  /* 0.35em de la fonte de la rangée : le rayon suit A± comme l'icône. */
+  border-radius: 0.35em;
 }
 
-.dashboard-panel[data-density="dense"] .article-source {
+/* L'icône du média porte le visuel ; le nom quitte l'écran mais reste dans
+   le nom accessible. */
+.article-source {
   position: absolute;
   overflow: hidden;
   width: 1px;
@@ -1260,47 +1177,17 @@ button:disabled {
   white-space: nowrap;
 }
 
-.dashboard-panel[data-density="dense"] .article-copy > strong {
-  display: block;
-  overflow-wrap: break-word;
-  line-height: 1.35;
-  grid-area: 1 / 2;
-}
-
-.dashboard-panel[data-density="dense"] .article-row--seen .article-copy > strong,
-.dashboard-panel[data-density="dense"] .article-row--opened .article-copy > strong {
-  font-weight: 450;
-}
-
-.dashboard-panel[data-density="dense"] .article-meta > em {
-  grid-area: 1 / 3;
-}
-
-/* Le liseré ambre + la graisse portent déjà le signal « Nouveau » : le
-   libellé quitte l'écran (mais reste dans le nom accessible) pour rendre
-   chaque pixel au titre. Les coches « vu / ouvert » restent visibles. */
-.dashboard-panel[data-density="dense"] .article-meta > em:not(.is-seen):not(.is-opened) {
+/* Le poids et la couleur du titre portent déjà le signal Nouveau/Vu/Ouvert
+   à l'œil (pastille + graisse) ; le libellé quitte l'écran (motif
+   sr-only, comme le nom de la source) mais les trois états restent
+   distincts pour les aides techniques. */
+.article-meta > em {
   position: absolute;
   overflow: hidden;
   width: 1px;
   height: 1px;
   clip-path: inset(50%);
   white-space: nowrap;
-}
-
-/* Plafond : les vrais formats (« 08/07 09:05 ») tiennent, mais l'heure ne
-   peut jamais pousser la rangée hors du panel ni se faire rogner en silence. */
-.dashboard-panel[data-density="dense"] .article-row > time {
-  overflow: hidden;
-  max-width: calc(80px * var(--feed-text-scale));
-  text-overflow: ellipsis;
-  grid-area: 1 / 4;
-}
-
-.dashboard-panel[data-density="dense"] .article-summary,
-.dashboard-panel[data-density="dense"] .article-open,
-.dashboard-panel[data-density="dense"] .article-state-label {
-  display: none;
 }
 
 .article-day-separator {
@@ -3205,35 +3092,9 @@ button:disabled {
   .feed-refresh-action::after {
     display: block;
   }
-
-  .article-summary {
-    display: none;
-  }
-
-  .article-row {
-    grid-template-columns: calc(68px * var(--feed-text-scale)) minmax(0, 1fr);
-    padding-block: 7px;
-  }
-
-  .article-open {
-    display: none;
-  }
-
-  .article-copy > strong {
-    -webkit-line-clamp: 2;
-  }
 }
 
 @container (max-width: 390px) {
-  .article-meta {
-    gap: 4px;
-  }
-
-  .article-row {
-    grid-template-columns: calc(65px * var(--feed-text-scale)) minmax(0, 1fr);
-    gap: 7px;
-  }
-
   .panel-type-grid {
     grid-template-columns: 1fr;
   }

@@ -104,12 +104,9 @@ const FEED_TEXT_SCALE_OVERRIDES_STORAGE_KEY = "vibedeck.feedTextScale.overrides"
 const FEED_TEXT_SCALE_MIN = 0.8;
 const FEED_TEXT_SCALE_MAX = 1.6;
 const FEED_TEXT_SCALE_STEP = 0.1;
-const FEED_DENSITY_STORAGE_KEY = "vibedeck.feedDensity";
-const FEED_DENSITY_OVERRIDES_STORAGE_KEY = "vibedeck.feedDensity.overrides";
 const PANEL_OVERFLOW_BREAKPOINT = 760;
 const PANEL_ACTION_MENU_EVENT = "vibedeck:panel-action-menu-change";
 
-type FeedDensity = "comfort" | "dense";
 const MIN_HORIZONTAL_SPLIT_WIDTH = MIN_PANEL_WIDTH * 2 + SPLIT_DIVIDER_SIZE;
 const MIN_VERTICAL_SPLIT_HEIGHT = MIN_PANEL_HEIGHT * 2 + SPLIT_DIVIDER_SIZE;
 const PANEL_FOCUSABLE_SELECTOR =
@@ -281,33 +278,6 @@ function loadFeedTextScaleOverrides(): Record<string, number> {
   }
 }
 
-function normalizeFeedDensity(value: unknown): FeedDensity {
-  return value === "comfort" ? "comfort" : "dense";
-}
-
-function loadFeedDensity(): FeedDensity {
-  try {
-    return normalizeFeedDensity(window.localStorage.getItem(FEED_DENSITY_STORAGE_KEY));
-  } catch {
-    return "dense";
-  }
-}
-
-function loadFeedDensityOverrides(): Record<string, FeedDensity> {
-  try {
-    const raw = window.localStorage.getItem(FEED_DENSITY_OVERRIDES_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const overrides: Record<string, FeedDensity> = {};
-    for (const [panelId, value] of Object.entries(parsed)) {
-      if (value === "comfort" || value === "dense") overrides[panelId] = value;
-    }
-    return overrides;
-  } catch {
-    return {};
-  }
-}
 
 function isTypingTarget(target: EventTarget | null) {
   return (
@@ -454,8 +424,6 @@ export default function App() {
   const [clock, setClock] = useState(() => new Date());
   const [feedTextScale, setFeedTextScale] = useState(loadFeedTextScale);
   const [feedTextScaleOverrides, setFeedTextScaleOverrides] = useState(loadFeedTextScaleOverrides);
-  const [feedDensity, setFeedDensity] = useState(loadFeedDensity);
-  const [feedDensityOverrides, setFeedDensityOverrides] = useState(loadFeedDensityOverrides);
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
   const readyUpdateVersion = updateState?.status === "ready"
     ? updateState.availableVersion ?? "suivante"
@@ -664,35 +632,6 @@ export default function App() {
     });
   }, [panelById, state]);
 
-  useLayoutEffect(() => {
-    try {
-      window.localStorage.setItem(FEED_DENSITY_STORAGE_KEY, feedDensity);
-    } catch {
-      // Stockage indisponible : le réglage ne vaut que pour la session en cours.
-    }
-  }, [feedDensity]);
-
-  useLayoutEffect(() => {
-    try {
-      window.localStorage.setItem(
-        FEED_DENSITY_OVERRIDES_STORAGE_KEY,
-        JSON.stringify(feedDensityOverrides),
-      );
-    } catch {
-      // Stockage indisponible : le réglage ne vaut que pour la session en cours.
-    }
-  }, [feedDensityOverrides]);
-
-  useEffect(() => {
-    if (!state) return;
-    setFeedDensityOverrides((previous) => {
-      const kept = Object.fromEntries(
-        Object.entries(previous).filter(([panelId]) => panelById.has(panelId)),
-      );
-      return Object.keys(kept).length === Object.keys(previous).length ? previous : kept;
-    });
-  }, [panelById, state]);
-
   const adjustFeedTextScale = useCallback(
     (direction: -1 | 0 | 1, panelId: string | null = null) => {
       if (panelId) {
@@ -720,32 +659,6 @@ export default function App() {
       showToast(`Texte des fils (défaut) : ${Math.round(next * 100)} %`);
     },
     [feedTextScale, feedTextScaleOverrides, showToast],
-  );
-
-  const setFeedPanelDensity = useCallback(
-    (panelId: string, mode: FeedDensity, asGlobalDefault = false) => {
-      if (asGlobalDefault) {
-        setFeedDensity(mode);
-        setFeedDensityOverrides({});
-        showToast(
-          mode === "dense"
-            ? "Affichage dense (tous les fils)"
-            : "Affichage confort (tous les fils)",
-        );
-        return;
-      }
-      setFeedDensityOverrides((previous) => {
-        if (mode === feedDensity) {
-          if (!(panelId in previous)) return previous;
-          const { [panelId]: _cleared, ...rest } = previous;
-          return rest;
-        }
-        if (previous[panelId] === mode) return previous;
-        return { ...previous, [panelId]: mode };
-      });
-      showToast(mode === "dense" ? "Affichage dense" : "Affichage confort");
-    },
-    [feedDensity, showToast],
   );
 
   const applyServerState = useCallback((
@@ -2018,8 +1931,6 @@ export default function App() {
           textScale={feedTextScaleOverrides[panel.id] ?? feedTextScale}
           textScaleOverride={feedTextScaleOverrides[panel.id] ?? null}
           onTextScale={(direction) => adjustFeedTextScale(direction, panel.id)}
-          density={feedDensityOverrides[panel.id] ?? feedDensity}
-          onDensity={(mode, asGlobalDefault) => setFeedPanelDensity(panel.id, mode, asGlobalDefault)}
           {...common}
         />
       );
@@ -2812,7 +2723,6 @@ interface PanelFrameProps {
   primaryActions?: React.ReactNode;
   secondaryActions?: PanelMenuAction[];
   style?: React.CSSProperties;
-  dataDensity?: FeedDensity;
   children: React.ReactNode;
 }
 
@@ -3116,7 +3026,6 @@ function PanelFrame({
   primaryActions,
   secondaryActions = [],
   style,
-  dataDensity,
   children,
 }: PanelFrameProps) {
   const dragHandle = useSplitPanelDragHandle(panelId);
@@ -3177,7 +3086,6 @@ function PanelFrame({
         focused ? " dashboard-panel--focused" : ""
       }`}
       style={style}
-      data-density={dataDensity}
       tabIndex={-1}
       onMouseDown={(event) => focusFromPointer(event.currentTarget)}
       onPointerEnter={(event) => {
@@ -3410,8 +3318,6 @@ function FeedPanelView({
   textScale,
   textScaleOverride,
   onTextScale,
-  density,
-  onDensity,
   ...frame
 }: {
   panel: FeedPanel;
@@ -3428,8 +3334,6 @@ function FeedPanelView({
   textScale: number;
   textScaleOverride: number | null;
   onTextScale: (direction: -1 | 0 | 1) => void;
-  density: FeedDensity;
-  onDensity: (mode: FeedDensity, asGlobalDefault: boolean) => void;
 } & StandardPanelActions) {
   const articleListRef = useRef<HTMLDivElement>(null);
   const hoverSeenTimerRef = useRef<{ id: string; handle: ReturnType<typeof setTimeout> } | null>(null);
@@ -3512,9 +3416,8 @@ function FeedPanelView({
       return estimateFeedRowHeight(
         item,
         listWidth || 480,
-        density,
         textScale,
-        density === "dense" && Boolean(item && feedDaySeparator(item, previous)),
+        Boolean(item && feedDaySeparator(item, previous)),
       );
     },
     overscan: 12,
@@ -3580,7 +3483,7 @@ function FeedPanelView({
       resetFeedRowHeightCache();
       rowVirtualizer.measure();
     });
-  }, [density, listWidth, rowVirtualizer, textScale]);
+  }, [listWidth, rowVirtualizer, textScale]);
 
   useLayoutEffect(() => {
     const list = articleListRef.current;
@@ -3684,36 +3587,31 @@ function FeedPanelView({
           void onOpen(item, `article-${panel.id}-${item.id}`);
         }}
       >
+        <span className="article-unread-dot" aria-hidden="true" />
+        <span className="article-provider">
+          <ProviderMark
+            providerId={source?.connectorId ?? "custom"}
+            iconPath={catalogEntry?.iconPath}
+            size={Math.round(20 * textScale)}
+          />
+        </span>
+        <span className="article-copy">
+          <strong>{item.title}</strong>
+          <span className="article-meta">
+            <span className="article-source">
+              <span className="article-source__full">{source?.name ?? "Source"}</span>
+            </span>
+            {!seen && !opened && <em>Nouveau</em>}
+            {seen && !opened && <em className="is-seen">Vu</em>}
+            {opened && <em className="is-opened">Ouvert</em>}
+          </span>
+        </span>
         <time
           dateTime={item.publishedAt ?? item.updatedAt ?? item.firstSeenAt}
           title={item.publishedAt || item.updatedAt ? undefined : "Heure indisponible"}
         >
           {formatItemTime(item)}
         </time>
-        <span className="article-provider">
-          <ProviderMark
-            providerId={source?.connectorId ?? "custom"}
-            iconPath={catalogEntry?.iconPath}
-            size={20}
-          />
-        </span>
-        <span className="article-copy">
-          <span className="article-meta">
-            <span className="article-source">
-              <span className="article-source__full">{source?.name ?? "Source"}</span>
-            </span>
-            {!seen && !opened && <em>Nouveau</em>}
-            {seen && !opened && (
-              <em className="is-seen">✓<span className="article-state-label"> Vu</span></em>
-            )}
-            {opened && (
-              <em className="is-opened">✓<span className="article-state-label"> Ouvert</span></em>
-            )}
-          </span>
-          <strong>{item.title}</strong>
-          {item.summary && <span className="article-summary">{item.summary}</span>}
-        </span>
-        <ArrowUpRight className="article-open" size={13} />
       </button>
     );
   };
@@ -3750,24 +3648,6 @@ function FeedPanelView({
       icon: <span className="text-scale-glyph">A+</span>,
       onSelect: () => onTextScale(1),
       ariaDisabled: textScale >= FEED_TEXT_SCALE_MAX,
-      group: "view",
-    },
-    {
-      id: "density-dense",
-      label: "Affichage dense",
-      icon: <Rows2 size={13} />,
-      onSelect: (event) => onDensity("dense", event?.altKey ?? false),
-      active: density === "dense",
-      shortcut: "Alt : défaut global",
-      group: "view",
-    },
-    {
-      id: "density-comfort",
-      label: "Affichage confort",
-      icon: <Columns2 size={13} />,
-      onSelect: (event) => onDensity("comfort", event?.altKey ?? false),
-      active: density === "comfort",
-      shortcut: "Alt : défaut global",
       group: "view",
     },
     {
@@ -3849,32 +3729,6 @@ function FeedPanelView({
           </button>
         )}
       </div>
-      <div
-        className="feed-toolbar__density panel-action--secondary"
-        role="group"
-        aria-label="Densité d’affichage"
-      >
-        <button
-          type="button"
-          data-panel-focus-key="feed-density:dense"
-          className={density === "dense" ? "is-active" : ""}
-          aria-pressed={density === "dense"}
-          title="Affichage dense — Alt+clic : défaut pour tous les fils"
-          onClick={(event) => onDensity("dense", event.altKey)}
-        >
-          Dense
-        </button>
-        <button
-          type="button"
-          data-panel-focus-key="feed-density:comfort"
-          className={density === "comfort" ? "is-active" : ""}
-          aria-pressed={density === "comfort"}
-          title="Affichage confort — Alt+clic : défaut pour tous les fils"
-          onClick={(event) => onDensity("comfort", event.altKey)}
-        >
-          Confort
-        </button>
-      </div>
       {sources.length > 0 && <FeedRefreshStatus id={refreshStatusId} sources={sources} />}
     </div>
   );
@@ -3890,7 +3744,6 @@ function FeedPanelView({
           ? ({ "--feed-text-scale": String(textScaleOverride) } as React.CSSProperties)
           : undefined
       }
-      dataDensity={density}
       headerContext={feedHeader}
       secondaryActions={secondaryActions}
       primaryActions={
@@ -4036,9 +3889,7 @@ function FeedPanelView({
                 {virtualRows.map((virtualRow) => {
                   const item = pageStore.itemAt(virtualRow.index);
                   const previous = pageStore.itemAt(virtualRow.index - 1);
-                  const dayLabel = density === "dense" && item
-                    ? feedDaySeparator(item, previous)
-                    : null;
+                  const dayLabel = item ? feedDaySeparator(item, previous) : null;
                   return (
                     <div
                       key={virtualRow.key}
@@ -4061,10 +3912,7 @@ function FeedPanelView({
                 })}
               </div>
             ) : (
-              (density === "dense"
-                ? withDaySeparators(items)
-                : items.map((item) => ({ kind: "item" as const, item }))
-              ).map((row) => row.kind === "separator" ? (
+              withDaySeparators(items).map((row) => row.kind === "separator" ? (
                 <div key={row.key} className="article-day-separator" aria-hidden="true">
                   {row.label}
                 </div>
