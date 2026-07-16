@@ -1108,6 +1108,22 @@ try {
   );
   const webOverflowTrigger = previewWebLeaf.getByLabel("Plus d’actions", { exact: true });
   await webOverflowTrigger.waitFor({ state: "visible" });
+  const webSoundButton = previewWebLeaf.getByLabel("Activer le son", { exact: true });
+  assert.equal(
+    await webSoundButton.isVisible(),
+    true,
+    "Le son doit rester directement accessible dans un panel web compact.",
+  );
+  assert.equal(
+    await previewWebLeaf.getByLabel("Agrandir", { exact: true }).isVisible(),
+    true,
+    "Le plein écran doit rester directement accessible dans un panel web compact.",
+  );
+  await webSoundButton.click();
+  const webMuteButton = previewWebLeaf.getByLabel("Couper le son", { exact: true });
+  await webMuteButton.waitFor({ state: "visible" });
+  await webMuteButton.click();
+  await webSoundButton.waitFor({ state: "visible" });
   await webOverflowTrigger.click();
   const webActionMenu = page.getByRole("menu", { name: "Actions secondaires du panel" });
   await waitForNativeWebView(
@@ -1116,13 +1132,18 @@ try {
     false,
     "ouvrir le menu web compact doit masquer la vue native placée au-dessus du renderer",
   );
-  for (const label of ["Accueil", "Activer le son", "Ouvrir dans le navigateur"]) {
+  for (const label of ["Accueil", "Ouvrir dans le navigateur"]) {
     assert.equal(
       await webActionMenu.getByRole("menuitem", { name: label, exact: true }).isVisible(),
       true,
       `L’action web compacte « ${label} » doit rester disponible.`,
     );
   }
+  assert.equal(
+    await webActionMenu.getByRole("menuitem", { name: /son/, exact: false }).count(),
+    0,
+    "Le son visible ne doit pas être dupliqué dans le menu secondaire.",
+  );
   await page.keyboard.press("Escape");
   await webActionMenu.waitFor({ state: "detached" });
   await waitForNativeWebView(

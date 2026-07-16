@@ -4184,15 +4184,6 @@ function WebPanelView({
       group: "view",
     },
     {
-      id: "web-sound",
-      label: runtime?.muted === false ? "Couper le son" : "Activer le son",
-      icon: runtime?.muted === false ? <Volume2 size={13} /> : <VolumeX size={13} />,
-      onSelect: () =>
-        void window.vibedeck.setWebPanelMuted(panel.id, runtime?.muted === false),
-      active: runtime?.muted === false,
-      group: "view",
-    },
-    {
       id: "web-external",
       label: "Ouvrir dans le navigateur",
       icon: <ExternalLink size={13} />,
@@ -4267,7 +4258,6 @@ function WebPanelView({
       )}
       <IconButton
         label={runtime?.muted === false ? "Couper le son" : "Activer le son"}
-        className="panel-action--secondary"
         active={runtime?.muted === false}
         onClick={() =>
           void window.vibedeck.setWebPanelMuted(panel.id, runtime?.muted === false)
