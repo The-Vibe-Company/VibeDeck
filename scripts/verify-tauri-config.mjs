@@ -111,6 +111,11 @@ export function loadTauriVerificationInputs(root = defaultRoot) {
     ),
     cargoToml: readFileSync(path.join(root, "src-tauri/Cargo.toml"), "utf8"),
     cargoLock: readFileSync(path.join(root, "src-tauri/Cargo.lock"), "utf8"),
+    buildRs: readFileSync(path.join(root, "src-tauri/build.rs"), "utf8"),
+    windowsManifest: readFileSync(
+      path.join(root, "src-tauri/windows-app-manifest.xml"),
+      "utf8",
+    ),
     rustToolchain: readFileSync(path.join(root, "rust-toolchain.toml"), "utf8"),
     capability: JSON.parse(
       readFileSync(path.join(root, "src-tauri/capabilities/main-local.json"), "utf8"),
@@ -129,6 +134,8 @@ export function verifyTauriConfiguration(inputs) {
     tauriConfig,
     cargoToml,
     cargoLock,
+    buildRs,
+    windowsManifest,
     rustToolchain,
     capability,
     workflowText,
@@ -224,6 +231,29 @@ export function verifyTauriConfiguration(inputs) {
     );
   }
   assert.match(cargoLock, /^version = 4$/m, "Cargo.lock v4 doit être committé.");
+  for (const requiredBuildFragment of [
+    /WindowsAttributes::new_without_app_manifest\(\)/,
+    /embed_windows_app_manifest\(\)/,
+    /cargo:rustc-link-arg=\/MANIFEST:EMBED/,
+    /cargo:rustc-link-arg=\/MANIFESTINPUT:/,
+    /cargo:rustc-link-arg=\/WX/,
+    /tauri_build::try_build\(attributes\)/,
+  ]) {
+    assert.match(
+      buildRs,
+      requiredBuildFragment,
+      "Les tests Windows doivent embarquer le manifeste Common Controls v6.",
+    );
+  }
+  assert.equal(
+    windowsManifest.replace(/\s+/g, " ").trim(),
+    '<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0"> ' +
+      '<dependency> <dependentAssembly> <assemblyIdentity type="win32" ' +
+      'name="Microsoft.Windows.Common-Controls" version="6.0.0.0" ' +
+      'processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*" /> ' +
+      '</dependentAssembly> </dependency> </assembly>',
+    "Le manifeste Windows doit sélectionner exactement Common Controls v6.",
+  );
   const lockedPackages = parseCargoLockPackages(cargoLock);
   for (const dependency of manifest.dependencies) {
     assert.ok(

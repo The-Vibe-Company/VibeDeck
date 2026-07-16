@@ -58,6 +58,28 @@ test("une dépendance Cargo non épinglée est refusée", () => {
   );
 });
 
+test("les tests Windows conservent le manifeste Common Controls v6", () => {
+  const fixture = inputs();
+  fixture.buildRs = fixture.buildRs.replace(
+    "cargo:rustc-link-arg=/MANIFEST:EMBED",
+    "cargo:rustc-link-arg=/MANIFEST:NO",
+  );
+  assert.throws(
+    () => verifyTauriConfiguration(fixture),
+    /Common Controls v6/,
+  );
+
+  const wrongVersion = inputs();
+  wrongVersion.windowsManifest = wrongVersion.windowsManifest.replace(
+    'version="6.0.0.0"',
+    'version="5.0.0.0"',
+  );
+  assert.throws(
+    () => verifyTauriConfiguration(wrongVersion),
+    /sélectionner exactement Common Controls v6/,
+  );
+});
+
 test("une action mutable et des cibles non approuvées sont refusées", () => {
   const mutableAction = inputs();
   mutableAction.workflowText = mutableAction.workflowText.replace(
