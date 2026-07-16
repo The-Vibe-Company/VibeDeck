@@ -1898,6 +1898,37 @@ try {
     true,
     "la vue web compacte doit être visible avant le défilement du canvas",
   );
+  await page.locator(".dashboard-workspace").evaluate((workspace) => workspace.scrollTo(0, 0));
+  await panelLeaf.locator(".dashboard-panel").focus();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  await page.waitForFunction(
+    (targetPanelId) => document.activeElement
+      ?.closest(".split-layout__leaf")
+      ?.getAttribute("data-panel-id") === targetPanelId,
+    narrowPanelId,
+  );
+  const keyboardRevealMetrics = await page.locator(".dashboard-workspace").evaluate(
+    (workspace, targetPanelId) => {
+      const target = workspace.querySelector(
+        `.split-layout__leaf[data-panel-id="${targetPanelId}"]`,
+      );
+      if (!(target instanceof HTMLElement)) throw new Error("Panel clavier cible introuvable.");
+      const workspaceBounds = workspace.getBoundingClientRect();
+      const targetBounds = target.getBoundingClientRect();
+      return {
+        scrollLeft: workspace.scrollLeft,
+        targetVisible:
+          targetBounds.left < workspaceBounds.right &&
+          targetBounds.right > workspaceBounds.left,
+      };
+    },
+    narrowPanelId,
+  );
+  assert.ok(
+    keyboardRevealMetrics.scrollLeft > 0 && keyboardRevealMetrics.targetVisible,
+    `La double-flèche doit révéler le panel focalisé hors canvas : ${JSON.stringify(keyboardRevealMetrics)}`,
+  );
   const compactThreeRowMetrics = await page.locator(".dashboard-workspace").evaluate(
     async (workspace) => {
       workspace.scrollLeft = workspace.scrollWidth;
@@ -1940,30 +1971,31 @@ try {
   await page.waitForFunction(() =>
     document.querySelectorAll(".split-layout__split--column").length === 2,
   );
-  const compactWorkspaceBounds = await page.locator(".dashboard-workspace").evaluate(
+  await waitForNativeWebView(
+    electronApp,
+    previewUrl,
+    true,
+    "la vue web doit retrouver son viewport complet avant le scroll vertical",
+  );
+  const fullNativeGeometry = await nativeWebViewGeometry(electronApp, previewUrl);
+  await page.locator(".dashboard-workspace").evaluate(
     async (workspace, scrollOffset) => {
       workspace.scrollTop = scrollOffset;
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      const bounds = workspace.getBoundingClientRect();
-      return { top: bounds.top, bottom: bounds.bottom };
     },
     MIN_PANEL_HEIGHT / 2,
   );
   await waitForNativeWebView(
     electronApp,
     previewUrl,
-    true,
-    "une vue web partiellement visible doit rester bornée au canvas",
+    false,
+    "une vue web partiellement visible doit être masquée sans redimensionnement",
   );
   const clippedNativeGeometry = await nativeWebViewGeometry(electronApp, previewUrl);
-  assert.ok(
-    clippedNativeGeometry.bounds.y + SUBPIXEL_EPSILON >= compactWorkspaceBounds.top &&
-    clippedNativeGeometry.bounds.y + clippedNativeGeometry.bounds.height <=
-      compactWorkspaceBounds.bottom + SUBPIXEL_EPSILON,
-    `La vue web native scrollée ne doit jamais recouvrir la barre globale : ${JSON.stringify({
-      native: clippedNativeGeometry.bounds,
-      workspace: compactWorkspaceBounds,
-    })}`,
+  assert.deepEqual(
+    clippedNativeGeometry,
+    { ...fullNativeGeometry, visible: false },
+    "Masquer la portion scrollée doit préserver exactement le viewport natif de la page.",
   );
   const compactThreeColumnMetrics = await page.locator(".dashboard-workspace").evaluate(
     async (workspace) => {
@@ -1992,18 +2024,14 @@ try {
   await waitForNativeWebView(
     electronApp,
     previewUrl,
-    true,
-    "la portion encore visible de la vue web doit rester synchronisée",
+    false,
+    "une portion résiduelle de page web ne doit pas dépasser du canvas",
   );
   const maximallyScrolledNativeGeometry = await nativeWebViewGeometry(electronApp, previewUrl);
-  assert.ok(
-    maximallyScrolledNativeGeometry.bounds.y + SUBPIXEL_EPSILON >= compactWorkspaceBounds.top &&
-    maximallyScrolledNativeGeometry.bounds.y + maximallyScrolledNativeGeometry.bounds.height <=
-      compactWorkspaceBounds.bottom + SUBPIXEL_EPSILON,
-    `La vue web native doit rester bornée au défilement maximal : ${JSON.stringify({
-      native: maximallyScrolledNativeGeometry.bounds,
-      workspace: compactWorkspaceBounds,
-    })}`,
+  assert.deepEqual(
+    maximallyScrolledNativeGeometry,
+    { ...fullNativeGeometry, visible: false },
+    "Le défilement maximal ne doit ni afficher hors canvas, ni redimensionner la page native.",
   );
 
   await page.evaluate(async () => {

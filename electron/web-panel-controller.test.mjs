@@ -299,6 +299,7 @@ test("creates and syncs native views with clipped bounds and effective visibilit
   assert.equal(initial[0].visible, true);
   assert.deepEqual(initial[0].bounds, { x: 790, y: 590, width: 10, height: 10 });
   assert.deepEqual(views[0].webContents.loadCalls, ["https://example.com/"]);
+  const stateCountBeforeGeometryOnlySync = states.length;
 
   const updated = controller.sync([
     descriptor("news", {
@@ -308,11 +309,20 @@ test("creates and syncs native views with clipped bounds and effective visibilit
   ]);
 
   assert.equal(views.length, 1, "sync must reuse a view with the same panel id");
-  assert.deepEqual(views[0].bounds, { x: 25, y: 35, width: 0, height: 100 });
+  assert.deepEqual(
+    views[0].bounds,
+    { x: 790, y: 590, width: 10, height: 10 },
+    "hiding a clipped view must preserve its page viewport",
+  );
   assert.equal(views[0].visible, false);
   assert.equal(updated[0].requestedVisible, true);
   assert.equal(updated[0].visible, false);
-  assert.equal(states.at(-1).panelId, "news");
+  assert.deepEqual(updated[0].bounds, { x: 25, y: 35, width: 0, height: 100 });
+  assert.equal(
+    states.length,
+    stateCountBeforeGeometryOnlySync,
+    "geometry-only sync must not round-trip runtime state to the renderer",
+  );
 });
 
 test("rejects duplicate descriptors and enforces the migration-safe view limit", () => {
@@ -833,9 +843,23 @@ test("updates and navigates an existing preview while enforcing a one-preview li
   );
   assert.equal(views.length, 1, "updating a preview must reuse its native view");
   assert.equal(updated.homeUrl, "https://example.org/sign-in");
-  assert.deepEqual(views[0].bounds, { x: 30, y: 40, width: 500, height: 400 });
+  assert.deepEqual(
+    views[0].bounds,
+    { x: 10, y: 20, width: 300, height: 200 },
+    "a hidden preview must keep its previous page viewport",
+  );
   assert.equal(views[0].visible, false);
   assert.equal(views[0].webContents.loadCalls.at(-1), "https://example.org/sign-in");
+
+  controller.startPreview(
+    descriptor("preview:add-panel", {
+      url: "https://example.org/sign-in",
+      bounds: { x: 30, y: 40, width: 500, height: 400 },
+      visible: true,
+    }),
+  );
+  assert.deepEqual(views[0].bounds, { x: 30, y: 40, width: 500, height: 400 });
+  assert.equal(views[0].visible, true);
 
   await controller.navigate("preview:add-panel", "https://example.org/account");
   assert.equal(views[0].webContents.loadCalls.at(-1), "https://example.org/account");

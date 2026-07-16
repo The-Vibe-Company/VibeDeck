@@ -716,11 +716,19 @@ export function createWebPanelController({
   }
 
   function applyBounds(record, descriptor) {
+    const boundsChanged =
+      record.appliedBounds.x !== descriptor.bounds.x ||
+      record.appliedBounds.y !== descriptor.bounds.y ||
+      record.appliedBounds.width !== descriptor.bounds.width ||
+      record.appliedBounds.height !== descriptor.bounds.height;
     record.bounds = descriptor.bounds;
     record.requestedVisible = descriptor.visible;
     record.visible = shouldDisplay(record);
 
-    record.view.setBounds(descriptor.bounds);
+    if (record.visible && boundsChanged) {
+      record.view.setBounds(descriptor.bounds);
+      record.appliedBounds = { ...descriptor.bounds };
+    }
     record.view.setVisible(record.visible);
   }
 
@@ -1163,6 +1171,7 @@ export function createWebPanelController({
         visible: false,
         requestedVisible: false,
         bounds: { ...descriptor.bounds },
+        appliedBounds: { ...descriptor.bounds },
         error: null,
         errorCode: null,
         crashed: false,
@@ -1394,8 +1403,6 @@ export function createWebPanelController({
         record.homeUrl = descriptor.url;
         record.originalUrl = descriptor.url;
         void load(record, descriptor.url).catch(() => {});
-      } else {
-        emit(record);
       }
     }
 

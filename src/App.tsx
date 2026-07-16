@@ -346,11 +346,14 @@ function initialFeedUi(panel: FeedPanel, state: AppState): FeedPanelUi {
   };
 }
 
-function focusDashboardPanelRoot(panelId: string) {
+function focusDashboardPanelRoot(panelId: string, reveal = false) {
   const panel = document.querySelector<HTMLElement>(
     `.split-layout__leaf[data-panel-id="${CSS.escape(panelId)}"] .dashboard-panel`,
   );
   if (!panel) return false;
+  if (reveal) {
+    panel.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
   panel.focus({ preventScroll: true });
   return document.activeElement === panel;
 }
@@ -610,7 +613,7 @@ export default function App() {
   useLayoutEffect(() => {
     const pendingPanelId = pendingKeyboardPanelFocusRef.current;
     if (!pendingPanelId) return;
-    if (focusDashboardPanelRoot(pendingPanelId)) {
+    if (focusDashboardPanelRoot(pendingPanelId, true)) {
       pendingKeyboardPanelFocusRef.current = null;
     }
   }, [focusedPanelId, layout, maximizedPanelId]);
@@ -968,26 +971,31 @@ export default function App() {
 
   const syncWebPanels = useCallback(() => {
     if (!state) return;
-    const workspaceBounds = document
-      .querySelector<HTMLElement>(".dashboard-workspace")
-      ?.getBoundingClientRect();
+    const workspace = document.querySelector<HTMLElement>(".dashboard-workspace");
+    const workspaceRect = workspace?.getBoundingClientRect();
+    const workspaceBounds = workspace && workspaceRect
+      ? {
+          left: workspaceRect.left,
+          top: workspaceRect.top,
+          right: workspaceRect.left + workspace.clientWidth,
+          bottom: workspaceRect.top + workspace.clientHeight,
+        }
+      : null;
     const measureSurface = (surface: HTMLElement | null) => {
       const rect = surface?.getBoundingClientRect();
       if (!rect || !workspaceBounds) {
         return {
           bounds: { x: 0, y: 0, width: 0, height: 0 },
-          inViewport: false,
+          fullyInViewport: false,
         };
       }
-      const left = Math.max(rect.left, workspaceBounds.left);
-      const top = Math.max(rect.top, workspaceBounds.top);
-      const right = Math.min(rect.right, workspaceBounds.right);
-      const bottom = Math.min(rect.bottom, workspaceBounds.bottom);
-      const width = Math.max(0, right - left);
-      const height = Math.max(0, bottom - top);
       return {
-        bounds: { x: left, y: top, width, height },
-        inViewport: width > 0 && height > 0,
+        bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        fullyInViewport:
+          rect.left + 0.5 >= workspaceBounds.left &&
+          rect.top + 0.5 >= workspaceBounds.top &&
+          rect.right <= workspaceBounds.right + 0.5 &&
+          rect.bottom <= workspaceBounds.bottom + 0.5,
       };
     };
     const failedPanelIds = new Set(
@@ -1010,7 +1018,7 @@ export default function App() {
           panelId: panel.id,
           url: panel.url,
           bounds: measured.bounds,
-          visible: canDisplay && measured.inViewport,
+          visible: canDisplay && measured.fullyInViewport,
         };
       });
     for (const preview of Object.values(webPreviewDrafts)) {
@@ -1024,7 +1032,7 @@ export default function App() {
         bounds: measured.bounds,
         visible:
           Boolean(surface) &&
-          measured.inViewport &&
+          measured.fullyInViewport &&
           !nativeWebSurfacesBlocked &&
           !linkPreview &&
           !failedPanelIds.has(preview.previewId),
@@ -1042,7 +1050,7 @@ export default function App() {
         bounds: measured.bounds,
         visible:
           Boolean(surface) &&
-          measured.inViewport &&
+          measured.fullyInViewport &&
           !nativeWebSurfacesBlocked &&
           !failedPanelIds.has(LINK_READER_ID),
       });
@@ -1059,21 +1067,22 @@ export default function App() {
   useEffect(() => {
     let frame = requestAnimationFrame(syncWebPanels);
     const settleTimer = window.setTimeout(syncWebPanels, 120);
-    const observer = new ResizeObserver(() => {
+    const scheduleSync = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(syncWebPanels);
-    });
+    };
+    const observer = new ResizeObserver(scheduleSync);
     const dashboard = document.querySelector(".dashboard-stage");
     const workspace = document.querySelector(".dashboard-workspace");
     if (dashboard) observer.observe(dashboard);
-    workspace?.addEventListener("scroll", syncWebPanels, { passive: true });
-    window.addEventListener("resize", syncWebPanels);
+    workspace?.addEventListener("scroll", scheduleSync, { passive: true });
+    window.addEventListener("resize", scheduleSync);
     return () => {
       cancelAnimationFrame(frame);
       window.clearTimeout(settleTimer);
       observer.disconnect();
-      workspace?.removeEventListener("scroll", syncWebPanels);
-      window.removeEventListener("resize", syncWebPanels);
+      workspace?.removeEventListener("scroll", scheduleSync);
+      window.removeEventListener("resize", scheduleSync);
     };
   }, [layout, maximizedPanelId, syncWebPanels]);
 
@@ -1797,7 +1806,7 @@ export default function App() {
             pendingKeyboardPanelFocusRef.current = nextPanelId;
             setFocusedPanelId(nextPanelId);
             if (maximizedPanelId) setMaximizedPanelId(nextPanelId);
-            if (focusDashboardPanelRoot(nextPanelId)) {
+            if (focusDashboardPanelRoot(nextPanelId, true)) {
               pendingKeyboardPanelFocusRef.current = null;
             }
           }
