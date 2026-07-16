@@ -139,9 +139,14 @@ test("creates a distinct arrival batch for each completed scheduler pass", async
 
 test("re-arms the one-shot timer after every authoritative state broadcast", async () => {
   const source = await readFile(new URL("./main.mjs", import.meta.url), "utf8");
-  const broadcastBody = source.match(
-    /function broadcastState\([\s\S]*?\n}\n\nfunction broadcastSemanticSearchStatus/,
-  )?.[0];
+  const broadcastStart = source.indexOf("function broadcastState(");
+  const nextFunction = source.indexOf(
+    "function broadcastSemanticSearchStatus",
+    broadcastStart,
+  );
+  const broadcastBody = broadcastStart >= 0 && nextFunction > broadcastStart
+    ? source.slice(broadcastStart, nextFunction)
+    : null;
 
   assert.ok(broadcastBody, "broadcastState must remain inspectable by the scheduler regression test");
   assert.match(broadcastBody, /scheduleRefreshTimer\(\);/);

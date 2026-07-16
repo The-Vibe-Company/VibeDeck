@@ -315,12 +315,22 @@ export function assertMacUpdaterMatchesBundle(artifact, bundle, executable) {
       `Lien symbolique interdit dans l'updater macOS vérifié : ${relative || bundleName}.`,
     );
     const archivedMode = verboseListing[index].slice(0, 10);
-    const expectedMode = posixModeString(stats);
     assert.equal(
-      archivedMode,
-      expectedMode,
-      `Le type ou les permissions de ${relative || bundleName} diffèrent entre l'updater et le bundle vérifié.`,
+      archivedMode[0],
+      stats.isDirectory() ? "d" : "-",
+      `Le type de ${relative || bundleName} diffère entre l'updater et le bundle vérifié.`,
     );
+    // Windows' stat emulation does not expose directory execute/search bits,
+    // so comparing those synthetic values with POSIX tar metadata would make
+    // this cross-platform fixture fail without proving anything. The real
+    // macOS package verifier still binds every permission bit exactly.
+    if (process.platform !== "win32") {
+      assert.equal(
+        archivedMode,
+        posixModeString(stats),
+        `Les permissions de ${relative || bundleName} diffèrent entre l'updater et le bundle vérifié.`,
+      );
+    }
     if (stats.isDirectory()) continue;
     assert.ok(stats.isFile(), `Type de fichier updater macOS interdit : ${relative}.`);
     assert.ok(
