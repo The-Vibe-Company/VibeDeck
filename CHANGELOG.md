@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.8.0...v0.8.1) (2026-07-16)
+
+
+### Bug Fixes
+
+* **recherche:** classer par pertinence hybride ([#48](https://github.com/The-Vibe-Company/VibeDeck/issues/48)) ([71df96e](https://github.com/The-Vibe-Company/VibeDeck/commit/71df96e4617151399d3b106f0e69573bb09908ff))
+
 ## [0.8.0](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.7.5...v0.8.0) (2026-07-16)
 
 
