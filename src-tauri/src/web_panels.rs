@@ -1603,7 +1603,6 @@ impl WebPanelController {
             #[cfg(target_os = "windows")]
             {
                 let _ = webview;
-                return;
             }
             #[cfg(not(target_os = "windows"))]
             {
@@ -1736,6 +1735,7 @@ impl WebPanelController {
         }
     }
 
+    #[cfg(not(target_os = "windows"))]
     fn finish_allowed_page_load(&self, native_label: &str, url: Url) {
         self.finish_allowed_page_load_for_native_navigation(native_label, url, None);
     }
