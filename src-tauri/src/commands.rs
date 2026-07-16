@@ -677,10 +677,27 @@ fn web_panel_api_error(error: WebPanelError) -> ApiError {
 }
 
 #[cfg(test)]
+fn command_body_in_source(source: &str, signature: &str) -> Option<String> {
+    let normalized = source.lines().collect::<Vec<_>>().join("\n");
+    let after_signature = normalized.split_once(signature)?.1;
+    Some(after_signature.split_once("\n}\n")?.0.to_owned())
+}
+
+#[cfg(test)]
 mod web_panel_command_tests {
     use super::*;
     use crate::web_panels::WebPanelPhase;
     use serde_json::json;
+
+    #[test]
+    fn command_body_extraction_is_line_ending_independent() {
+        let lf = "pub fn sample() {\n    guarded();\n}\npub fn next() {}\n";
+        let crlf = lf.replace('\n', "\r\n");
+        assert_eq!(
+            super::command_body_in_source(lf, "pub fn sample("),
+            super::command_body_in_source(&crlf, "pub fn sample("),
+        );
+    }
 
     #[test]
     fn renderer_state_never_serializes_the_publication_url() {
@@ -806,12 +823,7 @@ mod web_panel_command_tests {
             "get_web_panel_security_coverage",
         ] {
             let signature = format!("pub fn {command}(");
-            let function = source
-                .split_once(&signature)
-                .unwrap_or_else(|| panic!("commande Tauri absente: {command}"))
-                .1
-                .split_once("\n}\n")
-                .map(|(body, _)| body)
+            let function = super::command_body_in_source(source, &signature)
                 .unwrap_or_else(|| panic!("corps de commande Tauri introuvable: {command}"));
             let guard = function
                 .find("ensure_local_main(&webview)?;")
@@ -840,12 +852,7 @@ mod web_panel_command_tests {
             "set_web_panel_overlay_active",
         ] {
             let signature = format!("pub fn {command}(");
-            let function = source
-                .split_once(&signature)
-                .unwrap_or_else(|| panic!("commande Tauri absente: {command}"))
-                .1
-                .split_once("\n}\n")
-                .map(|(body, _)| body)
+            let function = super::command_body_in_source(source, &signature)
                 .unwrap_or_else(|| panic!("corps de commande Tauri introuvable: {command}"));
             assert!(
                 function.contains(") -> Result<(), ApiError>"),
@@ -908,12 +915,7 @@ mod feed_probe_command_tests {
             } else {
                 format!("pub fn {command}(")
             };
-            let function = source
-                .split_once(&signature)
-                .unwrap_or_else(|| panic!("commande Tauri absente: {command}"))
-                .1
-                .split_once("\n}\n")
-                .map(|(body, _)| body)
+            let function = super::command_body_in_source(source, &signature)
                 .unwrap_or_else(|| panic!("corps de commande Tauri introuvable: {command}"));
             let guard = function
                 .find("ensure_local_main(&webview)?;")
@@ -1005,13 +1007,9 @@ mod feed_configuration_command_tests {
         let handler = include_str!("lib.rs");
         assert!(handler.contains("commands::save_feed_panel_configuration,"));
         let source = include_str!("commands.rs");
-        let function = source
-            .split_once("pub async fn save_feed_panel_configuration(")
-            .unwrap()
-            .1
-            .split_once("\n}\n")
-            .unwrap()
-            .0;
+        let function =
+            super::command_body_in_source(source, "pub async fn save_feed_panel_configuration(")
+                .expect("corps de save_feed_panel_configuration introuvable");
         let guard = function.find("ensure_local_main(&webview)?;").unwrap();
         assert!(!function[..guard].contains("state."));
     }
