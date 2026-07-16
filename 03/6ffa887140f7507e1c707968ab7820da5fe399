@@ -1,0 +1,45 @@
+scripts/test-pilot-ui.mjs
+  s_fe504c239c5b64::t_c219fd83ef5a17 579-580
+  s_fe504c239c5b64::t_f92d1eab9179e7 600-603,605
+  s_fe504c239c5b64::t_1cd340386b278d 604,606
+  s_fe504c239c5b64::t_79163e14c50980 607
+  s_fe504c239c5b64::t_9f12f3f16dc66a 614
+  s_fe504c239c5b64::t_b27a5c18d416fc 671,679,682-689,701,713
+  s_fe504c239c5b64::t_059518de0d7350 582-589
+  s_fe504c239c5b64::t_f87ab50cfa9f6a 581,593-599,612-613,615
+  s_fe504c239c5b64::t_c5fbc909dca57b 616
+  s_fe504c239c5b64::t_07e6777e5dabae 2151
+src/styles.css
+  s_fe504c239c5b64::t_4777b93cad4adc 934-936,942-943,948
+  s_fe504c239c5b64::t_67f65ebbcbf5be 894
+  s_fe504c239c5b64::t_8a82b573076a58 881-886,893,895,897,899-900,906
+  s_fe504c239c5b64::t_f556178dd70cb1 915
+  s_fe504c239c5b64::t_315533c7c7f23a 938,946,956-960
+  s_fe504c239c5b64::t_f553e572ff95cb 989,993,997,1011,1016-1018,1027,1037
+  s_fe504c239c5b64::t_79541d5aacc0ad 887,892,896,898,902,910-912
+  s_fe504c239c5b64::t_40058e9ea88ef1 990-992,995-996,998,1003,1008
+  s_fe504c239c5b64::t_999ea861f671d7 1012-1013
+  s_fe504c239c5b64::t_b76539d7093445 1028-1031
+  s_fe504c239c5b64::t_74cb33460109c7 1046-1048,1050,1052-1055
+  s_fe504c239c5b64::t_408a70228f32e1 1049
+  s_fe504c239c5b64::t_80d3eee10a9c1e 913-914
+src/App.tsx
+  s_fe504c239c5b64::t_44fada65de5707 3216
+  s_fe504c239c5b64::t_954fba076c5aab 3151
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "036ffa887140f7507e1c707968ab7820da5fe399",
+  "prompts": {},
+  "sessions": {
+    "s_fe504c239c5b64": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07b14b55-4605-4257-bf28-0e4d413344e3",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
