@@ -1,0 +1,25 @@
+electron/web-panel-controller.test.mjs
+  s_7d1959f068f537::t_48735d32ebb89b 428,540
+  s_7d1959f068f537::t_965c0bc42df7da 517,551-553,555
+  s_7d1959f068f537::t_e3dc8568e434c9 543,545-549
+  s_7d1959f068f537::t_af22390ec25074 528
+  s_7d1959f068f537::t_aa82760361fdc4 512-516,518-527,529-539,541-542,544,550,554,556-559,881,911-924
+electron/web-panel-controller.mjs
+  s_7d1959f068f537::t_2372512c9c21be 718-719,721-730,735,1123
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "6f70880ac0c2fddccbf6454913bea5ad4f5aa98e",
+  "prompts": {},
+  "sessions": {
+    "s_7d1959f068f537": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6c75-f592-7a41-873f-aaf14b9e91a6",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
