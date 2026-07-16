@@ -122,6 +122,36 @@ La variable d’environnement GitHub `WIN_PUBLISHER_NAME` doit contenir exacteme
 
 Une release publiée est immuable. En cas de défaut, publier une version SemVer supérieure ; ne jamais remplacer un installateur ou un fichier `latest*.yml` existant. Un workflow manuel peut reprendre une release associée à un tag existant, mais refuse de remplacer un artefact déjà attaché.
 
+## Cutover Tauri/Rust — gates de paquet
+
+Le workflow de diffusion ci-dessus reste celui d'Electron tant que la parité fonctionnelle, les spikes physiques et toutes les gates Tauri ne sont pas validés. Il ne faut ni supprimer Electron, ni publier deux runtimes, ni présenter les bundles Tauri de CI comme des artefacts de diffusion avant le cutover unique.
+
+`.github/workflows/tauri-ci.yml` construit sans secret et avec `--no-sign` un vrai bundle universel macOS 14 (`.app` et DMG) ainsi qu'un vrai installateur NSIS Windows x64. Aucun bundle n'est téléversé ou publié. Après construction, `scripts/verify-tauri-package.mjs` vérifie notamment :
+
+- les assets fingerprintés du frontend courant et le protocole local Tauri réellement embarqués ;
+- l'absence d'ASAR, `node_modules`, binaire Node, framework Electron ou liaison native Electron/Node ;
+- les architectures Intel et Apple Silicon, le minimum macOS 14 et l'image DMG ;
+- le format PE x64, ainsi que l'identité octet pour octet entre le binaire vérifié et celui réellement extrait du payload NSIS ;
+- l'absence de signature et d'artefact updater dans la CI sans secret.
+
+Le mode `signed` du même vérificateur échoue tant qu'il ne dispose pas simultanément du paquet signé, de la configuration de release réelle, de l'artefact updater et de sa signature. La signature minisign/Tauri est vérifiée cryptographiquement contre les octets de l'artefact et la clé publique de cette configuration ; la présence d'un fichier `.sig` ou d'un identifiant de clé correct ne suffit pas. Sur macOS, il exige en plus une identité Developer ID, Hardened Runtime, une évaluation Gatekeeper réussie et un ticket de notarisation agrafé. Sur Windows, l'exécutable et le NSIS doivent tous deux avoir une signature Authenticode `Valid`. Ces preuves restent des gates externes et ne sont jamais déduites d'un build local ad hoc.
+
+La configuration suivie désactive explicitement `createUpdaterArtifacts` et ne contient ni endpoint ni clé updater. Pour une répétition de release dans un environnement sécurisé, fournir les variables réelles au runner puis générer l'overlay hors dépôt :
+
+```bash
+npm run prepare:tauri-release-config -- \
+  --platform macos \
+  --output "$RUNNER_TEMP/tauri.release.conf.json"
+npx --no-install tauri build --ci \
+  --target universal-apple-darwin \
+  --bundles app,dmg \
+  --config "$RUNNER_TEMP/tauri.release.conf.json"
+```
+
+Le générateur exige une clé publique minisign Tauri valide, un endpoint HTTPS public, la clé privée updater et son mot de passe, puis les identifiants de signature/notarisation propres à la plateforme. Il refuse les placeholders, les destinations locales, tout fichier secret placé dans le dépôt et tout écrasement de configuration. La clé privée n'est jamais copiée dans l'overlay. La variante Windows utilise `--platform windows` et exige en plus le publisher réel ainsi qu'une commande de signature contenant exactement le placeholder Tauri `%1`.
+
+Conformément au contrat de l'[updater Tauri v2](https://v2.tauri.app/plugin/updater/), la vérification de signature des mises à jour ne peut pas être désactivée. La génération d'artefacts signés ne suffit toutefois pas à rendre l'auto-update utilisable : le plugin updater Rust/JavaScript, ses capabilities minimales et la séquence d'arrêt propre doivent encore être intégrés et testés avant d'activer cette fonction dans une release. Aucun endpoint ou clé d'exemple ne doit être committé pour contourner ce gate.
+
 ## Gate du pilote
 
 Avant le premier shift :

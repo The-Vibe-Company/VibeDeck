@@ -96,6 +96,12 @@ export interface AppState {
   refreshedAt: string;
 }
 
+export interface FeedPage {
+  revision: number;
+  items: FeedItem[];
+  nextCursor: string | null;
+}
+
 export type CreatePanelInput =
   | { kind: "feed"; name: string; defaultRefreshIntervalSeconds?: number }
   | { kind: "web"; name: string; url: string };
@@ -257,6 +263,8 @@ export interface SemanticSearchStatus {
   progress: number;
   message: string | null;
   bytes: number;
+  /** Absent on the legacy runtime, where `ready` already means hybrid-ready. */
+  semanticReady?: boolean;
 }
 
 export type SemanticSearchScope = { kind: "all" } | { kind: "panel"; panelId: string };
@@ -270,6 +278,10 @@ export interface SemanticSearchResult {
 
 export interface VibeDeckApi {
   getState: () => Promise<AppState>;
+  /** Tauri-only progressive history; Electron keeps returning its bounded full state. */
+  getFeedPage?: (panelId: string, limit?: number) => Promise<FeedPage>;
+  /** Tauri-only hydration for a focus target outside the loaded pages. */
+  getItem?: (itemId: string) => Promise<FeedItem>;
   getUpdateState: () => Promise<UpdateState>;
   checkForUpdates: () => Promise<UpdateState>;
   restartForUpdate: () => Promise<void>;
@@ -335,7 +347,7 @@ export interface VibeDeckApi {
   cancelWebPreview: (previewId: string) => Promise<void>;
   openExternal: (url: string) => Promise<void>;
   focusDashboard: () => void;
-  syncWebPanels: (panels: WebPanelDescriptor[]) => void;
+  syncWebPanels: (panels: WebPanelDescriptor[], focusedPanelId?: string | null) => void;
   navigateWebPanel: (panelId: string, url: string) => Promise<void>;
   reloadWebPanel: (panelId: string) => Promise<void>;
   stopWebPanel: (panelId: string) => Promise<void>;

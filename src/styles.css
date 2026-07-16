@@ -907,6 +907,17 @@ button:disabled {
   overflow-y: auto;
 }
 
+.article-list[data-virtualized="true"] {
+  overflow-anchor: none;
+  contain: strict;
+}
+
+.article-list__virtual-space {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
 .article-row {
   position: relative;
   display: grid;

@@ -1,0 +1,52 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "VibeDeck",
+  "version": "0.7.5",
+  "identifier": "com.thevibecompany.vibedeck",
+  "build": {
+    "beforeDevCommand": "npm run dev:renderer",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist",
+    "devUrl": "http://127.0.0.1:5173"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "VibeDeck",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 768,
+        "minHeight": 528,
+        "resizable": true,
+        "fullscreen": false,
+        "visible": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'none'",
+      "capabilities": ["main-local"]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": false,
+    "category": "News",
+    "copyright": "Copyright © The Vibe Company",
+    "targets": ["app", "dmg", "nsis"],
+    "icon": [
+      "../build/icon.png",
+      "../build/icon.icns",
+      "../build/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "14.0",
+      "hardenedRuntime": true
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

@@ -1888,6 +1888,34 @@ export class LocalFeedDatabase {
       .map(toSource);
   }
 
+  /**
+   * Returns only the fields needed by the automatic refresh scheduler.
+   *
+   * This deliberately avoids the item-count subquery used by listSources and,
+   * more importantly, prevents a scheduler tick from materializing feed items
+   * through getState().
+   */
+  listSourceSchedules({ attachedOnly = true } = {}) {
+    const where = attachedOnly
+      ? "WHERE EXISTS (SELECT 1 FROM panel_sources WHERE panel_sources.source_id = sources.id)"
+      : "";
+    return this.database
+      .prepare(`
+        SELECT id, status, refresh_interval_seconds, last_checked_at, next_retry_at
+        FROM sources
+        ${where}
+        ORDER BY created_at ASC
+      `)
+      .all()
+      .map((row) => ({
+        id: row.id,
+        status: row.status,
+        refreshIntervalSeconds: row.refresh_interval_seconds,
+        lastCheckedAt: row.last_checked_at ?? null,
+        nextRetryAt: row.next_retry_at ?? null,
+      }));
+  }
+
   putSource(source, now = new Date().toISOString()) {
     const existing = this.findSourceByFeedUrl(source.feedUrl);
     if (existing) {

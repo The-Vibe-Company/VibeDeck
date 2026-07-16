@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-local",
+  "description": "Minimum Tauri surface for the trusted local VibeDeck renderer only.",
+  "webviews": ["main"],
+  "permissions": ["core:app:allow-version"]
+}

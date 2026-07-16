@@ -658,6 +658,52 @@ test("atomically restores an exact feed configuration and shared source interval
   }
 });
 
+test("projects only lightweight attached source schedules for automatic refresh", () => {
+  const database = createLocalFeedDatabase();
+  const now = "2026-07-10T12:00:00.000Z";
+  try {
+    const panel = database.createPanel({ kind: "feed", name: "Veille" }, null, now);
+    const attached = database.putSource({
+      id: "source-attached",
+      name: "Attachée",
+      inputUrl: "https://attached.test/feed.xml",
+      feedUrl: "https://attached.test/feed.xml",
+      connectorId: null,
+      connectorKind: "rss",
+      refreshIntervalSeconds: 60,
+      status: "healthy",
+      lastCheckedAt: now,
+      lastSuccessAt: now,
+      errorMessage: null,
+    }, now);
+    database.putSource({
+      id: "source-detached",
+      name: "Détachée",
+      inputUrl: "https://detached.test/feed.xml",
+      feedUrl: "https://detached.test/feed.xml",
+      connectorId: null,
+      connectorKind: "rss",
+      refreshIntervalSeconds: 300,
+      status: "idle",
+      lastCheckedAt: null,
+      lastSuccessAt: null,
+      errorMessage: null,
+    }, now);
+    database.attachSource(panel.id, attached);
+
+    assert.deepEqual(database.listSourceSchedules(), [{
+      id: attached,
+      status: "healthy",
+      refreshIntervalSeconds: 60,
+      lastCheckedAt: now,
+      nextRetryAt: null,
+    }]);
+    assert.equal("itemCount" in database.listSourceSchedules()[0], false);
+  } finally {
+    database.close();
+  }
+});
+
 test("fails closed before editing when a feed checkpoint would exceed its bound", () => {
   const database = createLocalFeedDatabase();
   const now = "2026-07-10T12:00:00.000Z";

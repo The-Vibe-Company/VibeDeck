@@ -27,19 +27,25 @@ import {
   type FormEvent,
   type MouseEvent,
   type RefObject,
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
+import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
 import SplitLayout, {
   MIN_PANEL_HEIGHT,
   MIN_PANEL_WIDTH,
   SPLIT_DIVIDER_SIZE,
   useSplitPanelDragHandle,
 } from "./SplitLayout";
+import { normalizedAppStore, type FeedPanelStoreSnapshot } from "./app-store";
+import { getAppStateItemDelta, inheritAppStateItemDelta } from "./app-state-delta";
+import { getScheduledRefreshHint } from "./app-state-refresh";
 import {
   layoutPanelIds,
   removePanel,
@@ -50,6 +56,7 @@ import {
 } from "./dashboard";
 import {
   abbreviateSourceName,
+  appendMissingFeedItems,
   compareFeedItems,
   feedItemIdsBeforeAnchor,
   formatCheckedAt,
@@ -57,7 +64,17 @@ import {
   formatNextRefresh,
   sourceHue,
   withDaySeparators,
+  type FeedListRow,
 } from "./feed-presentation";
+import {
+  boundVirtualFeedRange,
+  FILTERED_FEED_PAGE_BATCH,
+  MAX_MOUNTED_FEED_ROWS,
+  reconcileBoundedFeedMembership,
+  shouldContinueFilteredFeedPagination,
+  shouldStartFilteredFeedPagination,
+  type FilteredFeedPaginationState,
+} from "./feed-virtualization";
 import { saveFeedPanelConfiguration } from "./feed-settings";
 import { createLatestAsyncOperation } from "./latest-async-operation";
 import ProviderMark from "./ProviderMark";
@@ -98,12 +115,78 @@ const FEED_TEXT_SCALE_MAX = 1.6;
 const FEED_TEXT_SCALE_STEP = 0.1;
 const FEED_DENSITY_STORAGE_KEY = "vibedeck.feedDensity";
 const FEED_DENSITY_OVERRIDES_STORAGE_KEY = "vibedeck.feedDensity.overrides";
+const FEED_VIRTUALIZATION_THRESHOLD = MAX_MOUNTED_FEED_ROWS;
+const FEED_VIRTUAL_OVERSCAN = 8;
+const FEED_ANCHOR_STABILIZATION_FRAMES = 8;
 
 type FeedDensity = "comfort" | "dense";
 const MIN_HORIZONTAL_SPLIT_WIDTH = MIN_PANEL_WIDTH * 2 + SPLIT_DIVIDER_SIZE;
 const MIN_VERTICAL_SPLIT_HEIGHT = MIN_PANEL_HEIGHT * 2 + SPLIT_DIVIDER_SIZE;
 const PANEL_FOCUSABLE_SELECTOR =
   'button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), select:not(:disabled), summary, [contenteditable="true"], [tabindex]:not([tabindex="-1"]):not(:disabled)';
+
+type FeedNavigationModel = {
+  items: FeedItem[];
+  indexById: Map<string, number>;
+};
+
+type FeedPaginationController = {
+  loadNextPage: (focusAfterItemId?: string) => boolean;
+  invalidatePendingKeyboardFocus: () => void;
+};
+
+// The keyboard handler lives at window level, while feed rows are rendered per
+// panel. Keeping this tiny normalized index outside React avoids rebuilding or
+// linearly searching a 25k-item list for every repeated arrow event.
+const feedNavigationByPanelId = new Map<string, FeedNavigationModel>();
+const feedPaginationByPanelId = new Map<string, FeedPaginationController>();
+const pendingKeyboardArticleFocus = new Map<string, string>();
+
+function invalidatePendingFeedPageFocus(panelId?: string) {
+  if (panelId) {
+    feedPaginationByPanelId.get(panelId)?.invalidatePendingKeyboardFocus();
+    return;
+  }
+  for (const controller of feedPaginationByPanelId.values()) {
+    controller.invalidatePendingKeyboardFocus();
+  }
+}
+
+let appClockSnapshot = Date.now();
+let appClockTimer: number | null = null;
+const appClockListeners = new Set<() => void>();
+
+function subscribeAppClock(listener: () => void) {
+  appClockListeners.add(listener);
+  if (appClockTimer === null) {
+    appClockTimer = window.setInterval(() => {
+      appClockSnapshot = Date.now();
+      for (const notify of appClockListeners) notify();
+    }, 15_000);
+  }
+  return () => {
+    appClockListeners.delete(listener);
+    if (appClockListeners.size === 0 && appClockTimer !== null) {
+      window.clearInterval(appClockTimer);
+      appClockTimer = null;
+    }
+  };
+}
+
+function getAppClockSnapshot() {
+  return appClockSnapshot;
+}
+
+function AppClock() {
+  const timestamp = useSyncExternalStore(
+    subscribeAppClock,
+    getAppClockSnapshot,
+    getAppClockSnapshot,
+  );
+  return (
+    <time>{new Date(timestamp).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}</time>
+  );
+}
 
 interface PanelFocusIdentity {
   focusKey: string | null;
@@ -171,6 +254,81 @@ type AutomaticInsertionMetrics = {
   anchorViewportTop: number | null;
 };
 
+type FeedViewportAnchor = {
+  token: number;
+  itemId: string;
+  scrollTop: number;
+  viewportTop: number;
+};
+
+type PendingKeyboardPageFocus = {
+  token: number;
+  anchorItemId: string;
+  activeElement: HTMLElement;
+};
+
+let feedViewportAnchorToken = 0;
+
+function feedListForPanel(panelId: string) {
+  return document.querySelector<HTMLElement>(
+    `.split-layout__leaf[data-panel-id="${CSS.escape(panelId)}"] .article-list`,
+  );
+}
+
+function itemIdFromFeedRow(panelId: string, row: HTMLElement) {
+  const prefix = `article-${panelId}-`;
+  return row.id.startsWith(prefix) ? row.id.slice(prefix.length) : null;
+}
+
+function captureFeedViewportAnchor(panelId: string): FeedViewportAnchor | null {
+  const list = feedListForPanel(panelId);
+  if (!list) return null;
+  const listTop = list.getBoundingClientRect().top;
+  const anchorRow = [...list.querySelectorAll<HTMLElement>(".article-row")]
+    .find((row) => row.getBoundingClientRect().bottom > listTop);
+  const itemId = anchorRow ? itemIdFromFeedRow(panelId, anchorRow) : null;
+  if (!anchorRow || !itemId) return null;
+  return {
+    token: ++feedViewportAnchorToken,
+    itemId,
+    scrollTop: list.scrollTop,
+    viewportTop: anchorRow.getBoundingClientRect().top - listTop,
+  };
+}
+
+function retargetFeedViewportAnchor(
+  anchor: FeedViewportAnchor | null,
+  items: readonly FeedItem[],
+  eligible: (item: FeedItem) => boolean,
+) {
+  if (!anchor) return null;
+  const anchorIndex = items.findIndex(({ id }) => id === anchor.itemId);
+  if (anchorIndex < 0) {
+    const fallback = items.find(eligible);
+    return fallback ? { ...anchor, itemId: fallback.id } : null;
+  }
+  if (eligible(items[anchorIndex])) return anchor;
+  for (let distance = 1; distance < items.length; distance += 1) {
+    const after = items[anchorIndex + distance];
+    if (after && eligible(after)) return { ...anchor, itemId: after.id };
+    const before = items[anchorIndex - distance];
+    if (before && eligible(before)) return { ...anchor, itemId: before.id };
+  }
+  return null;
+}
+
+function restoreFeedViewportAnchor(
+  panelId: string,
+  list: HTMLElement,
+  anchor: FeedViewportAnchor,
+) {
+  const row = document.getElementById(`article-${panelId}-${anchor.itemId}`);
+  if (!(row instanceof HTMLElement) || !list.contains(row)) return false;
+  const currentViewportTop = row.getBoundingClientRect().top - list.getBoundingClientRect().top;
+  list.scrollTop += currentViewportTop - anchor.viewportTop;
+  return true;
+}
+
 type FeedPanelUi = {
   sourceFilter: string;
   visibilityFilter: "all" | "unseen";
@@ -182,7 +340,26 @@ type FeedPanelUi = {
   // descendu dans la liste : alimente la pastille « N nouveaux · Afficher ».
   pendingArrivalIds: Set<string>;
   searchItemIds: Set<string> | null;
+  pendingViewportAnchor: FeedViewportAnchor | null;
 };
+
+interface FeedPanelHostActions {
+  onFocus: (panelId: string) => void;
+  onSplit: (panelId: string, direction: "row" | "column") => void;
+  onMove: (panelId: string, offset: -1 | 1, identity: PanelFocusIdentity) => void;
+  onMaximize: (panelId: string) => void;
+  onClose: (panelId: string) => void;
+  onRename: (panelId: string, name: string) => void | Promise<void>;
+  onUi: (panelId: string, patch: Partial<FeedPanelUi>) => void;
+  onOpen: (panelId: string, item: FeedItem, rowId: string) => void | Promise<void>;
+  onSeen: (itemIds: string[]) => void;
+  onRefresh: (panel: FeedPanel) => void | Promise<void>;
+  onConfigure: (panelId: string) => void;
+  onSearch: (panelId: string) => void;
+  onClearSearch: () => void;
+  onTextScale: (panelId: string, direction: -1 | 0 | 1) => void;
+  onDensity: (panelId: string, mode: FeedDensity, asGlobalDefault: boolean) => void;
+}
 
 type LinkPreview = {
   itemId: string;
@@ -210,8 +387,7 @@ type SemanticSearchRestoreState = {
     ariaLabel: string | null;
   } | null;
   focusedItemIdsByPanelId: Map<string, string | null>;
-  scrollAnchorByPanelId: Map<string, { itemId: string; viewportTop: number }>;
-  scrollTopByPanelId: Map<string, number>;
+  scrollAnchorByPanelId: Map<string, FeedViewportAnchor>;
 };
 
 type PendingCustomSource = Required<Pick<SourceRequest, "url" | "connectorKind">>;
@@ -322,6 +498,48 @@ function panelPlacementForDraft(draft: DraftPanel): PanelPlacement | undefined {
   return { targetPanelId: draft.targetPanelId, side: draft.side };
 }
 
+type FeedStateIndex = {
+  itemsBySourceId: Map<string, FeedItem[]>;
+  sortedItemsBySourceSet: Map<string, FeedItem[]>;
+};
+
+const feedStateIndexes = new WeakMap<AppState, FeedStateIndex>();
+
+function feedStateIndex(state: AppState) {
+  const cached = feedStateIndexes.get(state);
+  if (cached) return cached;
+
+  const itemsBySourceId = new Map<string, FeedItem[]>();
+  for (const item of state.items) {
+    const sourceItems = itemsBySourceId.get(item.sourceId);
+    if (sourceItems) sourceItems.push(item);
+    else itemsBySourceId.set(item.sourceId, [item]);
+  }
+  const index = {
+    itemsBySourceId,
+    sortedItemsBySourceSet: new Map<string, FeedItem[]>(),
+  };
+  feedStateIndexes.set(state, index);
+  return index;
+}
+
+function sortedPanelItems(panel: FeedPanel, state: AppState) {
+  const index = feedStateIndex(state);
+  const sourceIds = [...new Set(panel.sourceIds)].sort();
+  const sourceSetKey = JSON.stringify(sourceIds);
+  const cached = index.sortedItemsBySourceSet.get(sourceSetKey);
+  if (cached) return cached;
+
+  const items: FeedItem[] = [];
+  for (const sourceId of sourceIds) {
+    const sourceItems = index.itemsBySourceId.get(sourceId);
+    if (sourceItems) items.push(...sourceItems);
+  }
+  items.sort(compareFeedItems);
+  index.sortedItemsBySourceSet.set(sourceSetKey, items);
+  return items;
+}
+
 function panelItems(
   panel: FeedPanel,
   state: AppState,
@@ -337,10 +555,17 @@ function panelItems(
   const sourceFilter = options.sourceFilter ?? "all";
   const effectiveFilter =
     sourceFilter === "all" || sourceIds.has(sourceFilter) ? sourceFilter : "all";
-  return state.items
-    .filter(
+  const sortedItems = sortedPanelItems(panel, state);
+  if (
+    effectiveFilter === "all" &&
+    !options.searchItemIds &&
+    !options.visibleItemIds &&
+    options.visibilityFilter !== "unseen"
+  ) {
+    return sortedItems;
+  }
+  return sortedItems.filter(
       (item) =>
-        sourceIds.has(item.sourceId) &&
         (effectiveFilter === "all" || item.sourceId === effectiveFilter) &&
         (options.searchItemIds
           ? options.searchItemIds.has(item.id)
@@ -348,20 +573,24 @@ function panelItems(
         (options.visibilityFilter !== "unseen" ||
           item.seenAt === null ||
           item.id === options.focusedItemId),
-    )
-    .sort(compareFeedItems);
+    );
 }
 
-function initialFeedUi(panel: FeedPanel, state: AppState): FeedPanelUi {
+function initialFeedUi(
+  panel: FeedPanel,
+  state: AppState,
+  normalizedItems?: readonly FeedItem[],
+): FeedPanelUi {
   return {
     sourceFilter: "all",
     visibilityFilter: "all",
     focusedItemId: null,
-    visibleItemIds: new Set(panelItems(panel, state).map(({ id }) => id)),
+    visibleItemIds: new Set((normalizedItems ?? panelItems(panel, state)).map(({ id }) => id)),
     automaticInsertionIds: new Set(),
     automaticInsertionMetrics: null,
     pendingArrivalIds: new Set(),
     searchItemIds: null,
+    pendingViewportAnchor: null,
   };
 }
 
@@ -378,6 +607,31 @@ function restoreArticleFocus(target: ReaderReturnFocus) {
   const article = document.getElementById(target.rowId);
   if (article instanceof HTMLElement) {
     article.focus({ preventScroll: true });
+    return;
+  }
+  const rowPrefix = `article-${target.panelId}-`;
+  const itemId = target.rowId.startsWith(rowPrefix)
+    ? target.rowId.slice(rowPrefix.length)
+    : null;
+  if (itemId && window.vibedeck.getItem) {
+    pendingKeyboardArticleFocus.set(target.panelId, itemId);
+    void window.vibedeck.getItem(itemId).then(
+      () => {
+        // React reçoit l'article via onStateChanged. Deux frames laissent le
+        // virtualiseur monter la cible épinglée, y compris loin du viewport.
+        window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+          if (pendingKeyboardArticleFocus.get(target.panelId) !== itemId) return;
+          pendingKeyboardArticleFocus.delete(target.panelId);
+          focusDashboardPanelRoot(target.panelId);
+        }));
+      },
+      () => {
+        if (pendingKeyboardArticleFocus.get(target.panelId) === itemId) {
+          pendingKeyboardArticleFocus.delete(target.panelId);
+        }
+        focusDashboardPanelRoot(target.panelId);
+      },
+    );
     return;
   }
   focusDashboardPanelRoot(target.panelId);
@@ -437,7 +691,6 @@ export default function App() {
   const [semanticSearchOpen, setSemanticSearchOpen] = useState(false);
   const [semanticSearchScope, setSemanticSearchScope] = useState<SemanticSearchScope>({ kind: "all" });
   const [activeSemanticSearch, setActiveSemanticSearch] = useState<ActiveSemanticSearch | null>(null);
-  const [clock, setClock] = useState(() => new Date());
   const [feedTextScale, setFeedTextScale] = useState(loadFeedTextScale);
   const [feedTextScaleOverrides, setFeedTextScaleOverrides] = useState(loadFeedTextScaleOverrides);
   const [feedDensity, setFeedDensity] = useState(loadFeedDensity);
@@ -468,6 +721,7 @@ export default function App() {
   const feedUiRef = useRef<Record<string, FeedPanelUi>>({});
   const draftsRef = useRef<Record<string, DraftPanel>>({});
   const webPreviewDraftsRef = useRef<Record<string, WebPreviewDraft>>({});
+  const lastWebPanelSyncRef = useRef<string | null>(null);
   const revisionRef = useRef(0);
   const hydratedRef = useRef(false);
   const serverLayoutMutationRef = useRef(false);
@@ -500,6 +754,7 @@ export default function App() {
   const templatePendingRef = useRef(false);
   const draftCompletionRef = useRef(new Set<string>());
   const lastPanelArrowRef = useRef<{ key: "ArrowLeft" | "ArrowRight"; at: number } | null>(null);
+  const keyboardPageGesturePanelsRef = useRef(new Set<string>());
   const pendingPanelFocusRef = useRef<{
     panelId: string;
     identity: PanelFocusIdentity;
@@ -512,6 +767,17 @@ export default function App() {
   const semanticSearchRestoreRef = useRef<SemanticSearchRestoreState | null>(null);
   const activeSemanticSearchRef = useRef<ActiveSemanticSearch | null>(null);
   const semanticSearchNativeOriginRef = useRef(false);
+  const latestFeedPanelActionsRef = useRef<FeedPanelHostActions | null>(null);
+  const stableFeedPanelActionsRef = useRef<FeedPanelHostActions | null>(null);
+  const feedAnchorStabilizersRef = useRef(new Map<string, {
+    restore: () => void;
+    stop: () => void;
+  }>());
+
+  useEffect(() => () => {
+    for (const stabilizer of feedAnchorStabilizersRef.current.values()) stabilizer.stop();
+    feedAnchorStabilizersRef.current.clear();
+  }, []);
 
   layoutRef.current = layout;
   linkPreviewRef.current = linkPreview;
@@ -651,10 +917,31 @@ export default function App() {
     });
   }, [panelById, state]);
 
+  const stageFeedViewportAnchors = useCallback((panelIds: readonly string[]) => {
+    const anchors = new Map<string, FeedViewportAnchor>();
+    for (const panelId of panelIds) {
+      const anchor = captureFeedViewportAnchor(panelId);
+      if (anchor) anchors.set(panelId, anchor);
+    }
+    if (anchors.size === 0) return;
+    setFeedUi((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const [panelId, anchor] of anchors) {
+        const ui = current[panelId];
+        if (!ui) continue;
+        next[panelId] = { ...ui, pendingViewportAnchor: anchor };
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+  }, []);
+
   const adjustFeedTextScale = useCallback(
     (direction: -1 | 0 | 1, panelId: string | null = null) => {
       if (panelId) {
         if (direction === 0) {
+          if (panelId in feedTextScaleOverrides) stageFeedViewportAnchors([panelId]);
           setFeedTextScaleOverrides((previous) => {
             if (!(panelId in previous)) return previous;
             const { [panelId]: _cleared, ...rest } = previous;
@@ -666,6 +953,7 @@ export default function App() {
         const current = feedTextScaleOverrides[panelId] ?? feedTextScale;
         const next = clampFeedTextScale(current + direction * FEED_TEXT_SCALE_STEP);
         if (next !== current) {
+          stageFeedViewportAnchors([panelId]);
           setFeedTextScaleOverrides((previous) => ({ ...previous, [panelId]: next }));
         }
         showToast(`Texte du fil : ${Math.round(next * 100)} %`);
@@ -674,15 +962,21 @@ export default function App() {
       const next = direction === 0
         ? 1
         : clampFeedTextScale(feedTextScale + direction * FEED_TEXT_SCALE_STEP);
+      if (next !== feedTextScale) {
+        stageFeedViewportAnchors(Object.keys(feedUiRef.current));
+      }
       setFeedTextScale(next);
       showToast(`Texte des fils (défaut) : ${Math.round(next * 100)} %`);
     },
-    [feedTextScale, feedTextScaleOverrides, showToast],
+    [feedTextScale, feedTextScaleOverrides, showToast, stageFeedViewportAnchors],
   );
 
   const setFeedPanelDensity = useCallback(
     (panelId: string, mode: FeedDensity, asGlobalDefault = false) => {
       if (asGlobalDefault) {
+        if (mode !== feedDensity || Object.keys(feedDensityOverrides).length > 0) {
+          stageFeedViewportAnchors(Object.keys(feedUiRef.current));
+        }
         setFeedDensity(mode);
         setFeedDensityOverrides({});
         showToast(
@@ -691,6 +985,9 @@ export default function App() {
             : "Affichage confort (tous les fils)",
         );
         return;
+      }
+      if ((feedDensityOverrides[panelId] ?? feedDensity) !== mode) {
+        stageFeedViewportAnchors([panelId]);
       }
       setFeedDensityOverrides((previous) => {
         if (mode === feedDensity) {
@@ -703,7 +1000,7 @@ export default function App() {
       });
       showToast(mode === "dense" ? "Affichage dense" : "Affichage confort");
     },
-    [feedDensity, showToast],
+    [feedDensity, feedDensityOverrides, showToast, stageFeedViewportAnchors],
   );
 
   const applyServerState = useCallback((
@@ -711,56 +1008,167 @@ export default function App() {
     forceLayout = false,
     replaceFeedUi = false,
   ) => {
-    const automaticInsertionMetrics = new Map<string, AutomaticInsertionMetrics>();
+    const previousStabilizers = [...feedAnchorStabilizersRef.current.values()];
+    for (const stabilizer of previousStabilizers) stabilizer.restore();
+    const capturedFeedAnchors = new Map<string, AutomaticInsertionMetrics>();
     for (const panel of nextState.panels) {
       if (panel.kind !== "feed") continue;
-      const existing = feedUiRef.current[panel.id];
-      const hasIncomingItem = existing && panelItems(panel, nextState).some(
-        (item) => !item.isBaseline && !existing.visibleItemIds.has(item.id),
-      );
-      if (!hasIncomingItem) continue;
       const list = document.querySelector<HTMLElement>(
         `.split-layout__leaf[data-panel-id="${CSS.escape(panel.id)}"] .article-list`,
       );
-      if (list) {
-        const listTop = list.getBoundingClientRect().top;
-        const anchorRow = [...list.querySelectorAll<HTMLElement>(".article-row")]
-          .find((row) => row.getBoundingClientRect().bottom > listTop);
-        const anchorPrefix = `article-${panel.id}-`;
-        const anchorItemId = anchorRow?.id.startsWith(anchorPrefix)
-          ? anchorRow.id.slice(anchorPrefix.length)
-          : null;
-        automaticInsertionMetrics.set(panel.id, {
-          scrollTop: list.scrollTop,
-          anchorItemId,
-          anchorViewportTop: anchorRow
-            ? anchorRow.getBoundingClientRect().top - listTop
-            : null,
-        });
+      if (!list || list.scrollTop < 4) continue;
+      const listTop = list.getBoundingClientRect().top;
+      const anchorRow = [...list.querySelectorAll<HTMLElement>(".article-row")]
+        .find((row) => row.getBoundingClientRect().bottom > listTop);
+      const anchorPrefix = `article-${panel.id}-`;
+      const anchorItemId = anchorRow?.id.startsWith(anchorPrefix)
+        ? anchorRow.id.slice(anchorPrefix.length)
+        : null;
+      if (!anchorItemId || !anchorRow) continue;
+      capturedFeedAnchors.set(panel.id, {
+        scrollTop: list.scrollTop,
+        anchorItemId,
+        anchorViewportTop: anchorRow.getBoundingClientRect().top - listTop,
+      });
+    }
+    for (const stabilizer of previousStabilizers) stabilizer.stop();
+
+    const nativeItemDelta = getAppStateItemDelta(nextState);
+    let resultItems = semanticResultItemsRef.current;
+    if (nativeItemDelta && resultItems.length > 0) {
+      const replacements = new Map(nativeItemDelta.itemUpserts.map((item) => [item.id, item]));
+      const readStates = new Map(
+        (nativeItemDelta.itemReadStates ?? []).map((readState) => [readState.itemId, readState]),
+      );
+      const refreshedResults = resultItems.map((item) => {
+        const replacement = replacements.get(item.id);
+        if (replacement) return replacement;
+        const readState = readStates.get(item.id);
+        return readState
+          ? { ...item, seenAt: readState.seenAt, openedAt: readState.openedAt }
+          : item;
+      });
+      if (refreshedResults.some((item, index) => item !== resultItems[index])) {
+        semanticResultItemsRef.current = refreshedResults;
+        resultItems = refreshedResults;
       }
     }
-    const resultItems = semanticResultItemsRef.current;
     if (semanticBaseItemIdsRef.current.size > 0) {
-      for (const item of nextState.items) semanticBaseItemIdsRef.current.add(item.id);
+      if (nativeItemDelta) {
+        const resultIds = new Set(resultItems.map(({ id }) => id));
+        for (const item of nativeItemDelta.itemUpserts) {
+          if (!resultIds.has(item.id)) semanticBaseItemIdsRef.current.add(item.id);
+        }
+      } else {
+        for (const item of nextState.items) semanticBaseItemIdsRef.current.add(item.id);
+      }
     }
-    setState(resultItems.length === 0 ? nextState : {
-      ...nextState,
-      items: [...nextState.items, ...resultItems.filter((item) => !nextState.items.some(({ id }) => id === item.id))],
-    });
-    setFeedUi((current) => {
+    const renderedState = resultItems.length === 0 || nativeItemDelta
+      ? nextState
+      : inheritAppStateItemDelta(nextState, {
+          ...nextState,
+          items: appendMissingFeedItems(nextState.items, resultItems),
+        });
+    const storeChange = normalizedAppStore.replace(renderedState);
+    const automaticInsertionMetrics = new Map<string, AutomaticInsertionMetrics>();
+    // External-store notifications schedule React work but cannot commit DOM
+    // before this synchronous callback returns, so the previous viewport is
+    // still the exact source of truth for anchor capture here.
+    if (storeChange.itemMembershipChanged) for (const panelId of storeChange.changedPanelIds) {
+      const panel = renderedState.panels.find(
+        (candidate): candidate is FeedPanel => candidate.id === panelId && candidate.kind === "feed",
+      );
+      if (!panel) continue;
+      const existing = feedUiRef.current[panel.id];
+      const panelSourceIds = new Set(panel.sourceIds);
+      const hasIncomingItem = existing && [...storeChange.changedItemIds].some((itemId) => {
+        const item = normalizedAppStore.getItem(itemId);
+        return Boolean(
+          item && panelSourceIds.has(item.sourceId) && !item.isBaseline &&
+          !existing.visibleItemIds.has(item.id),
+        );
+      });
+      if (!hasIncomingItem) continue;
+      const captured = capturedFeedAnchors.get(panel.id);
+      if (captured) automaticInsertionMetrics.set(panel.id, captured);
+    }
+    const projection = normalizedAppStore.getAppState();
+    const commitRootProjection = Boolean(
+      projection && (forceLayout || replaceFeedUi || storeChange.requiresRootProjection),
+    );
+    if (commitRootProjection && projection) setState(projection);
+    normalizedAppStore.recordRootProjection(commitRootProjection);
+
+    if (storeChange.changed && !storeChange.onlyItemReadState) {
+      for (const [panelId, anchor] of capturedFeedAnchors) {
+        let frame = 0;
+        let remainingFrames = FEED_ANCHOR_STABILIZATION_FRAMES;
+        let stopped = false;
+        const list = document.querySelector<HTMLElement>(
+          `.split-layout__leaf[data-panel-id="${CSS.escape(panelId)}"] .article-list`,
+        );
+        if (!list) continue;
+        const restore = () => {
+          const row = document.getElementById(`article-${panelId}-${anchor.anchorItemId}`);
+          if (
+            stopped ||
+            !(row instanceof HTMLElement) ||
+            !list.contains(row) ||
+            anchor.anchorViewportTop === null
+          ) return;
+          const currentTop = row.getBoundingClientRect().top - list.getBoundingClientRect().top;
+          list.scrollTop += currentTop - anchor.anchorViewportTop;
+        };
+        const stop = () => {
+          if (stopped) return;
+          stopped = true;
+          window.cancelAnimationFrame(frame);
+          list.removeEventListener("wheel", stop);
+          list.removeEventListener("pointerdown", stop);
+          list.removeEventListener("touchstart", stop);
+          list.removeEventListener("keydown", stop, true);
+          const current = feedAnchorStabilizersRef.current.get(panelId);
+          if (current?.stop === stop) feedAnchorStabilizersRef.current.delete(panelId);
+        };
+        const stabilize = () => {
+          if (stopped) return;
+          restore();
+          remainingFrames -= 1;
+          if (remainingFrames > 0) frame = window.requestAnimationFrame(stabilize);
+          else stop();
+        };
+        list.addEventListener("wheel", stop, { passive: true });
+        list.addEventListener("pointerdown", stop);
+        list.addEventListener("touchstart", stop, { passive: true });
+        list.addEventListener("keydown", stop, true);
+        feedAnchorStabilizersRef.current.set(panelId, { restore, stop });
+        frame = window.requestAnimationFrame(stabilize);
+      }
+    }
+
+    const refreshFeedUi = replaceFeedUi || storeChange.changedDomains.has("panels") ||
+      (storeChange.changedDomains.has("items") && !storeChange.onlyItemReadState);
+    const canApplyBoundedFeedMembership = Boolean(
+      nativeItemDelta && !replaceFeedUi && !storeChange.changedDomains.has("panels"),
+    );
+    if (refreshFeedUi) setFeedUi((current) => {
       const activeFeedIds = new Set(
-        nextState.panels
+        renderedState.panels
           .filter((panel): panel is FeedPanel => panel.kind === "feed")
           .map(({ id }) => id),
       );
       const next = Object.fromEntries(
         Object.entries(current).filter(([panelId]) => activeFeedIds.has(panelId)),
       );
-      for (const panel of nextState.panels) {
+      for (const panel of renderedState.panels) {
         if (panel.kind !== "feed") continue;
         const existing = current[panel.id];
         if (!existing || replaceFeedUi) {
-          const initial = initialFeedUi(panel, nextState);
+          const initial = initialFeedUi(
+            panel,
+            renderedState,
+            normalizedAppStore.getFeedPanelSnapshot(panel.id).items,
+          );
           const activeSearch = activeSemanticSearchRef.current;
           next[panel.id] = activeSearch && (
             activeSearch.scope.kind === "all" || activeSearch.scope.panelId === panel.id
@@ -772,17 +1180,52 @@ export default function App() {
             : initial;
           continue;
         }
+        if (canApplyBoundedFeedMembership) {
+          if (!storeChange.changedPanelIds.has(panel.id)) {
+            next[panel.id] = existing;
+            continue;
+          }
+          const changedItems = [...storeChange.changedItemIds]
+            .map((itemId) => normalizedAppStore.getItem(itemId));
+          const membership = reconcileBoundedFeedMembership(
+            existing.visibleItemIds,
+            existing.pendingArrivalIds,
+            new Set(panel.sourceIds),
+            changedItems,
+          );
+          const hasAutomaticInsertions = membership.automaticInsertionIds.size > 0;
+          if (!membership.changed && !hasAutomaticInsertions) {
+            next[panel.id] = existing;
+            continue;
+          }
+          next[panel.id] = {
+            ...existing,
+            visibleItemIds: membership.visibleItemIds,
+            automaticInsertionIds: hasAutomaticInsertions
+              ? membership.automaticInsertionIds
+              : existing.automaticInsertionIds,
+            automaticInsertionMetrics: hasAutomaticInsertions
+              ? automaticInsertionMetrics.get(panel.id) ?? null
+              : existing.automaticInsertionMetrics,
+            pendingArrivalIds: membership.pendingArrivalIds,
+          };
+          continue;
+        }
         const visibleItemIds = new Set(existing.visibleItemIds);
+        let visibleItemsChanged = false;
         const automaticInsertionIds = new Set<string>();
         const panelItemIds = new Set<string>();
         // The delivery buffer stays local to each panel, but every incoming row
         // is promoted in the same renderer update that receives it.
-        for (const item of panelItems(panel, nextState)) {
+        for (const item of panelItems(panel, renderedState)) {
           panelItemIds.add(item.id);
           if (!visibleItemIds.has(item.id) && !item.isBaseline) {
             automaticInsertionIds.add(item.id);
           }
-          visibleItemIds.add(item.id);
+          if (!visibleItemIds.has(item.id)) {
+            visibleItemIds.add(item.id);
+            visibleItemsChanged = true;
+          }
         }
         const hasAutomaticInsertions = automaticInsertionIds.size > 0;
         let pendingArrivalIds = existing.pendingArrivalIds;
@@ -791,6 +1234,10 @@ export default function App() {
           // laisser la pastille compter des articles qui ne sont plus au fil.
           const kept = [...pendingArrivalIds].filter((id) => panelItemIds.has(id));
           if (kept.length !== pendingArrivalIds.size) pendingArrivalIds = new Set(kept);
+        }
+        if (!visibleItemsChanged && !hasAutomaticInsertions && pendingArrivalIds === existing.pendingArrivalIds) {
+          next[panel.id] = existing;
+          continue;
         }
         next[panel.id] = {
           ...existing,
@@ -807,7 +1254,6 @@ export default function App() {
       return next;
     });
     setFatalError(null);
-    const previousRevision = revisionRef.current;
     revisionRef.current = nextState.dashboard.revision;
 
     if (!hydratedRef.current) {
@@ -820,7 +1266,7 @@ export default function App() {
 
     if (
       forceLayout ||
-      (nextState.dashboard.revision > previousRevision &&
+      (storeChange.changedDomains.has("dashboard") &&
         !serverLayoutMutationRef.current &&
         Object.keys(draftsRef.current).length === 0)
     ) {
@@ -920,14 +1366,10 @@ export default function App() {
     restoreArticleFocus(target);
   }, [linkPreview]);
 
-  useEffect(() => {
-    const timer = window.setInterval(() => setClock(new Date()), 15_000);
-    return () => window.clearInterval(timer);
-  }, []);
-
   useEffect(
     () => () => {
       if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+      lastWebPanelSyncRef.current = "[]";
       window.vibedeck.syncWebPanels([]);
     },
     [],
@@ -954,7 +1396,7 @@ export default function App() {
           kind: "web",
           panelId: panel.id,
           url: panel.url,
-          bounds: rect
+          bounds: canDisplay && rect
             ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
             : { x: 0, y: 0, width: 0, height: 0 },
           visible: canDisplay,
@@ -965,17 +1407,18 @@ export default function App() {
         `[data-web-preview-surface="${CSS.escape(preview.previewId)}"]`,
       );
       const rect = surface?.getBoundingClientRect();
+      const canDisplay =
+        Boolean(surface) &&
+        !nativeWebSurfacesBlocked &&
+        !linkPreview &&
+        !failedPanelIds.has(preview.previewId);
       descriptors.push({
         kind: "preview",
         panelId: preview.previewId,
-        bounds: rect
+        bounds: canDisplay && rect
           ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
           : { x: 0, y: 0, width: 0, height: 0 },
-        visible:
-          Boolean(surface) &&
-          !nativeWebSurfacesBlocked &&
-          !linkPreview &&
-          !failedPanelIds.has(preview.previewId),
+        visible: canDisplay,
       });
     }
     if (linkPreview) {
@@ -983,22 +1426,32 @@ export default function App() {
         `[data-web-panel-surface="${LINK_READER_ID}"]`,
       );
       const rect = surface?.getBoundingClientRect();
+      const canDisplay =
+        Boolean(surface) &&
+        !nativeWebSurfacesBlocked &&
+        !failedPanelIds.has(LINK_READER_ID);
       descriptors.push({
         kind: "reader",
         panelId: LINK_READER_ID,
         itemId: linkPreview.itemId,
-        bounds: rect
+        bounds: canDisplay && rect
           ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
           : { x: 0, y: 0, width: 0, height: 0 },
-        visible:
-          Boolean(surface) &&
-          !nativeWebSurfacesBlocked &&
-          !failedPanelIds.has(LINK_READER_ID),
+        visible: canDisplay,
       });
     }
-    window.vibedeck.syncWebPanels(descriptors);
+    if (focusedPanelId) {
+      descriptors.sort((first, second) =>
+        Number(second.panelId === focusedPanelId) - Number(first.panelId === focusedPanelId),
+      );
+    }
+    const signature = JSON.stringify(descriptors);
+    if (signature === lastWebPanelSyncRef.current) return;
+    lastWebPanelSyncRef.current = signature;
+    window.vibedeck.syncWebPanels(descriptors, focusedPanelId);
   }, [
     failedWebPanelKey,
+    focusedPanelId,
     linkPreview,
     nativeWebSurfacesBlocked,
     state,
@@ -1008,18 +1461,19 @@ export default function App() {
   useEffect(() => {
     let frame = requestAnimationFrame(syncWebPanels);
     const settleTimer = window.setTimeout(syncWebPanels, 120);
-    const observer = new ResizeObserver(() => {
+    const scheduleSync = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(syncWebPanels);
-    });
+    };
+    const observer = new ResizeObserver(scheduleSync);
     const dashboard = document.querySelector(".dashboard-stage");
     if (dashboard) observer.observe(dashboard);
-    window.addEventListener("resize", syncWebPanels);
+    window.addEventListener("resize", scheduleSync);
     return () => {
       cancelAnimationFrame(frame);
       window.clearTimeout(settleTimer);
       observer.disconnect();
-      window.removeEventListener("resize", syncWebPanels);
+      window.removeEventListener("resize", scheduleSync);
     };
   }, [layout, maximizedPanelId, syncWebPanels]);
 
@@ -1137,19 +1591,16 @@ export default function App() {
   async function cancelWebPreview(draftId: string) {
     const preview = webPreviewDraftsRef.current[draftId];
     if (!preview) return;
-    try {
-      await window.vibedeck.cancelWebPreview(preview.previewId);
-    } finally {
-      const next = { ...webPreviewDraftsRef.current };
-      delete next[draftId];
-      webPreviewDraftsRef.current = next;
-      setWebPreviewDrafts(next);
-      setWebStates((current) => {
-        const copy = { ...current };
-        delete copy[preview.previewId];
-        return copy;
-      });
-    }
+    await window.vibedeck.cancelWebPreview(preview.previewId);
+    const next = { ...webPreviewDraftsRef.current };
+    delete next[draftId];
+    webPreviewDraftsRef.current = next;
+    setWebPreviewDrafts(next);
+    setWebStates((current) => {
+      const copy = { ...current };
+      delete copy[preview.previewId];
+      return copy;
+    });
   }
 
   async function startCompetitorTemplate() {
@@ -1190,7 +1641,13 @@ export default function App() {
     if (draftsRef.current[draftId]?.pending || draftCompletionRef.current.has(draftId)) {
       return;
     }
-    void cancelWebPreview(draftId).catch((error) => showToast(cleanError(error)));
+    if (webPreviewDraftsRef.current[draftId]) {
+      void cancelWebPreview(draftId).then(
+        () => closeDraft(draftId),
+        (error) => showToast(cleanError(error)),
+      );
+      return;
+    }
     const nextLayout = removePanel(layoutRef.current, draftId);
     const nextDrafts = { ...draftsRef.current };
     delete nextDrafts[draftId];
@@ -1365,14 +1822,9 @@ export default function App() {
   }
 
   async function updateWebPanelUrl(panelId: string, url: string) {
-    try {
-      const nextState = await window.vibedeck.setWebPanelUrl(panelId, url);
-      applyServerState(nextState);
-      showToast("Page mise à jour");
-    } catch (error) {
-      showToast(cleanError(error));
-      throw error;
-    }
+    const nextState = await window.vibedeck.setWebPanelUrl(panelId, url);
+    applyServerState(nextState);
+    showToast("Page mise à jour");
   }
 
   async function refreshFeedPanel(panel: FeedPanel) {
@@ -1383,6 +1835,16 @@ export default function App() {
     if (sources.length === 0) return;
     try {
       const nextState = await window.vibedeck.refreshPanel(panel.id);
+      applyServerState(nextState);
+      const scheduled = getScheduledRefreshHint(nextState);
+      if (scheduled) {
+        showToast(
+          `Actualisation lancée pour ${scheduled.sourceCount} source${
+            scheduled.sourceCount > 1 ? "s" : ""
+          }`,
+        );
+        return;
+      }
       const failedCount = nextState.sources.filter(
         (source) => panel.sourceIds.includes(source.id) && source.status === "error",
       ).length;
@@ -1397,6 +1859,7 @@ export default function App() {
   }
 
   function openItem(item: FeedItem, returnFocus: ReaderReturnFocus) {
+    invalidatePendingFeedPageFocus(returnFocus.panelId);
     readerReturnFocusRef.current = returnFocus;
     setWebStates((current) => {
       if (!(LINK_READER_ID in current)) return current;
@@ -1420,6 +1883,14 @@ export default function App() {
   }
 
   function patchFeedUi(panelId: string, patch: Partial<FeedPanelUi>) {
+    if (
+      Object.hasOwn(patch, "focusedItemId") ||
+      Object.hasOwn(patch, "sourceFilter") ||
+      Object.hasOwn(patch, "visibilityFilter") ||
+      Object.hasOwn(patch, "searchItemIds")
+    ) {
+      invalidatePendingFeedPageFocus(panelId);
+    }
     setFeedUi((current) => ({
       ...current,
       [panelId]: {
@@ -1431,6 +1902,7 @@ export default function App() {
         automaticInsertionMetrics: current[panelId]?.automaticInsertionMetrics ?? null,
         pendingArrivalIds: current[panelId]?.pendingArrivalIds ?? new Set(),
         searchItemIds: current[panelId]?.searchItemIds ?? null,
+        pendingViewportAnchor: current[panelId]?.pendingViewportAnchor ?? null,
         ...patch,
       },
     }));
@@ -1444,36 +1916,37 @@ export default function App() {
     semanticBaseItemIdsRef.current = new Set();
     activeSemanticSearchRef.current = null;
     setActiveSemanticSearch(null);
-    setState((current) => current ? {
-      ...current,
-      items: current.items.filter((item) => !resultIds.has(item.id) || baseIds.has(item.id)),
-    } : current);
+    const currentProjection = normalizedAppStore.getAppState();
+    if (currentProjection) {
+      normalizedAppStore.replace({
+        ...currentProjection,
+        items: currentProjection.items.filter(
+          (item) => !resultIds.has(item.id) || baseIds.has(item.id),
+        ),
+      });
+      const projection = normalizedAppStore.getAppState();
+      if (projection) setState(projection);
+      normalizedAppStore.recordRootProjection(true);
+    }
+    invalidatePendingFeedPageFocus();
     setFeedUi((current) => Object.fromEntries(Object.entries(current).map(([panelId, ui]) => [
-      panelId, {
-        ...ui,
-        searchItemIds: null,
-        focusedItemId: restore?.focusedItemIdsByPanelId.get(panelId) ?? null,
-        automaticInsertionIds: new Set(),
-        automaticInsertionMetrics: null,
-        pendingArrivalIds: new Set(),
-      },
+      panelId,
+      ui.searchItemIds === null
+        ? ui
+        : {
+            ...ui,
+            searchItemIds: null,
+            focusedItemId: restore?.focusedItemIdsByPanelId.get(panelId) ?? null,
+            automaticInsertionIds: new Set(),
+            automaticInsertionMetrics: null,
+            pendingArrivalIds: new Set(),
+            pendingViewportAnchor: restore?.scrollAnchorByPanelId.get(panelId) ?? null,
+          },
     ])));
     semanticSearchRestoreRef.current = null;
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
         if (!restore) return;
-        for (const [panelId, scrollTop] of restore.scrollTopByPanelId) {
-          const list = document.querySelector<HTMLElement>(
-            `.split-layout__leaf[data-panel-id="${CSS.escape(panelId)}"] .article-list`,
-          );
-          const anchor = restore.scrollAnchorByPanelId.get(panelId);
-          const anchorRow = anchor
-            ? document.getElementById(`article-${panelId}-${anchor.itemId}`)
-            : null;
-          if (list && anchorRow instanceof HTMLElement && anchor) {
-            list.scrollTop = anchorRow.offsetTop - anchor.viewportTop;
-          } else if (list) list.scrollTop = scrollTop;
-        }
         restoreSemanticSearchControl(restore);
       });
     });
@@ -1496,28 +1969,12 @@ export default function App() {
 
   function captureSemanticSearchOrigin() {
     if (semanticSearchRestoreRef.current) return;
-    const scrollTopByPanelId = new Map<string, number>();
-    const scrollAnchorByPanelId = new Map<
-      string,
-      { itemId: string; viewportTop: number }
-    >();
+    const scrollAnchorByPanelId = new Map<string, FeedViewportAnchor>();
     document.querySelectorAll<HTMLElement>(".split-layout__leaf[data-panel-id]").forEach((leaf) => {
       const panelId = leaf.getAttribute("data-panel-id");
-      const list = leaf.querySelector<HTMLElement>(".article-list");
-      if (!panelId || !list) return;
-      scrollTopByPanelId.set(panelId, list.scrollTop);
-      const listTop = list.getBoundingClientRect().top;
-      const anchorRow = [...list.querySelectorAll<HTMLElement>(".article-row")]
-        .find((row) => row.getBoundingClientRect().bottom > listTop);
-      const itemId = anchorRow?.id.startsWith(`article-${panelId}-`)
-        ? anchorRow.id.slice(`article-${panelId}-`.length)
-        : null;
-      if (anchorRow && itemId) {
-        scrollAnchorByPanelId.set(panelId, {
-          itemId,
-          viewportTop: anchorRow.getBoundingClientRect().top - listTop,
-        });
-      }
+      if (!panelId) return;
+      const anchor = captureFeedViewportAnchor(panelId);
+      if (anchor) scrollAnchorByPanelId.set(panelId, anchor);
     });
     const focusedElement = document.activeElement instanceof HTMLElement
       ? document.activeElement
@@ -1540,7 +1997,6 @@ export default function App() {
         Object.entries(feedUiRef.current).map(([panelId, ui]) => [panelId, ui.focusedItemId]),
       ),
       scrollAnchorByPanelId,
-      scrollTopByPanelId,
     };
   }
 
@@ -1579,23 +2035,67 @@ export default function App() {
     const baseIds = semanticBaseItemIdsRef.current;
     const previousResultIds = new Set(semanticResultItemsRef.current.map(({ id }) => id));
     semanticResultItemsRef.current = result.items;
-    setState((current) => current ? {
-      ...current,
-      items: (() => {
-        const retained = current.items.filter(
+    const currentProjection = normalizedAppStore.getAppState();
+    if (currentProjection) {
+      normalizedAppStore.replace({
+        ...currentProjection,
+        items: (() => {
+          const retained = currentProjection.items.filter(
           (item) => !previousResultIds.has(item.id) || baseIds.has(item.id),
-        );
-        const retainedIds = new Set(retained.map(({ id }) => id));
-        return [...retained, ...result.items.filter(({ id }) => !retainedIds.has(id))];
-      })(),
-    } : current);
+          );
+          const retainedIds = new Set(retained.map(({ id }) => id));
+          return [...retained, ...result.items.filter(({ id }) => !retainedIds.has(id))];
+        })(),
+      });
+      const projection = normalizedAppStore.getAppState();
+      if (projection) setState(projection);
+      normalizedAppStore.recordRootProjection(true);
+    }
     const resultIds = new Set(result.items.map(({ id }) => id));
-    setFeedUi((current) => Object.fromEntries(Object.entries(current).map(([panelId, ui]) => [
-      panelId,
-      scope.kind === "all" || scope.panelId === panelId
-        ? { ...ui, searchItemIds: resultIds, focusedItemId: null, pendingArrivalIds: new Set<string>() }
-        : { ...ui, searchItemIds: null, pendingArrivalIds: new Set<string>() },
-    ])));
+    const searchViewportAnchors = new Map<string, FeedViewportAnchor | null>();
+    for (const [panelId, ui] of Object.entries(feedUiRef.current)) {
+      const targeted = scope.kind === "all" || scope.panelId === panelId;
+      if (!targeted && ui.searchItemIds === null) continue;
+      const snapshot = normalizedAppStore.getFeedPanelSnapshot(panelId);
+      const sourceFilter = ui.sourceFilter === "all" ||
+          snapshot.panel?.sourceIds.includes(ui.sourceFilter)
+        ? ui.sourceFilter
+        : "all";
+      const anchor = captureFeedViewportAnchor(panelId);
+      searchViewportAnchors.set(panelId, retargetFeedViewportAnchor(
+        anchor,
+        snapshot.items,
+        (storedItem) => {
+          const item = normalizedAppStore.getItem(storedItem.id) ?? storedItem;
+          return (
+            (!targeted || resultIds.has(item.id)) &&
+            (sourceFilter === "all" || item.sourceId === sourceFilter) &&
+            (ui.visibilityFilter !== "unseen" || item.seenAt === null)
+          );
+        },
+      ));
+    }
+    invalidatePendingFeedPageFocus();
+    setFeedUi((current) => Object.fromEntries(Object.entries(current).map(([panelId, ui]) => {
+      const targeted = scope.kind === "all" || scope.panelId === panelId;
+      if (targeted) {
+        return [panelId, {
+          ...ui,
+          searchItemIds: resultIds,
+          focusedItemId: null,
+          pendingArrivalIds: new Set<string>(),
+          pendingViewportAnchor: searchViewportAnchors.get(panelId) ?? null,
+        }];
+      }
+      return [panelId, ui.searchItemIds === null
+        ? ui
+        : {
+            ...ui,
+            searchItemIds: null,
+            pendingArrivalIds: new Set<string>(),
+            pendingViewportAnchor: searchViewportAnchors.get(panelId) ?? null,
+          }];
+    })));
     const appliedSearch = { query, scope, resultCount: result.items.length, result };
     activeSemanticSearchRef.current = appliedSearch;
     setActiveSemanticSearch(appliedSearch);
@@ -1720,14 +2220,18 @@ export default function App() {
 
       const panel = panelById.get(keyboardPanelId);
       if (!panel || panel.kind !== "feed") return;
+      if (event.key === "ArrowDown" && !event.repeat) {
+        keyboardPageGesturePanelsRef.current.delete(panel.id);
+      }
       const ui = feedUi[panel.id] ?? initialFeedUi(panel, state);
-      const items = panelItems(panel, state, {
-        sourceFilter: ui.sourceFilter,
-        visibleItemIds: ui.visibleItemIds,
-        visibilityFilter: ui.visibilityFilter,
-        focusedItemId: ui.focusedItemId,
-        searchItemIds: ui.searchItemIds,
-      });
+      const navigationModel = feedNavigationByPanelId.get(panel.id);
+      const items = navigationModel?.items ?? panelItems(panel, state, {
+          sourceFilter: ui.sourceFilter,
+          visibleItemIds: ui.visibleItemIds,
+          visibilityFilter: ui.visibilityFilter,
+          focusedItemId: ui.focusedItemId,
+          searchItemIds: ui.searchItemIds,
+        });
 
       if (event.key.toLowerCase() === "r") {
         event.preventDefault();
@@ -1743,18 +2247,39 @@ export default function App() {
       }
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
-        const focusedIndex = items.findIndex(({ id }) => id === ui.focusedItemId);
+        const focusedIndex = ui.focusedItemId
+          ? navigationModel?.indexById.get(ui.focusedItemId) ??
+            items.findIndex(({ id }) => id === ui.focusedItemId)
+          : -1;
         const activeArticleId =
           event.target instanceof HTMLElement
             ? event.target.closest<HTMLElement>(".article-row")?.id ?? null
             : null;
-        const activeArticleIndex = activeArticleId
-          ? items.findIndex(({ id }) => activeArticleId === `article-${panel.id}-${id}`)
+        const activeItemId = activeArticleId?.startsWith(`article-${panel.id}-`)
+          ? activeArticleId.slice(`article-${panel.id}-`.length)
+          : null;
+        const activeArticleIndex = activeItemId
+          ? navigationModel?.indexById.get(activeItemId) ??
+            items.findIndex(({ id }) => id === activeItemId)
           : -1;
         const currentIndex = focusedIndex >= 0
           ? focusedIndex
           : activeArticleIndex;
         const direction = event.key === "ArrowDown" ? 1 : -1;
+        if (
+          direction > 0 &&
+          currentIndex === items.length - 1 &&
+          items[currentIndex]
+        ) {
+          if (keyboardPageGesturePanelsRef.current.has(panel.id)) return;
+          if (feedPaginationByPanelId.get(panel.id)?.loadNextPage(items[currentIndex].id)) {
+            keyboardPageGesturePanelsRef.current.add(panel.id);
+            return;
+          }
+        }
+        if (items.length === 0) {
+          return;
+        }
         const nextIndex = Math.max(
           0,
           Math.min(items.length - 1, currentIndex < 0 ? 0 : currentIndex + direction),
@@ -1768,6 +2293,8 @@ export default function App() {
             const list = article.closest<HTMLElement>(".article-list");
             if (list) smoothScrollIntoView(list, article);
             else article.scrollIntoView({ block: "nearest" });
+          } else {
+            pendingKeyboardArticleFocus.set(panel.id, item.id);
           }
         }
         return;
@@ -1787,9 +2314,59 @@ export default function App() {
       }
     }
 
+    function handleKeyUp(event: KeyboardEvent) {
+      if (event.key === "ArrowDown") keyboardPageGesturePanelsRef.current.clear();
+    }
+
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
   });
+
+  latestFeedPanelActionsRef.current = {
+    onFocus: setFocusedPanelId,
+    onSplit: (panelId, direction) => beginDraft(panelId, direction),
+    onMove: movePanelByOffset,
+    onMaximize: (panelId) => setMaximizedPanelId((current) => current === panelId ? null : panelId),
+    onClose: (panelId) => setModal({ kind: "close-panel", panelId }),
+    onRename: renamePanel,
+    onUi: patchFeedUi,
+    onOpen: (panelId, item, rowId) => openItem(item, { panelId, rowId }),
+    onSeen: markItemsSeen,
+    onRefresh: refreshFeedPanel,
+    onConfigure: (panelId) => setModal({ kind: "configure-feed", panelId }),
+    onSearch: (panelId) => openSemanticSearch({ kind: "panel", panelId }),
+    onClearSearch: clearSemanticSearchFilter,
+    onTextScale: (panelId, direction) => adjustFeedTextScale(direction, panelId),
+    onDensity: setFeedPanelDensity,
+  };
+  if (!stableFeedPanelActionsRef.current) {
+    stableFeedPanelActionsRef.current = {
+      onFocus: (panelId) => latestFeedPanelActionsRef.current?.onFocus(panelId),
+      onSplit: (panelId, direction) => latestFeedPanelActionsRef.current?.onSplit(panelId, direction),
+      onMove: (panelId, offset, identity) =>
+        latestFeedPanelActionsRef.current?.onMove(panelId, offset, identity),
+      onMaximize: (panelId) => latestFeedPanelActionsRef.current?.onMaximize(panelId),
+      onClose: (panelId) => latestFeedPanelActionsRef.current?.onClose(panelId),
+      onRename: (panelId, name) => latestFeedPanelActionsRef.current?.onRename(panelId, name),
+      onUi: (panelId, patch) => latestFeedPanelActionsRef.current?.onUi(panelId, patch),
+      onOpen: (panelId, item, rowId) =>
+        latestFeedPanelActionsRef.current?.onOpen(panelId, item, rowId),
+      onSeen: (itemIds) => latestFeedPanelActionsRef.current?.onSeen(itemIds),
+      onRefresh: (panel) => latestFeedPanelActionsRef.current?.onRefresh(panel),
+      onConfigure: (panelId) => latestFeedPanelActionsRef.current?.onConfigure(panelId),
+      onSearch: (panelId) => latestFeedPanelActionsRef.current?.onSearch(panelId),
+      onClearSearch: () => latestFeedPanelActionsRef.current?.onClearSearch(),
+      onTextScale: (panelId, direction) =>
+        latestFeedPanelActionsRef.current?.onTextScale(panelId, direction),
+      onDensity: (panelId, mode, asGlobalDefault) =>
+        latestFeedPanelActionsRef.current?.onDensity(panelId, mode, asGlobalDefault),
+    };
+  }
+  const feedPanelActions = stableFeedPanelActionsRef.current;
 
   if (fatalError) {
     return (
@@ -1871,27 +2448,18 @@ export default function App() {
     if (panel.kind === "feed") {
       const ui = feedUi[panel.id] ?? initialFeedUi(panel, state!);
       return (
-        <FeedPanelView
+        <FeedPanelStoreHost
           key={panel.id}
-          panel={panel}
-          state={state!}
+          panelId={panel.id}
           ui={ui}
-          onUi={(patch) => patchFeedUi(panel.id, patch)}
-          onOpen={(item, rowId) => openItem(item, { panelId: panel.id, rowId })}
-          onSeen={markItemsSeen}
-          onRefresh={() => refreshFeedPanel(panel)}
-          onConfigure={() => setModal({ kind: "configure-feed", panelId: panel.id })}
-          onSearch={() => {
-            openSemanticSearch({ kind: "panel", panelId: panel.id });
-          }}
+          actions={feedPanelActions!}
           searchQuery={activeSemanticSearch?.query ?? null}
-          onClearSearch={clearSemanticSearchFilter}
           textScale={feedTextScaleOverrides[panel.id] ?? feedTextScale}
           textScaleOverride={feedTextScaleOverrides[panel.id] ?? null}
-          onTextScale={(direction) => adjustFeedTextScale(direction, panel.id)}
           density={feedDensityOverrides[panel.id] ?? feedDensity}
-          onDensity={(mode, asGlobalDefault) => setFeedPanelDensity(panel.id, mode, asGlobalDefault)}
-          {...common}
+          focused={common.focused}
+          maximized={common.maximized}
+          actionsDisabled={common.actionsDisabled}
         />
       );
     }
@@ -1901,6 +2469,7 @@ export default function App() {
         panel={panel}
         runtime={webStates[panel.id]}
         onSetUrl={(url) => updateWebPanelUrl(panel.id, url)}
+        onError={(error) => showToast(cleanError(error))}
         {...common}
       />
     );
@@ -1922,7 +2491,7 @@ export default function App() {
         inert={modal || semanticSearchOpen || updateInstallConfirmationOpen ? true : undefined}
       >
         <Brand />
-        <time>{clock.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}</time>
+        <AppClock />
         <div className="global-bar__spacer" />
         {activeSemanticSearch && (
           <>
@@ -2096,6 +2665,7 @@ export default function App() {
           <LinkPreviewView
             preview={linkPreview}
             runtime={webStates[LINK_READER_ID]}
+            onError={(error) => showToast(cleanError(error))}
             onClose={() => {
               setLinkPreview(null);
             }}
@@ -2197,7 +2767,9 @@ export default function App() {
           sources={state.sources}
           onScopeChange={setSemanticSearchScope}
           onPrepare={() => void window.vibedeck.prepareSemanticSearch().catch((error) => showToast(cleanError(error)))}
-          onCancelPreparation={() => void window.vibedeck.cancelSemanticSearchPreparation()}
+          onCancelPreparation={() => void window.vibedeck
+            .cancelSemanticSearchPreparation()
+            .catch((error) => showToast(cleanError(error)))}
           onClose={closeSemanticSearchPalette}
           onOpenItem={(item) => {
             const preferredPanelId =
@@ -2293,6 +2865,7 @@ function SearchPalette({
   const [applying, setApplying] = useState(false);
   const [semanticError, setSemanticError] = useState<string | null>(null);
   const searchable = status.phase === "ready" || status.phase === "updating";
+  const hybridAvailable = status.semanticReady !== false;
   const preparing = ["downloading", "indexing"].includes(status.phase);
   const sourceById = useMemo(() => new Map(sources.map((source) => [source.id, source])), [sources]);
   const draftKey = searchDraftKey(query, scope);
@@ -2393,27 +2966,31 @@ function SearchPalette({
         if (requestRevisionRef.current === revision) setLexicalPending(false);
       });
 
-    hybridTimerRef.current = window.setTimeout(() => {
-      setHybridPending(true);
-      void requestHybrid(key, normalizedQuery, scope)
-        .then((result) => {
-          if (requestRevisionRef.current !== revision) return;
-          acceptResult(key, result);
-          setSemanticError(null);
-        })
-        .catch((error) => {
-          if (requestRevisionRef.current === revision) setSemanticError(cleanError(error));
-        })
-        .finally(() => {
-          if (requestRevisionRef.current === revision) setHybridPending(false);
-        });
-    }, 140);
+    if (hybridAvailable) {
+      hybridTimerRef.current = window.setTimeout(() => {
+        setHybridPending(true);
+        void requestHybrid(key, normalizedQuery, scope)
+          .then((result) => {
+            if (requestRevisionRef.current !== revision) return;
+            acceptResult(key, result);
+            setSemanticError(null);
+          })
+          .catch((error) => {
+            if (requestRevisionRef.current === revision) setSemanticError(cleanError(error));
+          })
+          .finally(() => {
+            if (requestRevisionRef.current === revision) setHybridPending(false);
+          });
+      }, 140);
+    } else {
+      setHybridPending(false);
+    }
 
     return () => {
       if (hybridTimerRef.current !== null) window.clearTimeout(hybridTimerRef.current);
       hybridTimerRef.current = null;
     };
-  }, [query, scope, searchable]);
+  }, [hybridAvailable, query, scope, searchable]);
 
   useEffect(() => {
     if (!activeItemId) return;
@@ -2932,9 +3509,347 @@ interface StandardPanelActions {
   onRename: (name: string) => void | Promise<void>;
 }
 
+type VirtualFeedRowPlacement = {
+  index: number;
+  measureElement: (node: HTMLElement | null) => void;
+};
+
+type RenderFeedListRow = (
+  row: FeedListRow,
+  rowIndex: number,
+  placement?: VirtualFeedRowPlacement,
+) => React.ReactNode;
+
+const VIRTUAL_FEED_ROW_STYLE: React.CSSProperties = {
+  position: "absolute",
+  top: 0,
+  left: 0,
+  width: "100%",
+};
+
+function VirtualizedFeedRows({
+  rows,
+  focusedItemId,
+  pinnedItemIds,
+  density,
+  textScale,
+  scrollElementRef,
+  renderRow,
+}: {
+  rows: FeedListRow[];
+  focusedItemId: string | null;
+  pinnedItemIds: Array<string | null>;
+  density: FeedDensity;
+  textScale: number;
+  scrollElementRef: RefObject<HTMLDivElement | null>;
+  renderRow: RenderFeedListRow;
+}) {
+  const focusedRowIndex = useMemo(
+    () => focusedItemId
+      ? rows.findIndex((row) => row.kind === "item" && row.item.id === focusedItemId)
+      : -1,
+    [focusedItemId, rows],
+  );
+  const pinnedRowIndexes = useMemo(() => {
+    const ids = new Set(pinnedItemIds.filter((id): id is string => Boolean(id)));
+    if (ids.size === 0) return [];
+    const indexes: number[] = [];
+    rows.forEach((row, index) => {
+      if (row.kind === "item" && ids.has(row.item.id)) indexes.push(index);
+    });
+    return indexes;
+  }, [pinnedItemIds, rows]);
+  const extractRange = useCallback((range: Range) => {
+    return boundVirtualFeedRange(
+      defaultRangeExtractor(range),
+      [focusedRowIndex, ...pinnedRowIndexes],
+      range,
+    );
+  }, [focusedRowIndex, pinnedRowIndexes]);
+  const virtualizer = useVirtualizer<HTMLDivElement, HTMLElement>({
+    count: rows.length,
+    getScrollElement: () => scrollElementRef.current,
+    estimateSize: (index) => {
+      const row = rows[index];
+      if (row?.kind === "separator") return 25;
+      return Math.ceil((density === "dense" ? 34 : row?.item.summary ? 80 : 58) * textScale);
+    },
+    getItemKey: (index) => {
+      const row = rows[index];
+      return row?.kind === "separator" ? row.key : `item:${row?.item.id ?? index}`;
+    },
+    rangeExtractor: extractRange,
+    overscan: FEED_VIRTUAL_OVERSCAN,
+    useAnimationFrameWithResizeObserver: true,
+    directDomUpdates: true,
+    directDomUpdatesMode: "transform",
+  });
+  // Une ligne partiellement visible est l'ancre du lecteur : mesurer sa
+  // propre hauteur ne doit jamais déplacer son bord supérieur. Seules les
+  // lignes entièrement au-dessus du viewport compensent leur delta.
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) =>
+    item.end <= (instance.scrollOffset ?? 0);
+
+  useLayoutEffect(() => {
+    virtualizer.measure();
+  }, [density, textScale, virtualizer]);
+
+  return (
+    <div
+      className="article-list__virtual-space"
+      ref={virtualizer.containerRef}
+    >
+      {virtualizer.getVirtualItems().map((virtualRow) =>
+        renderRow(rows[virtualRow.index], virtualRow.index, {
+          index: virtualRow.index,
+          measureElement: virtualizer.measureElement,
+        }))}
+    </div>
+  );
+}
+
+interface FeedPanelStoreHostProps {
+  panelId: string;
+  ui: FeedPanelUi;
+  actions: FeedPanelHostActions;
+  searchQuery: string | null;
+  textScale: number;
+  textScaleOverride: number | null;
+  density: FeedDensity;
+  focused: boolean;
+  maximized: boolean;
+  actionsDisabled: boolean;
+}
+
+const FeedPanelStoreHost = memo(function FeedPanelStoreHost({
+  panelId,
+  ui,
+  actions,
+  searchQuery,
+  textScale,
+  textScaleOverride,
+  density,
+  focused,
+  maximized,
+  actionsDisabled,
+}: FeedPanelStoreHostProps) {
+  const subscribe = useCallback(
+    (listener: () => void) => normalizedAppStore.subscribePanel(panelId, listener),
+    [panelId],
+  );
+  const getSnapshot = useCallback(
+    () => normalizedAppStore.getFeedPanelSnapshot(panelId),
+    [panelId],
+  );
+  const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const subscribeToUnseenFilter = useCallback(
+    (listener: () => void) => ui.visibilityFilter === "unseen"
+      ? normalizedAppStore.subscribePanelRead(panelId, listener)
+      : () => undefined,
+    [panelId, ui.visibilityFilter],
+  );
+  const getUnseenFilterVersion = useCallback(
+    () => ui.visibilityFilter === "unseen"
+      ? normalizedAppStore.getFeedPanelReadSnapshot(panelId).version
+      : 0,
+    [panelId, ui.visibilityFilter],
+  );
+  const unseenFilterReadVersion = useSyncExternalStore(
+    subscribeToUnseenFilter,
+    getUnseenFilterVersion,
+    getUnseenFilterVersion,
+  );
+  const onUi = useCallback(
+    (patch: Partial<FeedPanelUi>) => actions.onUi(panelId, patch),
+    [actions, panelId],
+  );
+  const onOpen = useCallback(
+    (item: FeedItem, rowId: string) => actions.onOpen(panelId, item, rowId),
+    [actions, panelId],
+  );
+  const panel = snapshot.panel;
+  if (!panel) return null;
+  return (
+    <FeedPanelView
+      panel={panel}
+      storeSnapshot={snapshot}
+      unseenFilterReadVersion={unseenFilterReadVersion}
+      ui={ui}
+      onUi={onUi}
+      onOpen={onOpen}
+      onSeen={actions.onSeen}
+      onRefresh={() => actions.onRefresh(panel)}
+      onConfigure={() => actions.onConfigure(panelId)}
+      onSearch={() => actions.onSearch(panelId)}
+      searchQuery={searchQuery}
+      onClearSearch={actions.onClearSearch}
+      textScale={textScale}
+      textScaleOverride={textScaleOverride}
+      onTextScale={(direction) => actions.onTextScale(panelId, direction)}
+      density={density}
+      onDensity={(mode, asGlobalDefault) => actions.onDensity(panelId, mode, asGlobalDefault)}
+      focused={focused}
+      maximized={maximized}
+      actionsDisabled={actionsDisabled}
+      onFocus={() => actions.onFocus(panelId)}
+      onSplit={(direction) => actions.onSplit(panelId, direction)}
+      onMove={(offset, identity) => actions.onMove(panelId, offset, identity)}
+      onMaximize={() => actions.onMaximize(panelId)}
+      onClose={() => actions.onClose(panelId)}
+      onRename={(name) => actions.onRename(panelId, name)}
+    />
+  );
+});
+
+const FeedUnseenFilterButton = memo(function FeedUnseenFilterButton({
+  panelId,
+  active,
+  onToggle,
+}: {
+  panelId: string;
+  active: boolean;
+  onToggle: () => void;
+}) {
+  const subscribe = useCallback(
+    (listener: () => void) => normalizedAppStore.subscribePanelRead(panelId, listener),
+    [panelId],
+  );
+  const getSnapshot = useCallback(
+    () => normalizedAppStore.getFeedPanelReadSnapshot(panelId),
+    [panelId],
+  );
+  const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  return (
+    <button
+      type="button"
+      data-panel-focus-key="feed-filter:unseen"
+      className={`feed-toolbar__unseen${active ? " is-active" : ""}`}
+      aria-pressed={active}
+      onClick={onToggle}
+    >
+      Non vus <span>· {snapshot.unseenCount}</span>
+    </button>
+  );
+});
+
+const FeedArticleRow = memo(function FeedArticleRow({
+  panelId,
+  itemId,
+  fallbackItem,
+  sourceName,
+  rowIndex,
+  itemPosition,
+  itemCount,
+  tabbable,
+  focused,
+  unseenFilterActive,
+  virtualIndex,
+  measureElement,
+  onUi,
+  onSeen,
+  onOpen,
+  onHover,
+}: {
+  panelId: string;
+  itemId: string;
+  fallbackItem: FeedItem;
+  sourceName: string;
+  rowIndex: number;
+  itemPosition: number;
+  itemCount: number;
+  tabbable: boolean;
+  focused: boolean;
+  unseenFilterActive: boolean;
+  virtualIndex?: number;
+  measureElement?: (node: HTMLElement | null) => void;
+  onUi: (patch: Partial<FeedPanelUi>) => void;
+  onSeen: (itemIds: string[]) => void;
+  onOpen: (item: FeedItem, rowId: string) => void | Promise<void>;
+  onHover: (itemId: string, alreadyRead: boolean) => void;
+}) {
+  const subscribe = useCallback(
+    (listener: () => void) => normalizedAppStore.subscribeItem(itemId, listener),
+    [itemId],
+  );
+  const getSnapshot = useCallback(
+    () => normalizedAppStore.getItem(itemId) ?? fallbackItem,
+    [fallbackItem, itemId],
+  );
+  const item = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const seen = item.seenAt !== null;
+  const opened = item.openedAt !== null;
+  const rowId = `article-${panelId}-${item.id}`;
+  return (
+    <button
+      type="button"
+      id={rowId}
+      ref={measureElement}
+      data-index={virtualIndex}
+      data-feed-row-index={rowIndex}
+      style={virtualIndex === undefined ? undefined : VIRTUAL_FEED_ROW_STYLE}
+      tabIndex={tabbable ? 0 : -1}
+      className={`article-row${seen ? " article-row--seen" : ""}${
+        opened ? " article-row--opened" : ""
+      }${focused ? " article-row--focused" : ""}`}
+      title="Cliquer pour lire l’article sélectionné"
+      aria-posinset={itemPosition}
+      aria-setsize={itemCount}
+      onFocus={() => onUi({ focusedItemId: item.id })}
+      onBlur={() => {
+        if (!seen && !opened) onSeen([item.id]);
+      }}
+      onPointerMove={() => {
+        if (!focused) onUi({ focusedItemId: item.id });
+        onHover(item.id, seen || opened);
+      }}
+      onClick={() => {
+        if (!focused) {
+          onUi({ focusedItemId: item.id });
+          return;
+        }
+        if (unseenFilterActive) onUi({ focusedItemId: null });
+        void onOpen(item, rowId);
+      }}
+    >
+      <time
+        dateTime={item.publishedAt ?? item.updatedAt ?? item.firstSeenAt}
+        title={item.publishedAt || item.updatedAt ? undefined : "Heure indisponible"}
+      >
+        {formatItemTime(item)}
+      </time>
+      <i
+        className="article-identity"
+        aria-hidden="true"
+        style={{ "--source-hue": String(sourceHue(item.sourceId)) } as React.CSSProperties}
+      />
+      <span className="article-copy">
+        <span className="article-meta">
+          <span className="article-source">
+            <span className="article-source__full">{sourceName}</span>
+            <span className="article-source__abbr" aria-hidden="true">
+              {abbreviateSourceName(sourceName)}
+            </span>
+          </span>
+          {!seen && !opened && <em>Nouveau</em>}
+          {seen && !opened && (
+            <em className="is-seen">✓<span className="article-state-label"> Vu</span></em>
+          )}
+          {opened && (
+            <em className="is-opened">✓<span className="article-state-label"> Ouvert</span></em>
+          )}
+        </span>
+        <strong>{item.title}</strong>
+        {item.summary && <span className="article-summary">{item.summary}</span>}
+      </span>
+      <ArrowUpRight className="article-open" size={13} />
+    </button>
+  );
+});
+
 function FeedPanelView({
   panel,
-  state,
+  storeSnapshot,
+  unseenFilterReadVersion,
   ui,
   onUi,
   onOpen,
@@ -2952,7 +3867,8 @@ function FeedPanelView({
   ...frame
 }: {
   panel: FeedPanel;
-  state: AppState;
+  storeSnapshot: FeedPanelStoreSnapshot;
+  unseenFilterReadVersion: number;
   ui: FeedPanelUi;
   onUi: (patch: Partial<FeedPanelUi>) => void;
   onOpen: (item: FeedItem, rowId: string) => void | Promise<void>;
@@ -2967,42 +3883,392 @@ function FeedPanelView({
   onTextScale: (direction: -1 | 0 | 1) => void;
   density: FeedDensity;
   onDensity: (mode: FeedDensity, asGlobalDefault: boolean) => void;
-} & StandardPanelActions) {
+  } & StandardPanelActions) {
   const articleListRef = useRef<HTMLDivElement>(null);
+  const pageLoadInFlightRef = useRef(false);
+  const keyboardPageFocusTokenRef = useRef(0);
+  const focusAfterPageRef = useRef<PendingKeyboardPageFocus | null>(null);
+  const keyboardPageBudgetRef = useRef(0);
+  const filterPageSeekRef = useRef(false);
+  const filterPageBudgetRef = useRef(0);
+  const filterPageActionRef = useRef<HTMLButtonElement>(null);
+  const filterPageLoadingFocusRef = useRef<HTMLDivElement>(null);
+  const restoreFilterPageFocusRef = useRef(false);
+  const filterPaginationStateRef = useRef<FilteredFeedPaginationState>({
+    pagingAvailable: false,
+    searchActive: false,
+    filteredItemCount: 0,
+    sourceFilterActive: false,
+    unseenFilterActive: false,
+  });
+  const [filterPageStatus, setFilterPageStatus] = useState<
+    "idle" | "loading" | "paused" | "error"
+  >("idle");
+  const invalidatePendingKeyboardFocus = useCallback(() => {
+    keyboardPageFocusTokenRef.current += 1;
+    focusAfterPageRef.current = null;
+  }, []);
+  const stopFilteredPageSeek = useCallback((
+    status: "idle" | "paused" | "error" = "idle",
+  ) => {
+    filterPageSeekRef.current = false;
+    setFilterPageStatus(status);
+  }, []);
+  const loadNextPage = useCallback((focusAfterItemId?: string) => {
+    const getFeedPage = window.vibedeck.getFeedPage;
+    if (!getFeedPage || filterPaginationStateRef.current.searchActive) return false;
+    if (focusAfterItemId) {
+      if (focusAfterPageRef.current?.anchorItemId === focusAfterItemId) return true;
+      const activeElement = document.activeElement;
+      if (!(activeElement instanceof HTMLElement)) return false;
+      focusAfterPageRef.current = {
+        token: ++keyboardPageFocusTokenRef.current,
+        anchorItemId: focusAfterItemId,
+        activeElement,
+      };
+      keyboardPageBudgetRef.current = FILTERED_FEED_PAGE_BATCH;
+    }
+    if (pageLoadInFlightRef.current) return true;
+    pageLoadInFlightRef.current = true;
+    void getFeedPage(panel.id, 200)
+      .then((page) => {
+        if (focusAfterPageRef.current) {
+          keyboardPageBudgetRef.current = Math.max(0, keyboardPageBudgetRef.current - 1);
+        }
+        if (filterPageSeekRef.current) {
+          filterPageBudgetRef.current = Math.max(0, filterPageBudgetRef.current - 1);
+        }
+        // Un filtre de source peut nécessiter plusieurs pages avant de
+        // trouver la prochaine ligne clavier. Chaque geste reste borné à un
+        // petit lot ; l'utilisateur peut demander le lot suivant sans geler
+        // le renderer ni hydrater 25 000 articles d'un coup.
+        window.requestAnimationFrame(() => {
+          if (focusAfterPageRef.current) {
+            if (page.nextCursor === null || keyboardPageBudgetRef.current === 0) {
+              invalidatePendingKeyboardFocus();
+            } else {
+              feedPaginationByPanelId.get(panel.id)?.loadNextPage();
+            }
+            return;
+          }
+          if (filterPageSeekRef.current) {
+            if (shouldContinueFilteredFeedPagination(
+              filterPaginationStateRef.current,
+              page.nextCursor,
+              filterPageBudgetRef.current,
+            )) {
+              feedPaginationByPanelId.get(panel.id)?.loadNextPage();
+            } else if (
+              page.nextCursor !== null &&
+              shouldStartFilteredFeedPagination(filterPaginationStateRef.current)
+            ) {
+              stopFilteredPageSeek("paused");
+            } else {
+              stopFilteredPageSeek();
+            }
+          }
+        });
+      })
+      .catch(() => {
+        focusAfterPageRef.current = null;
+        if (filterPageSeekRef.current) stopFilteredPageSeek("error");
+      })
+      .finally(() => {
+        pageLoadInFlightRef.current = false;
+      });
+    return true;
+  }, [invalidatePendingKeyboardFocus, panel.id, stopFilteredPageSeek]);
+  const maybeLoadNextPage = useCallback((list: HTMLDivElement) => {
+    const remaining = list.scrollHeight - list.scrollTop - list.clientHeight;
+    if (remaining <= Math.max(640, list.clientHeight * 2)) loadNextPage();
+  }, [loadNextPage]);
   const hoverSeenTimerRef = useRef<{ id: string; handle: ReturnType<typeof setTimeout> } | null>(null);
-  const clearHoverSeenTimer = () => {
+  const clearHoverSeenTimer = useCallback(() => {
     if (hoverSeenTimerRef.current) {
       clearTimeout(hoverSeenTimerRef.current.handle);
       hoverSeenTimerRef.current = null;
     }
-  };
-  useEffect(() => clearHoverSeenTimer, []);
-  const sources = panel.sourceIds
-    .map((sourceId) => state.sources.find(({ id }) => id === sourceId))
-    .filter((source): source is Source => Boolean(source));
+  }, []);
+  const handleHoverItem = useCallback((itemId: string, alreadyRead: boolean) => {
+    if (alreadyRead || hoverSeenTimerRef.current?.id === itemId) return;
+    clearHoverSeenTimer();
+    const handle = setTimeout(() => {
+      hoverSeenTimerRef.current = null;
+      onSeen([itemId]);
+    }, HOVER_SEEN_DELAY_MS);
+    hoverSeenTimerRef.current = { id: itemId, handle };
+  }, [clearHoverSeenTimer, onSeen]);
+  useEffect(() => clearHoverSeenTimer, [clearHoverSeenTimer]);
+  const { sources, items: allItems } = storeSnapshot;
+  const sourceById = useMemo(
+    () => new Map(sources.map((source) => [source.id, source])),
+    [sources],
+  );
   const activeSourceFilter =
     ui.sourceFilter === "all" || sources.some(({ id }) => id === ui.sourceFilter)
       ? ui.sourceFilter
       : "all";
-  const allItems = panelItems(panel, state);
-  const visibleItems = panelItems(panel, state, {
-    visibleItemIds: ui.visibleItemIds,
-  });
-  const items = panelItems(panel, state, {
-    sourceFilter: activeSourceFilter,
-    visibleItemIds: ui.visibleItemIds,
-    visibilityFilter: ui.visibilityFilter,
-    focusedItemId: ui.focusedItemId,
-    searchItemIds: ui.searchItemIds,
-  });
-  const tabbableItemId = items.some(({ id }) => id === ui.focusedItemId)
+  const visibilityFocusedItemId = ui.visibilityFilter === "unseen"
+    ? ui.focusedItemId
+    : null;
+  const { items } = useMemo(() => {
+    const filteredItems: FeedItem[] = [];
+    for (const storedItem of allItems) {
+      const item = ui.visibilityFilter === "unseen"
+        ? normalizedAppStore.getItem(storedItem.id) ?? storedItem
+        : storedItem;
+      const matchesItemsScope = ui.searchItemIds
+        ? ui.searchItemIds.has(item.id)
+        : ui.visibleItemIds.has(item.id);
+      if (
+        matchesItemsScope &&
+        (activeSourceFilter === "all" || item.sourceId === activeSourceFilter) &&
+        (ui.visibilityFilter !== "unseen" ||
+          item.seenAt === null ||
+          item.id === visibilityFocusedItemId)
+      ) {
+        filteredItems.push(item);
+      }
+    }
+    return { items: filteredItems };
+  }, [
+    activeSourceFilter,
+    allItems,
+    ui.searchItemIds,
+    ui.visibilityFilter,
+    ui.visibleItemIds,
+    unseenFilterReadVersion,
+    visibilityFocusedItemId,
+  ]);
+  const filterPaginationState: FilteredFeedPaginationState = {
+    pagingAvailable: typeof window.vibedeck.getFeedPage === "function",
+    searchActive: ui.searchItemIds !== null,
+    filteredItemCount: items.length,
+    sourceFilterActive: activeSourceFilter !== "all",
+    unseenFilterActive: ui.visibilityFilter === "unseen",
+  };
+  filterPaginationStateRef.current = filterPaginationState;
+  const filteredPageScopeKey = `${activeSourceFilter}\u0000${ui.visibilityFilter}\u0000${
+    ui.searchItemIds === null ? "feed" : "search"
+  }`;
+  const startFilteredPageSeek = useCallback(() => {
+    restoreFilterPageFocusRef.current =
+      document.activeElement === filterPageActionRef.current;
+    filterPageSeekRef.current = true;
+    filterPageBudgetRef.current = FILTERED_FEED_PAGE_BATCH;
+    setFilterPageStatus("loading");
+    if (!loadNextPage()) stopFilteredPageSeek();
+  }, [loadNextPage, stopFilteredPageSeek]);
+  useEffect(() => {
+    function stopRestoringAfterExplicitFocusMove(event: FocusEvent) {
+      if (!restoreFilterPageFocusRef.current) return;
+      const target = event.target;
+      if (
+        target !== filterPageLoadingFocusRef.current &&
+        target !== filterPageActionRef.current
+      ) {
+        restoreFilterPageFocusRef.current = false;
+      }
+    }
+    document.addEventListener("focusin", stopRestoringAfterExplicitFocusMove);
+    const stopRestoringAfterWindowBlur = () => {
+      restoreFilterPageFocusRef.current = false;
+    };
+    window.addEventListener("blur", stopRestoringAfterWindowBlur);
+    return () => {
+      document.removeEventListener("focusin", stopRestoringAfterExplicitFocusMove);
+      window.removeEventListener("blur", stopRestoringAfterWindowBlur);
+    };
+  }, []);
+  useEffect(() => {
+    if (!shouldStartFilteredFeedPagination(filterPaginationStateRef.current)) {
+      filterPageSeekRef.current = false;
+      setFilterPageStatus((current) => current === "idle" ? current : "idle");
+      return;
+    }
+    startFilteredPageSeek();
+    return () => {
+      filterPageSeekRef.current = false;
+    };
+  }, [
+    filteredPageScopeKey,
+    filterPaginationState.filteredItemCount,
+    filterPaginationState.pagingAvailable,
+    startFilteredPageSeek,
+  ]);
+  const viewportAnchorForFilters = useCallback((
+    sourceFilter: string,
+    visibilityFilter: FeedPanelUi["visibilityFilter"],
+  ) => {
+    const anchor = captureFeedViewportAnchor(panel.id);
+    return retargetFeedViewportAnchor(anchor, allItems, (storedItem) => {
+      const item = normalizedAppStore.getItem(storedItem.id) ?? storedItem;
+      const matchesItemsScope = ui.searchItemIds
+        ? ui.searchItemIds.has(item.id)
+        : ui.visibleItemIds.has(item.id);
+      return (
+        matchesItemsScope &&
+        (sourceFilter === "all" || item.sourceId === sourceFilter) &&
+        (visibilityFilter !== "unseen" || item.seenAt === null)
+      );
+    });
+  }, [allItems, panel.id, ui.searchItemIds, ui.visibleItemIds]);
+  const toggleUnseenFilter = useCallback(() => {
+    const visibilityFilter = ui.visibilityFilter === "unseen" ? "all" : "unseen";
+    onUi({
+      visibilityFilter,
+      focusedItemId: null,
+      pendingArrivalIds: new Set(),
+      pendingViewportAnchor: viewportAnchorForFilters(activeSourceFilter, visibilityFilter),
+    });
+  }, [activeSourceFilter, onUi, ui.visibilityFilter, viewportAnchorForFilters]);
+  const itemIndexById = useMemo(
+    () => new Map(items.map((item, index) => [item.id, index])),
+    [items],
+  );
+  const tabbableItemId = ui.focusedItemId && itemIndexById.has(ui.focusedItemId)
     ? ui.focusedItemId
     : items[0]?.id ?? null;
   const allCount = allItems.length;
-  const unseenCount = visibleItems.filter(({ seenAt }) => seenAt === null).length;
   const failedSources = sources.filter(({ status }) => status === "error");
   const refreshing = sources.some(({ status }) => status === "refreshing");
   const automaticInsertionKey = [...ui.automaticInsertionIds].sort().join("\u0000");
+
+  useLayoutEffect(() => {
+    const model = { items, indexById: itemIndexById };
+    feedNavigationByPanelId.set(panel.id, model);
+    return () => {
+      if (feedNavigationByPanelId.get(panel.id) === model) {
+        feedNavigationByPanelId.delete(panel.id);
+      }
+    };
+  }, [itemIndexById, items, panel.id]);
+
+  useLayoutEffect(() => {
+    const controller = { loadNextPage, invalidatePendingKeyboardFocus };
+    feedPaginationByPanelId.set(panel.id, controller);
+    return () => {
+      if (feedPaginationByPanelId.get(panel.id) === controller) {
+        feedPaginationByPanelId.delete(panel.id);
+      }
+    };
+  }, [invalidatePendingKeyboardFocus, loadNextPage, panel.id]);
+
+  useLayoutEffect(() => {
+    if (!restoreFilterPageFocusRef.current) return;
+    if (filterPageStatus === "loading") {
+      filterPageLoadingFocusRef.current?.focus({ preventScroll: true });
+      return;
+    }
+    const firstItem = items[0];
+    if (firstItem) {
+      restoreFilterPageFocusRef.current = false;
+      onUi({ focusedItemId: firstItem.id });
+      const article = document.getElementById(`article-${panel.id}-${firstItem.id}`);
+      if (article instanceof HTMLElement) article.focus({ preventScroll: true });
+      else pendingKeyboardArticleFocus.set(panel.id, firstItem.id);
+      return;
+    }
+    const action = filterPageActionRef.current;
+    if (action) {
+      restoreFilterPageFocusRef.current = false;
+      action.focus({ preventScroll: true });
+    }
+  }, [filterPageStatus, items, onUi, panel.id]);
+
+  useEffect(
+    () => () => {
+      pendingKeyboardArticleFocus.delete(panel.id);
+      invalidatePendingKeyboardFocus();
+    },
+    [invalidatePendingKeyboardFocus, panel.id],
+  );
+
+  useEffect(() => {
+    const list = articleListRef.current;
+    if (!list || items.length === 0) return;
+    const frame = window.requestAnimationFrame(() => maybeLoadNextPage(list));
+    return () => window.cancelAnimationFrame(frame);
+  }, [items.length, maybeLoadNextPage]);
+
+  useLayoutEffect(() => {
+    const pendingFocus = focusAfterPageRef.current;
+    if (!pendingFocus) return;
+    if (
+      pendingFocus.token !== keyboardPageFocusTokenRef.current ||
+      ui.focusedItemId !== pendingFocus.anchorItemId ||
+      document.activeElement !== pendingFocus.activeElement
+    ) {
+      invalidatePendingKeyboardFocus();
+      return;
+    }
+    const anchorIndex = itemIndexById.get(pendingFocus.anchorItemId);
+    if (anchorIndex === undefined) {
+      invalidatePendingKeyboardFocus();
+      return;
+    }
+    const nextItem = items[anchorIndex + 1];
+    if (!nextItem) return;
+    invalidatePendingKeyboardFocus();
+    pendingKeyboardArticleFocus.set(panel.id, nextItem.id);
+    onUi({ focusedItemId: nextItem.id });
+  }, [invalidatePendingKeyboardFocus, itemIndexById, items, onUi, panel.id, ui.focusedItemId]);
+
+  useLayoutEffect(() => {
+    const itemId = pendingKeyboardArticleFocus.get(panel.id);
+    if (!itemId) return;
+    const article = document.getElementById(`article-${panel.id}-${itemId}`);
+    const list = articleListRef.current;
+    if (!(article instanceof HTMLElement) || !list?.contains(article)) return;
+    pendingKeyboardArticleFocus.delete(panel.id);
+    article.focus({ preventScroll: true });
+    smoothScrollIntoView(list, article);
+  }, [items, panel.id, ui.focusedItemId]);
+
+  useLayoutEffect(() => {
+    const anchor = ui.pendingViewportAnchor;
+    if (!anchor) return;
+    const list = articleListRef.current;
+    if (!list) {
+      onUi({ pendingViewportAnchor: null });
+      return;
+    }
+    cancelSmoothScroll(list);
+    let frame = 0;
+    let remainingFrames = FEED_ANCHOR_STABILIZATION_FRAMES;
+    let finalized = false;
+    let restored = restoreFeedViewportAnchor(panel.id, list, anchor);
+    const finalize = (allowFallback: boolean) => {
+      if (finalized) return;
+      finalized = true;
+      if (allowFallback && !restored) list.scrollTop = anchor.scrollTop;
+      onUi({ pendingViewportAnchor: null });
+    };
+    const stopForUserInput = () => {
+      window.cancelAnimationFrame(frame);
+      finalize(false);
+    };
+    list.addEventListener("wheel", stopForUserInput, { passive: true });
+    list.addEventListener("pointerdown", stopForUserInput);
+    list.addEventListener("touchstart", stopForUserInput, { passive: true });
+    list.addEventListener("keydown", stopForUserInput, true);
+    const stabilize = () => {
+      if (finalized) return;
+      restored = restoreFeedViewportAnchor(panel.id, list, anchor) || restored;
+      remainingFrames -= 1;
+      if (remainingFrames > 0) frame = window.requestAnimationFrame(stabilize);
+      else finalize(true);
+    };
+    frame = window.requestAnimationFrame(stabilize);
+    return () => {
+      finalized = true;
+      window.cancelAnimationFrame(frame);
+      list.removeEventListener("wheel", stopForUserInput);
+      list.removeEventListener("pointerdown", stopForUserInput);
+      list.removeEventListener("touchstart", stopForUserInput);
+      list.removeEventListener("keydown", stopForUserInput, true);
+    };
+  }, [onUi, panel.id, ui.pendingViewportAnchor?.token]);
 
   useLayoutEffect(() => {
     const list = articleListRef.current;
@@ -3016,16 +4282,6 @@ function FeedPanelView({
         cancelSmoothScroll(list);
         list.scrollTop = 0;
       } else {
-        const anchor = previous.anchorItemId
-          ? document.getElementById(`article-${panel.id}-${previous.anchorItemId}`)
-          : null;
-        if (anchor && list.contains(anchor) && previous.anchorViewportTop !== null) {
-          const currentAnchorTop = anchor.getBoundingClientRect().top - list.getBoundingClientRect().top;
-          // Chromium peut déjà avoir appliqué son scroll anchoring natif. Ajuster
-          // relativement à la position courante évite de compenser deux fois ou
-          // d’annuler cette compensation automatique.
-          list.scrollTop += currentAnchorTop - previous.anchorViewportTop;
-        }
         // Ne compter que les arrivées réellement rendues avant l’ancre : une
         // date éditoriale ancienne peut désormais les placer dans ou sous le
         // viewport sans nécessiter de compensation ni de pastille.
@@ -3035,17 +4291,116 @@ function FeedPanelView({
           previous.anchorItemId,
         );
         if (arrivedAbove.length > 0) {
-          onUi({
-            automaticInsertionIds: new Set(),
-            automaticInsertionMetrics: null,
-            pendingArrivalIds: new Set([...ui.pendingArrivalIds, ...arrivedAbove]),
-          });
-          return;
+          const restoreAnchor = () => {
+            const anchor = previous.anchorItemId
+              ? document.getElementById(`article-${panel.id}-${previous.anchorItemId}`)
+              : null;
+            if (!anchor || !list.contains(anchor) || previous.anchorViewportTop === null) return;
+            const currentAnchorTop = anchor.getBoundingClientRect().top -
+              list.getBoundingClientRect().top;
+            // Les nouvelles lignes à hauteur variable sont mesurées par le
+            // virtualiseur après le commit. Réconcilier relativement à la
+            // position courante respecte aussi une éventuelle compensation
+            // native sans jamais la doubler.
+            list.scrollTop += currentAnchorTop - previous.anchorViewportTop;
+          };
+          restoreAnchor();
+          let frame = 0;
+          let remainingFrames = FEED_ANCHOR_STABILIZATION_FRAMES;
+          let finalized = false;
+          const finalize = () => {
+            if (finalized) return;
+            finalized = true;
+            onUi({
+              automaticInsertionIds: new Set(),
+              automaticInsertionMetrics: null,
+              pendingArrivalIds: new Set([...ui.pendingArrivalIds, ...arrivedAbove]),
+            });
+          };
+          const stopForUserInput = () => {
+            window.cancelAnimationFrame(frame);
+            finalize();
+          };
+          list.addEventListener("wheel", stopForUserInput, { passive: true });
+          list.addEventListener("pointerdown", stopForUserInput);
+          list.addEventListener("touchstart", stopForUserInput, { passive: true });
+          list.addEventListener("keydown", stopForUserInput, true);
+          const stabilize = () => {
+            if (finalized) return;
+            restoreAnchor();
+            remainingFrames -= 1;
+            if (remainingFrames > 0) {
+              frame = window.requestAnimationFrame(stabilize);
+            } else {
+              finalize();
+            }
+          };
+          frame = window.requestAnimationFrame(stabilize);
+          return () => {
+            window.cancelAnimationFrame(frame);
+            list.removeEventListener("wheel", stopForUserInput);
+            list.removeEventListener("pointerdown", stopForUserInput);
+            list.removeEventListener("touchstart", stopForUserInput);
+            list.removeEventListener("keydown", stopForUserInput, true);
+          };
         }
       }
     }
     onUi({ automaticInsertionIds: new Set(), automaticInsertionMetrics: null });
   }, [automaticInsertionKey, ui.automaticInsertionIds, ui.automaticInsertionMetrics, ui.searchItemIds]);
+
+  const feedRows = useMemo<FeedListRow[]>(
+    () => density === "dense"
+      ? withDaySeparators(items)
+      : items.map((item) => ({ kind: "item", item })),
+    [density, items],
+  );
+  const virtualized = feedRows.length > FEED_VIRTUALIZATION_THRESHOLD;
+  const renderFeedListRow: RenderFeedListRow = (row, rowIndex, placement) => {
+    const virtualProps = placement
+      ? {
+          ref: placement.measureElement,
+          "data-index": placement.index,
+          "data-feed-row-index": rowIndex,
+          style: VIRTUAL_FEED_ROW_STYLE,
+        }
+      : { "data-feed-row-index": rowIndex };
+    if (row.kind === "separator") {
+      return (
+        <div
+          key={row.key}
+          className="article-day-separator"
+          aria-hidden="true"
+          {...virtualProps}
+        >
+          {row.label}
+        </div>
+      );
+    }
+
+    const { item } = row;
+    return (
+      <FeedArticleRow
+        key={item.id}
+        panelId={panel.id}
+        itemId={item.id}
+        fallbackItem={item}
+        sourceName={sourceById.get(item.sourceId)?.name ?? "Source"}
+        rowIndex={rowIndex}
+        itemPosition={(itemIndexById.get(item.id) ?? 0) + 1}
+        itemCount={items.length}
+        tabbable={item.id === tabbableItemId}
+        focused={ui.focusedItemId === item.id}
+        unseenFilterActive={ui.visibilityFilter === "unseen"}
+        virtualIndex={placement?.index}
+        measureElement={placement?.measureElement}
+        onUi={onUi}
+        onSeen={onSeen}
+        onOpen={onOpen}
+        onHover={handleHoverItem}
+      />
+    );
+  };
 
   return (
     <PanelFrame
@@ -3106,28 +4461,21 @@ function FeedPanelView({
             className={activeSourceFilter === "all" ? "is-active" : ""}
             aria-pressed={activeSourceFilter === "all"}
             onClick={() =>
-              onUi({ sourceFilter: "all", focusedItemId: null, pendingArrivalIds: new Set() })
+              onUi({
+                sourceFilter: "all",
+                focusedItemId: null,
+                pendingArrivalIds: new Set(),
+                pendingViewportAnchor: viewportAnchorForFilters("all", ui.visibilityFilter),
+              })
             }
           >
             Toutes <span>· {allCount}</span>
           </button>
-          <button
-            type="button"
-            data-panel-focus-key="feed-filter:unseen"
-            className={`feed-toolbar__unseen${
-              ui.visibilityFilter === "unseen" ? " is-active" : ""
-            }`}
-            aria-pressed={ui.visibilityFilter === "unseen"}
-            onClick={() =>
-              onUi({
-                visibilityFilter: ui.visibilityFilter === "unseen" ? "all" : "unseen",
-                focusedItemId: null,
-                pendingArrivalIds: new Set(),
-              })
-            }
-          >
-            Non vus <span>· {unseenCount}</span>
-          </button>
+          <FeedUnseenFilterButton
+            panelId={panel.id}
+            active={ui.visibilityFilter === "unseen"}
+            onToggle={toggleUnseenFilter}
+          />
           {sources.map((source, sourceIndex) => (
             <button
               type="button"
@@ -3146,7 +4494,15 @@ function FeedPanelView({
               }`}
               title={source.errorMessage ?? source.name}
               onClick={() =>
-                onUi({ sourceFilter: source.id, focusedItemId: null, pendingArrivalIds: new Set() })
+                onUi({
+                  sourceFilter: source.id,
+                  focusedItemId: null,
+                  pendingArrivalIds: new Set(),
+                  pendingViewportAnchor: viewportAnchorForFilters(
+                    source.id,
+                    ui.visibilityFilter,
+                  ),
+                })
               }
             >
               <i className={`source-dot source-dot--${source.status}`} />
@@ -3213,6 +4569,40 @@ function FeedPanelView({
             action="Configurer les sources"
             onAction={onConfigure}
           />
+        ) : items.length === 0 &&
+          !filterPaginationState.searchActive &&
+          (filterPaginationState.sourceFilterActive || filterPaginationState.unseenFilterActive) &&
+          filterPageStatus === "loading" ? (
+          <PanelEmpty
+            icon={<LoaderCircle className="is-spinning" size={20} />}
+            title="Chargement du filtre…"
+            body="VibeDeck cherche les articles correspondants dans les pages locales suivantes."
+            focusRef={filterPageLoadingFocusRef}
+          />
+        ) : items.length === 0 &&
+          !filterPaginationState.searchActive &&
+          (filterPaginationState.sourceFilterActive || filterPaginationState.unseenFilterActive) &&
+          filterPageStatus === "error" ? (
+          <PanelEmpty
+            icon={<Rss size={20} />}
+            title="Filtre incomplet"
+            body="La page locale suivante n’a pas pu être chargée. Le cache reste intact."
+            action="Réessayer"
+            onAction={startFilteredPageSeek}
+            actionRef={filterPageActionRef}
+          />
+        ) : items.length === 0 &&
+          !filterPaginationState.searchActive &&
+          (filterPaginationState.sourceFilterActive || filterPaginationState.unseenFilterActive) &&
+          filterPageStatus === "paused" ? (
+          <PanelEmpty
+            icon={<Rss size={20} />}
+            title="Recherche locale mise en pause"
+            body={`VibeDeck a vérifié ${FILTERED_FEED_PAGE_BATCH * 200} articles sans bloquer l’interface. D’autres pages restent disponibles.`}
+            action="Continuer"
+            onAction={startFilteredPageSeek}
+            actionRef={filterPageActionRef}
+          />
         ) : items.length === 0 && ui.searchItemIds && searchQuery ? (
           <PanelEmpty
             icon={<Search size={20} />}
@@ -3230,6 +4620,7 @@ function FeedPanelView({
             onAction={() =>
               onUi({ visibilityFilter: "all", focusedItemId: null, pendingArrivalIds: new Set() })
             }
+            actionRef={filterPageActionRef}
           />
         ) : items.length === 0 ? (
           <PanelEmpty
@@ -3238,14 +4629,18 @@ function FeedPanelView({
             body="Les nouvelles publications apparaîtront ici automatiquement."
             action={refreshing ? undefined : "Actualiser"}
             onAction={refreshing ? undefined : () => void onRefresh()}
+            actionRef={filterPageActionRef}
           />
         ) : (
           <>
           <div
             className="article-list"
             ref={articleListRef}
+            data-virtualized={virtualized ? "true" : "false"}
+            data-feed-total-count={items.length}
             onPointerLeave={clearHoverSeenTimer}
             onScroll={(event) => {
+              maybeLoadNextPage(event.currentTarget);
               // Revenu en haut : les arrivées comptées sont visibles, la
               // pastille n'a plus rien à signaler.
               if (event.currentTarget.scrollTop <= 2 && ui.pendingArrivalIds.size > 0) {
@@ -3253,97 +4648,21 @@ function FeedPanelView({
               }
             }}
           >
-            {(density === "dense"
-              ? withDaySeparators(items)
-              : items.map((item) => ({ kind: "item" as const, item }))
-            ).map((row) => {
-              if (row.kind === "separator") {
-                return (
-                  <div key={row.key} className="article-day-separator" aria-hidden="true">
-                    {row.label}
-                  </div>
-                );
-              }
-              const { item } = row;
-              const source = state.sources.find(({ id }) => id === item.sourceId);
-              const seen = item.seenAt !== null;
-              const opened = item.openedAt !== null;
-              const focused = ui.focusedItemId === item.id;
-              return (
-                <button
-                  type="button"
-                  id={`article-${panel.id}-${item.id}`}
-                  key={item.id}
-                  tabIndex={item.id === tabbableItemId ? 0 : -1}
-                  className={`article-row${seen ? " article-row--seen" : ""}${
-                    opened ? " article-row--opened" : ""
-                  }${
-                    focused ? " article-row--focused" : ""
-                  }`}
-                  title="Cliquer pour lire l’article sélectionné"
-                  onFocus={() => onUi({ focusedItemId: item.id })}
-                  onBlur={() => {
-                    if (!seen && !opened) onSeen([item.id]);
-                  }}
-                  onPointerMove={() => {
-                    if (ui.focusedItemId !== item.id) onUi({ focusedItemId: item.id });
-                    // Déjà « vu » : rien à programmer.
-                    if (seen || opened) return;
-                    // Un minuteur cible déjà cette ligne : laisser le survol immobile
-                    // aboutir sans le réarmer à chaque pixel.
-                    if (hoverSeenTimerRef.current?.id === item.id) return;
-                    clearHoverSeenTimer();
-                    const handle = setTimeout(() => {
-                      hoverSeenTimerRef.current = null;
-                      onSeen([item.id]);
-                    }, HOVER_SEEN_DELAY_MS);
-                    hoverSeenTimerRef.current = { id: item.id, handle };
-                  }}
-                  onClick={() => {
-                    if (ui.focusedItemId !== item.id) {
-                      onUi({ focusedItemId: item.id });
-                      return;
-                    }
-                    if (ui.visibilityFilter === "unseen") {
-                      onUi({ focusedItemId: null });
-                    }
-                    void onOpen(item, `article-${panel.id}-${item.id}`);
-                  }}
-                >
-                  <time
-                    dateTime={item.publishedAt ?? item.updatedAt ?? item.firstSeenAt}
-                    title={item.publishedAt || item.updatedAt ? undefined : "Heure indisponible"}
-                  >
-                    {formatItemTime(item)}
-                  </time>
-                  <i
-                    className="article-identity"
-                    aria-hidden="true"
-                    style={{ "--source-hue": String(sourceHue(item.sourceId)) } as React.CSSProperties}
-                  />
-                  <span className="article-copy">
-                    <span className="article-meta">
-                      <span className="article-source">
-                        <span className="article-source__full">{source?.name ?? "Source"}</span>
-                        <span className="article-source__abbr" aria-hidden="true">
-                          {abbreviateSourceName(source?.name ?? "Source")}
-                        </span>
-                      </span>
-                      {!seen && !opened && <em>Nouveau</em>}
-                      {seen && !opened && (
-                        <em className="is-seen">✓<span className="article-state-label"> Vu</span></em>
-                      )}
-                      {opened && (
-                        <em className="is-opened">✓<span className="article-state-label"> Ouvert</span></em>
-                      )}
-                    </span>
-                    <strong>{item.title}</strong>
-                    {item.summary && <span className="article-summary">{item.summary}</span>}
-                  </span>
-                  <ArrowUpRight className="article-open" size={13} />
-                </button>
-              );
-            })}
+            {virtualized ? (
+              <VirtualizedFeedRows
+                rows={feedRows}
+                focusedItemId={ui.focusedItemId}
+                pinnedItemIds={[
+                  ui.pendingViewportAnchor?.itemId ?? null,
+                  ui.automaticInsertionMetrics?.anchorItemId ?? null,
+                  pendingKeyboardArticleFocus.get(panel.id) ?? null,
+                ]}
+                density={density}
+                textScale={textScale}
+                scrollElementRef={articleListRef}
+                renderRow={renderFeedListRow}
+              />
+            ) : feedRows.map((row, index) => renderFeedListRow(row, index))}
           </div>
           {ui.pendingArrivalIds.size > 0 && (
             <button
@@ -3355,11 +4674,15 @@ function FeedPanelView({
               } au-dessus — afficher`}
               onClick={() => {
                 const list = articleListRef.current;
-                if (!list) return;
-                list.querySelector<HTMLElement>(".article-row")?.focus({ preventScroll: true });
-                const firstChild = list.firstElementChild;
-                if (firstChild instanceof HTMLElement) smoothScrollIntoView(list, firstChild);
-                onUi({ pendingArrivalIds: new Set() });
+                const firstItem = items[0];
+                if (!list || !firstItem) return;
+                cancelSmoothScroll(list);
+                list.scrollTop = 0;
+                pendingKeyboardArticleFocus.set(panel.id, firstItem.id);
+                onUi({
+                  focusedItemId: firstItem.id,
+                  pendingArrivalIds: new Set(),
+                });
               }}
             >
               ▲ {ui.pendingArrivalIds.size}{" "}
@@ -3415,11 +4738,13 @@ function WebPanelView({
   panel,
   runtime,
   onSetUrl,
+  onError,
   ...frame
 }: {
   panel: WebPanel;
   runtime?: WebPanelRuntimeState;
   onSetUrl: (url: string) => Promise<void>;
+  onError: (error: unknown) => void;
 } & StandardPanelActions) {
   const [editingUrl, setEditingUrl] = useState(false);
   const [urlValue, setUrlValue] = useState(panel.url);
@@ -3436,9 +4761,15 @@ function WebPanelView({
     try {
       await onSetUrl(urlValue.trim());
       setEditingUrl(false);
+    } catch (error) {
+      onError(error);
     } finally {
       setSaving(false);
     }
+  }
+
+  function runNative(action: Promise<void>) {
+    void action.catch(onError);
   }
 
   return (
@@ -3447,24 +4778,24 @@ function WebPanelView({
         <IconButton
           label="Page précédente"
           disabled={!runtime?.canGoBack}
-          onClick={() => void window.vibedeck.goBackWebPanel(panel.id)}
+          onClick={() => runNative(window.vibedeck.goBackWebPanel(panel.id))}
         >
           <ArrowLeft size={12} />
         </IconButton>
         <IconButton
           label="Page suivante"
           disabled={!runtime?.canGoForward}
-          onClick={() => void window.vibedeck.goForwardWebPanel(panel.id)}
+          onClick={() => runNative(window.vibedeck.goForwardWebPanel(panel.id))}
         >
           <ArrowRight size={12} />
         </IconButton>
-        <IconButton label="Accueil" onClick={() => void window.vibedeck.homeWebPanel(panel.id)}>
+        <IconButton label="Accueil" onClick={() => runNative(window.vibedeck.homeWebPanel(panel.id))}>
           <Home size={12} />
         </IconButton>
         <IconButton
           label={runtime?.loading ? "Arrêter" : "Recharger"}
           onClick={() =>
-            void (runtime?.loading
+            runNative(runtime?.loading
               ? window.vibedeck.stopWebPanel(panel.id)
               : window.vibedeck.reloadWebPanel(panel.id))
           }
@@ -3506,14 +4837,14 @@ function WebPanelView({
           label={runtime?.muted === false ? "Couper le son" : "Activer le son"}
           active={runtime?.muted === false}
           onClick={() =>
-            void window.vibedeck.setWebPanelMuted(panel.id, runtime?.muted === false)
+            runNative(window.vibedeck.setWebPanelMuted(panel.id, runtime?.muted === false))
           }
         >
           {runtime?.muted === false ? <Volume2 size={12} /> : <VolumeX size={12} />}
         </IconButton>
         <IconButton
           label="Ouvrir dans le navigateur"
-          onClick={() => void window.vibedeck.openExternalWebPanel(panel.id)}
+          onClick={() => runNative(window.vibedeck.openExternalWebPanel(panel.id))}
         >
           <ExternalLink size={12} />
         </IconButton>
@@ -3525,7 +4856,7 @@ function WebPanelView({
             title="Impossible d’afficher cette page"
             body={runtime?.error ?? "La page ne répond pas dans le panel."}
             action="Réessayer"
-            onAction={() => void window.vibedeck.reloadWebPanel(panel.id)}
+            onAction={() => runNative(window.vibedeck.reloadWebPanel(panel.id))}
           />
         )}
         {!runtime && (
@@ -3546,10 +4877,12 @@ function WebPanelView({
 function LinkPreviewView({
   preview,
   runtime,
+  onError,
   onClose,
 }: {
   preview: LinkPreview;
   runtime?: WebPanelRuntimeState;
+  onError: (error: unknown) => void;
   onClose: () => void;
 }) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -3567,6 +4900,10 @@ function LinkPreviewView({
   useLayoutEffect(() => {
     closeButtonRef.current?.focus({ preventScroll: true });
   }, [preview.itemId]);
+
+  function runNative(action: Promise<void>) {
+    void action.catch(onError);
+  }
 
   return (
     <section className="dashboard-panel link-reader" aria-label={`Lecture — ${preview.title}`}>
@@ -3595,7 +4932,7 @@ function LinkPreviewView({
             <button
               type="button"
               className="quiet-button"
-              onClick={() => void window.vibedeck.showOriginalArticle(preview.itemId)}
+              onClick={() => runNative(window.vibedeck.showOriginalArticle(preview.itemId))}
             >
               Page originale
             </button>
@@ -3604,7 +4941,7 @@ function LinkPreviewView({
             type="button"
             className="quiet-button link-reader__external"
             disabled={!runtime}
-            onClick={() => void window.vibedeck.openExternalWebPanel(LINK_READER_ID)}
+            onClick={() => runNative(window.vibedeck.openExternalWebPanel(LINK_READER_ID))}
           >
             <ExternalLink size={12} /> Ouvrir à l’extérieur
           </button>
@@ -3616,7 +4953,7 @@ function LinkPreviewView({
               title="Impossible d’afficher cet article"
               body={runtime?.error ?? "La page ne répond pas dans l’application."}
               action={readerMode === "original" ? "Réessayer" : "Page originale"}
-              onAction={() => void (readerMode === "original"
+              onAction={() => runNative(readerMode === "original"
                 ? window.vibedeck.retryOriginalArticle(preview.itemId)
                 : window.vibedeck.showOriginalArticle(preview.itemId))}
             />
@@ -4431,20 +5768,24 @@ function PanelEmpty({
   body,
   action,
   onAction,
+  actionRef,
+  focusRef,
 }: {
   icon: React.ReactNode;
   title: string;
   body: string;
   action?: string;
   onAction?: () => void;
+  actionRef?: RefObject<HTMLButtonElement | null>;
+  focusRef?: RefObject<HTMLDivElement | null>;
 }) {
   return (
-    <div className="panel-empty">
+    <div className="panel-empty" ref={focusRef} tabIndex={focusRef ? -1 : undefined}>
       {icon}
       <strong>{title}</strong>
       <span>{body}</span>
       {action && onAction ? (
-        <button type="button" onClick={onAction}>
+        <button ref={actionRef} type="button" onClick={onAction}>
           {action}
         </button>
       ) : null}
@@ -4512,6 +5853,13 @@ function Modal({
       ? document.activeElement
       : null;
     const frame = window.requestAnimationFrame(() => {
+      const activeElement = document.activeElement;
+      if (
+        activeElement instanceof HTMLElement &&
+        layerRef.current?.contains(activeElement)
+      ) {
+        return;
+      }
       const firstField =
         initialFocusRef?.current ??
         layerRef.current?.querySelector<HTMLElement>("[data-autofocus]:not(:disabled)") ??
@@ -4908,7 +6256,11 @@ function PilotToolsModal({
           <button
             type="button"
             className="danger-button"
-            disabled={Boolean(pending) || semanticStatus.phase === "not-installed"}
+            disabled={
+              Boolean(pending) ||
+              semanticStatus.phase === "not-installed" ||
+              semanticStatus.semanticReady === false
+            }
             onClick={() => {
               if (!confirmSearchReset) {
                 setConfirmSearchReset(true);

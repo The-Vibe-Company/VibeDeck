@@ -99,6 +99,23 @@ function clampedTrack(
   return `clamp(${firstMinimum}px, calc(${percent}% - ${dividerShare}px), calc(100% - ${SPLIT_DIVIDER_SIZE + secondMinimum}px))`;
 }
 
+function applyTransientGridRatio(
+  container: HTMLDivElement,
+  direction: "row" | "column",
+  ratio: number,
+  firstMinimum: number,
+  secondMinimum: number,
+) {
+  const firstTrack = clampedTrack(ratio, firstMinimum, secondMinimum);
+  if (direction === "row") {
+    container.style.gridTemplateColumns =
+      `${firstTrack} ${SPLIT_DIVIDER_SIZE}px minmax(${secondMinimum}px, 1fr)`;
+  } else {
+    container.style.gridTemplateRows =
+      `${firstTrack} ${SPLIT_DIVIDER_SIZE}px minmax(${secondMinimum}px, 1fr)`;
+  }
+}
+
 function findPanel(node: LayoutNode | null, panelId: string): LayoutNode | null {
   if (!node) return null;
   if (node.type === "panel") return node.panelId === panelId ? node : null;
@@ -253,13 +270,19 @@ function SplitDivider({
   const pointerIdRef = useRef<number | null>(null);
   const latestRatioRef = useRef(ratio);
   const resetFrameRef = useRef<number | null>(null);
+  const visualFrameRef = useRef<number | null>(null);
+  const pendingVisualRatioRef = useRef<number | null>(null);
+  const keyboardDirtyRef = useRef(false);
+  const dividerRef = useRef<HTMLDivElement>(null);
   const [containerSpan, setContainerSpan] = useState(0);
   const resizeToken = `pointer-resize:${splitId}`;
   const keyboardToken = `keyboard-resize:${splitId}`;
   const limits = ratioLimits(containerSpan, firstMinimum, secondMinimum);
   const displayedRatio = Math.min(limits.maximum, Math.max(limits.minimum, ratio));
 
-  latestRatioRef.current = displayedRatio;
+  if (pointerIdRef.current === null && !keyboardDirtyRef.current) {
+    latestRatioRef.current = displayedRatio;
+  }
 
   useEffect(() => {
     const container = containerRef.current;
@@ -274,29 +297,81 @@ function SplitDivider({
     return () => observer.disconnect();
   }, [containerRef, direction]);
 
-  const commitRatio = useCallback(
+  const clampedRatio = useCallback(
     (nextRatio: number) => {
-      const clamped = Math.min(
+      return Math.min(
         limits.maximum,
         Math.max(limits.minimum, clampRatio(nextRatio)),
       );
-      latestRatioRef.current = clamped;
-      onRatioChange(splitId, clamped);
     },
-    [limits.maximum, limits.minimum, onRatioChange, splitId],
+    [limits.maximum, limits.minimum],
   );
 
-  const endPointerResize = useCallback(
+  const flushVisualRatio = useCallback(() => {
+    if (visualFrameRef.current !== null) {
+      cancelAnimationFrame(visualFrameRef.current);
+      visualFrameRef.current = null;
+    }
+    const nextRatio = pendingVisualRatioRef.current;
+    pendingVisualRatioRef.current = null;
+    if (nextRatio === null) return;
+    const container = containerRef.current;
+    if (container) {
+      applyTransientGridRatio(
+        container,
+        direction,
+        nextRatio,
+        firstMinimum,
+        secondMinimum,
+      );
+    }
+    const divider = dividerRef.current;
+    if (divider) {
+      divider.setAttribute("aria-valuenow", String(Math.round(nextRatio * 100)));
+      divider.setAttribute("aria-valuetext", `${Math.round(nextRatio * 100)} %`);
+    }
+  }, [containerRef, direction, firstMinimum, secondMinimum]);
+
+  const previewRatio = useCallback(
+    (nextRatio: number) => {
+      const clamped = clampedRatio(nextRatio);
+      latestRatioRef.current = clamped;
+      pendingVisualRatioRef.current = clamped;
+      if (visualFrameRef.current === null) {
+        visualFrameRef.current = requestAnimationFrame(flushVisualRatio);
+      }
+    },
+    [clampedRatio, flushVisualRatio],
+  );
+
+  const commitPreview = useCallback(() => {
+    flushVisualRatio();
+    const nextRatio = latestRatioRef.current;
+    if (Math.abs(nextRatio - displayedRatio) > 0.000_01) {
+      onRatioChange(splitId, nextRatio);
+    }
+  }, [displayedRatio, flushVisualRatio, onRatioChange, splitId]);
+
+  const finishKeyboardResize = useCallback(() => {
+    if (keyboardDirtyRef.current) {
+      keyboardDirtyRef.current = false;
+      commitPreview();
+    }
+    endInteraction(keyboardToken);
+  }, [commitPreview, endInteraction, keyboardToken]);
+
+  const finishPointerResize = useCallback(
     (event?: ReactPointerEvent<HTMLDivElement>) => {
       const pointerId = pointerIdRef.current;
       if (pointerId === null || (event && event.pointerId !== pointerId)) return;
+      commitPreview();
       pointerIdRef.current = null;
       if (event?.currentTarget.hasPointerCapture(pointerId)) {
         event.currentTarget.releasePointerCapture(pointerId);
       }
       endInteraction(resizeToken);
     },
-    [endInteraction, resizeToken],
+    [commitPreview, endInteraction, resizeToken],
   );
 
   useEffect(
@@ -304,6 +379,7 @@ function SplitDivider({
       endInteraction(resizeToken);
       endInteraction(keyboardToken);
       if (resetFrameRef.current !== null) cancelAnimationFrame(resetFrameRef.current);
+      if (visualFrameRef.current !== null) cancelAnimationFrame(visualFrameRef.current);
     },
     [endInteraction, keyboardToken, resizeToken],
   );
@@ -317,7 +393,7 @@ function SplitDivider({
     if (available <= 0) return;
     const offset =
       direction === "row" ? event.clientX - bounds.left : event.clientY - bounds.top;
-    commitRatio((offset - SPLIT_DIVIDER_SIZE / 2) / available);
+    previewRatio((offset - SPLIT_DIVIDER_SIZE / 2) / available);
   }
 
   function keyboardRatio(event: ReactKeyboardEvent<HTMLDivElement>) {
@@ -343,6 +419,7 @@ function SplitDivider({
 
   return (
     <div
+      ref={dividerRef}
       className={`split-layout__divider split-layout__divider--${orientation}`}
       role="separator"
       tabIndex={0}
@@ -362,21 +439,25 @@ function SplitDivider({
         event.preventDefault();
         event.stopPropagation();
         pointerIdRef.current = event.pointerId;
+        latestRatioRef.current = displayedRatio;
+        pendingVisualRatioRef.current = null;
         event.currentTarget.setPointerCapture(event.pointerId);
         beginInteraction(resizeToken);
       }}
       onPointerMove={updateFromPointer}
-      onPointerUp={endPointerResize}
-      onPointerCancel={endPointerResize}
+      onPointerUp={finishPointerResize}
+      onPointerCancel={finishPointerResize}
       onLostPointerCapture={(event) => {
         if (pointerIdRef.current !== event.pointerId) return;
+        commitPreview();
         pointerIdRef.current = null;
         endInteraction(resizeToken);
       }}
       onDoubleClick={(event) => {
         event.preventDefault();
         beginInteraction(resizeToken);
-        commitRatio(DEFAULT_RATIO);
+        previewRatio(DEFAULT_RATIO);
+        commitPreview();
         if (resetFrameRef.current !== null) cancelAnimationFrame(resetFrameRef.current);
         resetFrameRef.current = requestAnimationFrame(() => {
           resetFrameRef.current = null;
@@ -389,13 +470,14 @@ function SplitDivider({
         event.preventDefault();
         event.stopPropagation();
         beginInteraction(keyboardToken);
-        commitRatio(nextRatio);
+        keyboardDirtyRef.current = true;
+        previewRatio(nextRatio);
       }}
       onKeyUp={(event) => {
         if (keyboardRatio(event) === null) return;
-        endInteraction(keyboardToken);
+        finishKeyboardResize();
       }}
-      onBlur={() => endInteraction(keyboardToken)}
+      onBlur={finishKeyboardResize}
     />
   );
 }

@@ -46,7 +46,7 @@ import {
 const { autoUpdater } = electronUpdater;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const REFRESH_TICK_MS = 15_000;
+const MAX_REFRESH_SLEEP_MS = 15 * 60_000;
 const PILOT_HEARTBEAT_MS = 60_000;
 const MAX_LAYOUT_DEPTH = 32;
 const MAX_LAYOUT_NODES = 1_023;
@@ -536,6 +536,11 @@ function broadcastState(state = readEngineState(), { syncSemantic = false } = {}
   for (const window of webPanelControllers.keys()) {
     sendToWindow(window, "aggregator:state-changed", state);
   }
+  // Source creation/configuration/import can move the nearest persisted due
+  // date while the scheduler is sleeping. Every authoritative state change
+  // therefore recalculates the one-shot timer instead of waiting for the old
+  // deadline (or a periodic items scan) to wake it.
+  scheduleRefreshTimer();
   if (syncSemantic) void scheduleSemanticSearchSync();
 }
 
@@ -1255,15 +1260,32 @@ function createWindow() {
   });
 }
 
-function refreshDueSources() {
-  if (!refreshScheduler || isQuitting) return Promise.resolve();
-  return refreshScheduler.run();
+function scheduleRefreshTimer(delayMs) {
+  if (refreshTimer) clearTimeout(refreshTimer);
+  refreshTimer = null;
+  if (!refreshScheduler || isQuitting) return;
+  const delay = delayMs ?? refreshScheduler.nextDelay({
+    maximumMs: MAX_REFRESH_SLEEP_MS,
+  });
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null;
+    void refreshDueSources();
+  }, delay);
+}
+
+async function refreshDueSources() {
+  if (!refreshScheduler || isQuitting) return;
+  try {
+    await refreshScheduler.run();
+  } finally {
+    scheduleRefreshTimer();
+  }
 }
 
 async function handleStartupFailure(error) {
   isQuitting = true;
   console.error("Démarrage de VibeDeck impossible :", error);
-  if (refreshTimer) clearInterval(refreshTimer);
+  if (refreshTimer) clearTimeout(refreshTimer);
   if (pilotHeartbeatTimer) clearInterval(pilotHeartbeatTimer);
   refreshTimer = null;
   pilotHeartbeatTimer = null;
@@ -1307,7 +1329,7 @@ function prepareForShutdown({ deadlineMs = null } = {}) {
   const pendingPersistence = [...activeOperations];
   const webCleanup = destroyAllWebPanelControllers();
   const readerCleanup = articleReaderService?.shutdown() ?? Promise.resolve();
-  if (refreshTimer) clearInterval(refreshTimer);
+  if (refreshTimer) clearTimeout(refreshTimer);
   refreshTimer = null;
   refreshScheduler?.stop();
   engine?.cancelPending();
@@ -1434,7 +1456,7 @@ if (!hasSingleInstanceLock) {
     });
     lastRendererState = engine.getState();
     refreshScheduler = createRefreshScheduler({
-      getSources: () => engine.getState().sources,
+      getSources: () => engine.getRefreshScheduleSources(),
       refreshSources: (sourceIds, options) => engine.refreshSources(sourceIds, options),
       createArrivalBatchAt: () => engine.createArrivalBatchAt(),
       onStateChange: () => broadcastState(undefined, { syncSemantic: true }),
@@ -1478,13 +1500,11 @@ if (!hasSingleInstanceLock) {
       .catch((error) => console.warn("Initialisation de la recherche locale impossible :", error));
     heartbeatPilotUsage({ force: true });
 
-    refreshTimer = setInterval(() => void refreshDueSources(), REFRESH_TICK_MS);
+    scheduleRefreshTimer(750);
     pilotHeartbeatTimer = setInterval(
       () => heartbeatPilotUsage({ force: true }),
       PILOT_HEARTBEAT_MS,
     );
-    setTimeout(() => void refreshDueSources(), 750);
-
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });

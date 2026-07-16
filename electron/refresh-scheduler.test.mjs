@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { createRefreshScheduler, sourceIsDue } from "./refresh-scheduler.mjs";
+import {
+  createRefreshScheduler,
+  millisecondsUntilSourceIsDue,
+  sourceIsDue,
+} from "./refresh-scheduler.mjs";
 
 const NOW = Date.parse("2026-07-10T12:00:00.000Z");
 
@@ -22,6 +27,39 @@ test("selects fresh, due, backed-off and malformed source dates correctly", () =
     false,
   );
   assert.equal(sourceIsDue({ ...base, status: "refreshing", lastCheckedAt: null }, NOW), false);
+});
+
+test("arms the next pass on the nearest persisted source deadline", () => {
+  const sources = [
+    {
+      id: "later",
+      status: "healthy",
+      refreshIntervalSeconds: 300,
+      lastCheckedAt: "2026-07-10T11:59:00.000Z",
+      nextRetryAt: null,
+    },
+    {
+      id: "nearest",
+      status: "error",
+      refreshIntervalSeconds: 300,
+      lastCheckedAt: "2026-07-10T11:59:00.000Z",
+      nextRetryAt: "2026-07-10T12:00:12.000Z",
+    },
+  ];
+  assert.equal(millisecondsUntilSourceIsDue(sources[0], NOW), 240_000);
+  assert.equal(millisecondsUntilSourceIsDue(sources[1], NOW), 12_000);
+
+  const scheduler = createRefreshScheduler({
+    now: () => NOW,
+    getSources: () => sources,
+    refreshSources: async () => undefined,
+  });
+  assert.equal(scheduler.nextDelay(), 12_000);
+  assert.equal(scheduler.nextDelay({ maximumMs: 5_000 }), 5_000);
+  sources[1].nextRetryAt = null;
+  sources[1].lastCheckedAt = null;
+  assert.equal(scheduler.nextDelay(), 250);
+  scheduler.stop();
 });
 
 test("coalesces concurrent automatic passes and broadcasts start and completion", async () => {
@@ -97,4 +135,14 @@ test("creates a distinct arrival batch for each completed scheduler pass", async
     "2026-07-10T12:00:00.000Z",
     "2026-07-10T12:00:00.001Z",
   ]);
+});
+
+test("re-arms the one-shot timer after every authoritative state broadcast", async () => {
+  const source = await readFile(new URL("./main.mjs", import.meta.url), "utf8");
+  const broadcastBody = source.match(
+    /function broadcastState\([\s\S]*?\n}\n\nfunction broadcastSemanticSearchStatus/,
+  )?.[0];
+
+  assert.ok(broadcastBody, "broadcastState must remain inspectable by the scheduler regression test");
+  assert.match(broadcastBody, /scheduleRefreshTimer\(\);/);
 });

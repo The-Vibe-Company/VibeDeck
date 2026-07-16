@@ -1751,6 +1751,12 @@ test("coalesces concurrent source refreshes including a manual force and refresh
       "https://coalesce-a.test/feed.xml",
       "https://coalesce-b.test/feed.xml",
     ]);
+    const getState = engine.getState.bind(engine);
+    let stateProjections = 0;
+    engine.getState = () => {
+      stateProjections += 1;
+      return getState();
+    };
     const first = engine.refreshSource(sourceId);
     const forced = engine.refreshSource(sourceId, { force: true });
     assert.strictEqual(forced, first);
@@ -1760,6 +1766,7 @@ test("coalesces concurrent source refreshes including a manual force and refresh
     const [state] = await Promise.all([first, forced, all]);
 
     assert.equal(controlled.stats().started, 2);
+    assert.equal(stateProjections, 2, "one projection per public refresh operation");
     assert.equal(state.sources[0].status, "healthy");
     assert.equal(new Set(state.items.map(({ arrivalBatchAt }) => arrivalBatchAt)).size, 1);
     assert.equal(

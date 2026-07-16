@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   abbreviateSourceName,
+  appendMissingFeedItems,
   compareFeedItems,
   feedItemIdsBeforeAnchor,
   formatCheckedAt,
@@ -12,6 +13,26 @@ import {
   sourceHue,
   withDaySeparators,
 } from "../src/feed-presentation.ts";
+
+test("indexes loaded IDs once when appending semantic search results", () => {
+  let idReads = 0;
+  const identified = (id) => ({
+    get id() {
+      idReads += 1;
+      return id;
+    },
+  });
+  const current = Array.from({ length: 25_000 }, (_, index) => identified(`item-${index}`));
+  const candidates = Array.from({ length: 200 }, (_, index) => identified(`result-${index}`));
+
+  const merged = appendMissingFeedItems(current, candidates);
+
+  assert.equal(merged.length, 25_200);
+  assert.equal(idReads, 25_200);
+  assert.strictEqual(merged[0], current[0]);
+  assert.strictEqual(merged.at(-1), candidates.at(-1));
+  assert.strictEqual(appendMissingFeedItems(merged, candidates), merged);
+});
 
 function item(overrides = {}) {
   const id = overrides.id ?? "item";

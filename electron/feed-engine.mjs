@@ -1173,6 +1173,10 @@ export class FeedEngine {
     return publicSourceCatalog();
   }
 
+  getRefreshScheduleSources() {
+    return this.database.listSourceSchedules({ attachedOnly: true });
+  }
+
   async probeSource(input, { signal = null } = {}) {
     if (signal?.aborted) throw new FetchCancelledError();
     const request = normalizeSourceRequest(input);
@@ -1423,13 +1427,18 @@ export class FeedEngine {
     this.#abortNetworkRequests();
   }
 
-  #enqueueRefresh(sourceId, { force = false, arrivalBatchAt = null } = {}) {
+  #enqueueRefresh(
+    sourceId,
+    { force = false, arrivalBatchAt = null, projectState = true } = {},
+  ) {
     if (this.closed) {
       return Promise.reject(new RefreshCancelledError("Le moteur de veille est fermé."));
     }
     const existing = this.refreshTasks.get(sourceId);
     if (existing) {
       if (force && existing.state === "pending") existing.force = true;
+      if (!projectState) return existing.completion;
+      existing.promise ??= existing.completion.then(() => this.getState());
       return existing.promise;
     }
 
@@ -1438,16 +1447,18 @@ export class FeedEngine {
     const hostname = new URL(source.feedUrl).hostname.toLowerCase();
     let resolve;
     let reject;
-    const promise = new Promise((resolvePromise, rejectPromise) => {
+    const completion = new Promise((resolvePromise, rejectPromise) => {
       resolve = resolvePromise;
       reject = rejectPromise;
     });
+    const promise = projectState ? completion.then(() => this.getState()) : null;
     const task = {
       sourceId,
       hostname,
       force: Boolean(force),
       arrivalBatchAt: arrivalBatchAt ?? this.createArrivalBatchAt(),
       state: "pending",
+      completion,
       promise,
       resolve,
       reject,
@@ -1455,7 +1466,7 @@ export class FeedEngine {
     this.refreshTasks.set(sourceId, task);
     this.refreshQueue.push(task);
     this.#pumpRefreshQueue();
-    return promise;
+    return projectState ? promise : completion;
   }
 
   #pumpRefreshQueue() {
@@ -1486,7 +1497,7 @@ export class FeedEngine {
         arrivalBatchAt: task.arrivalBatchAt,
       });
       if (this.closed) throw new RefreshCancelledError("Le moteur de veille est fermé.");
-      task.resolve(this.getState());
+      task.resolve();
     } catch (error) {
       task.reject(
         this.closed && !(error instanceof RefreshCancelledError)
@@ -2157,7 +2168,11 @@ export class FeedEngine {
     const batchAt = arrivalBatchAt ?? this.createArrivalBatchAt();
     await Promise.all(
       sourceIds.map((sourceId) =>
-        this.#enqueueRefresh(sourceId, { force, arrivalBatchAt: batchAt })),
+        this.#enqueueRefresh(sourceId, {
+          force,
+          arrivalBatchAt: batchAt,
+          projectState: false,
+        })),
     );
     if (this.closed) throw new RefreshCancelledError("Le moteur de veille est fermé.");
     return this.getState();

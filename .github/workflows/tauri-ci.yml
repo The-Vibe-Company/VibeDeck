@@ -1,0 +1,180 @@
+name: tauri-ci
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/tauri-ci.yml"
+      - "build/**"
+      - "index.html"
+      - "package.json"
+      - "package-lock.json"
+      - "PILOT_RELEASE.md"
+      - "rust-toolchain.toml"
+      - "scripts/verify-tauri-config.mjs"
+      - "scripts/verify-tauri-config.test.mjs"
+      - "scripts/create-tauri-release-config.mjs"
+      - "scripts/create-tauri-release-config.test.mjs"
+      - "scripts/verify-tauri-package.mjs"
+      - "scripts/verify-tauri-package.test.mjs"
+      - "scripts/workflow-uses.mjs"
+      - "src/**"
+      - "src-tauri/**"
+      - "tsconfig.json"
+      - "vite.config.ts"
+  pull_request:
+    paths:
+      - ".github/workflows/tauri-ci.yml"
+      - "build/**"
+      - "index.html"
+      - "package.json"
+      - "package-lock.json"
+      - "PILOT_RELEASE.md"
+      - "rust-toolchain.toml"
+      - "scripts/verify-tauri-config.mjs"
+      - "scripts/verify-tauri-config.test.mjs"
+      - "scripts/create-tauri-release-config.mjs"
+      - "scripts/create-tauri-release-config.test.mjs"
+      - "scripts/verify-tauri-package.mjs"
+      - "scripts/verify-tauri-package.test.mjs"
+      - "scripts/workflow-uses.mjs"
+      - "src/**"
+      - "src-tauri/**"
+      - "tsconfig.json"
+      - "vite.config.ts"
+  workflow_dispatch:
+
+concurrency:
+  group: tauri-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tauri:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS 14 universal
+            # The hosted macOS 15 image builds the universal binary; the
+            # deployment target and package verifier still enforce macOS 14.
+            os: macos-15
+            platform_intent: macos-14-universal
+            rust_target: universal-apple-darwin
+            bundles: app,dmg
+          # GitHub's hosted Windows x64 image is Server 2022. The explicit
+          # MSVC triple below is the distributable target for Windows 11 x64.
+          - name: Windows 11 x64
+            os: windows-2022
+            platform_intent: windows-11-x64
+            rust_target: x86_64-pc-windows-msvc
+            bundles: nsis
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      CI: true
+      CARGO_TERM_COLOR: always
+      RUSTUP_TOOLCHAIN: 1.88.0
+      VIBEDECK_TAURI_PLATFORM_INTENT: ${{ matrix.platform_intent }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install pinned JavaScript dependencies
+        run: npm ci
+      - name: Build renderer
+        run: npm run build
+      - name: Verify Tauri boundaries and platform intent
+        run: node scripts/verify-tauri-config.mjs
+      - name: Test Tauri configuration guard
+        run: node --test scripts/verify-tauri-config.test.mjs
+      - name: Test real-package and signed-release guards
+        run: npm run test:tauri-package
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal --component "clippy,rustfmt"
+      - name: Install pinned RustSec auditor
+        if: runner.os == 'macOS'
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Audit locked Rust dependencies
+        if: runner.os == 'macOS'
+        run: npm run audit:rust
+      - name: Install macOS universal Rust targets
+        if: runner.os == 'macOS'
+        run: >-
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          --toolchain 1.88.0
+      - name: Install Windows x64 Rust target
+        if: runner.os == 'Windows'
+        run: rustup target add x86_64-pc-windows-msvc --toolchain 1.88.0
+      - name: Check Rust formatting
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+      - name: Check macOS ARM64 and Intel targets
+        if: runner.os == 'macOS'
+        working-directory: src-tauri
+        run: |
+          cargo check --locked --all-targets --target aarch64-apple-darwin
+          cargo check --locked --all-targets --target x86_64-apple-darwin
+      - name: Check Windows x64 target
+        if: runner.os == 'Windows'
+        working-directory: src-tauri
+        run: cargo check --locked --all-targets --target x86_64-pc-windows-msvc
+      - name: Test Rust host target
+        working-directory: src-tauri
+        # Tests must execute on the actual hosted runner architecture. Cross-target
+        # compilation is proven separately by check/clippy and the universal bundle.
+        run: cargo test --locked --all-targets
+      - name: Lint macOS ARM64 and Intel targets
+        if: runner.os == 'macOS'
+        working-directory: src-tauri
+        run: |
+          cargo clippy --locked --all-targets --target aarch64-apple-darwin -- -D warnings
+          cargo clippy --locked --all-targets --target x86_64-apple-darwin -- -D warnings
+      - name: Lint Windows x64 target
+        if: runner.os == 'Windows'
+        working-directory: src-tauri
+        run: cargo clippy --locked --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+      - name: Build unsigned Tauri bundles
+        run: >-
+          npx --no-install tauri build --ci
+          --target "${{ matrix.rust_target }}"
+          --bundles "${{ matrix.bundles }}"
+          --no-sign
+      - name: Smoke unsigned macOS bundles
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle_root="src-tauri/target/${{ matrix.rust_target }}/release/bundle"
+          app_path="$bundle_root/macos/VibeDeck.app"
+          dmg_path="$(find "$bundle_root/dmg" -maxdepth 1 -type f -name '*.dmg' -print -quit)"
+          test -d "$app_path"
+          test -x "$app_path/Contents/MacOS/vibedeck"
+          test -n "$dmg_path"
+          test "$(find "$bundle_root/dmg" -maxdepth 1 -type f -name '*.dmg' | wc -l | tr -d ' ')" = 1
+          node scripts/verify-tauri-package.mjs \
+            --platform macos \
+            --mode unsigned \
+            --bundle "$app_path" \
+            --installer "$dmg_path" \
+            --frontend-dist dist
+      - name: Smoke unsigned Windows bundle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bundleRoot = "src-tauri/target/${{ matrix.rust_target }}/release/bundle/nsis"
+          $installers = @(Get-ChildItem $bundleRoot -Filter *.exe -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one unsigned NSIS installer, found $($installers.Count)"
+          }
+          node scripts/verify-tauri-package.mjs `
+            --platform windows `
+            --mode unsigned `
+            --bundle $installers[0].FullName `
+            --executable "src-tauri/target/${{ matrix.rust_target }}/release/vibedeck.exe" `
+            --frontend-dist dist

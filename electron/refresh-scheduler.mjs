@@ -11,6 +11,24 @@ export function sourceIsDue(source, now = Date.now()) {
   return now - lastChecked >= Math.max(30, Number(source.refreshIntervalSeconds) || 30) * 1_000;
 }
 
+export function millisecondsUntilSourceIsDue(source, now = Date.now()) {
+  if (!source || typeof source !== "object" || source.status === "refreshing") {
+    return Number.POSITIVE_INFINITY;
+  }
+  if (source.nextRetryAt) {
+    const nextRetry = Date.parse(source.nextRetryAt);
+    if (Number.isFinite(nextRetry) && nextRetry > now) return nextRetry - now;
+  }
+  if (!source.lastCheckedAt) return 0;
+  const lastChecked = Date.parse(source.lastCheckedAt);
+  if (!Number.isFinite(lastChecked)) return 0;
+  const intervalMs = Math.max(
+    30,
+    Number(source.refreshIntervalSeconds) || 30,
+  ) * 1_000;
+  return Math.max(0, lastChecked + intervalMs - now);
+}
+
 export function createRefreshScheduler({
   getSources,
   refreshSources,
@@ -49,6 +67,23 @@ export function createRefreshScheduler({
 
   return {
     run,
+    nextDelay({ minimumMs = 250, maximumMs = 15 * 60_000 } = {}) {
+      if (!Number.isFinite(minimumMs) || !Number.isFinite(maximumMs)) {
+        throw new TypeError("Bornes du planificateur invalides.");
+      }
+      const lower = Math.max(0, Math.trunc(minimumMs));
+      const upper = Math.max(lower, Math.trunc(maximumMs));
+      const timestamp = Number(now());
+      if (!Number.isFinite(timestamp)) throw new Error("Horloge de rafraîchissement invalide.");
+      const delay = getSources().reduce(
+        (nearest, source) => Math.min(
+          nearest,
+          millisecondsUntilSourceIsDue(source, timestamp),
+        ),
+        Number.POSITIVE_INFINITY,
+      );
+      return Number.isFinite(delay) ? Math.min(upper, Math.max(lower, delay)) : upper;
+    },
     stop() {
       stopped = true;
     },

@@ -14,6 +14,7 @@ const showWindow = process.env.VIBEDECK_PILOT_UI_SHOW === "1";
 const initialArticleCount = 90;
 const secondaryArticleCount = 2;
 const baselineArticleCount = initialArticleCount + secondaryArticleCount;
+const MAX_MOUNTED_FEED_ROWS = 80;
 const MIN_PANEL_WIDTH = 256;
 const SUBPIXEL_EPSILON = 0.5;
 // Doit rester aligné sur HOVER_SEEN_DELAY_MS dans src/App.tsx.
@@ -191,6 +192,23 @@ async function waitForInputValue(page, locator, expectedValue, label, timeoutMs 
   }
 }
 
+async function waitForFeedItemCount(page, panelId, expectedCount, timeoutMs = 20_000) {
+  await page.waitForFunction(
+    ({ targetPanelId, count, mountedLimit }) => {
+      const leaf = document.querySelector(
+        `.split-layout__leaf[data-panel-id="${CSS.escape(targetPanelId)}"]`,
+      );
+      const list = leaf?.querySelector(".article-list");
+      if (!(list instanceof HTMLElement)) return false;
+      const mounted = leaf?.querySelectorAll(".article-row").length ?? 0;
+      return Number(list.dataset.feedTotalCount) === count &&
+        mounted > 0 && mounted <= Math.min(count, mountedLimit);
+    },
+    { targetPanelId: panelId, count: expectedCount, mountedLimit: MAX_MOUNTED_FEED_ROWS },
+    { timeout: timeoutMs },
+  );
+}
+
 async function hoverRow(row) {
   await row.hover();
   await row.dispatchEvent("pointermove", { pointerType: "mouse" });
@@ -202,6 +220,37 @@ function assertWithin(actual, expected, tolerance, label) {
     difference <= tolerance,
     `${label}: ${actual} diffère de ${expected} de ${difference}px (tolérance ${tolerance}px).`,
   );
+}
+
+async function settleAnimationFrames(page, count = 10) {
+  await page.evaluate((frameCount) => new Promise((resolve) => {
+    let remaining = frameCount;
+    const next = () => {
+      remaining -= 1;
+      if (remaining <= 0) resolve();
+      else requestAnimationFrame(next);
+    };
+    requestAnimationFrame(next);
+  }), count);
+}
+
+async function visibleFeedAnchor(listLocator, requestedId = null) {
+  return listLocator.evaluate((list, anchorId) => {
+    if (!(list instanceof HTMLElement)) throw new Error("Le fil à ancrer est introuvable.");
+    const listTop = list.getBoundingClientRect().top;
+    const row = anchorId
+      ? document.getElementById(anchorId)
+      : [...list.querySelectorAll(".article-row")]
+          .find((candidate) => candidate.getBoundingClientRect().bottom > listTop);
+    if (!(row instanceof HTMLElement) || !list.contains(row)) {
+      throw new Error(`L’article d’ancrage ${anchorId ?? "visible"} est introuvable.`);
+    }
+    return {
+      id: row.id,
+      top: row.getBoundingClientRect().top - listTop,
+      sourceName: row.querySelector(".article-source__full")?.textContent?.trim() ?? "",
+    };
+  }, requestedId);
 }
 
 async function readMetrics(page, articleId) {
@@ -516,10 +565,7 @@ try {
     { targetPanelId: panelId, feedUrl: `${origin}/feed-redirect.xml` },
   );
 
-  await page.waitForFunction(
-    (count) => document.querySelectorAll(".article-row").length === count,
-    initialArticleCount,
-  );
+  await waitForFeedItemCount(page, panelId, initialArticleCount);
   assert.equal(primaryRequestCount, 1, "Le flux principal doit être chargé une seule fois.");
   assert.equal(
     redirectedFeedRequestCount,
@@ -535,10 +581,7 @@ try {
     }),
     { targetPanelId: panelId, feedUrl: `${origin}/feed-secondary.xml` },
   );
-  await page.waitForFunction(
-    (count) => document.querySelectorAll(".article-row").length === count,
-    baselineArticleCount,
-  );
+  await waitForFeedItemCount(page, panelId, baselineArticleCount);
   assert.equal(secondaryRequestCount, 1, "Le flux secondaire doit être chargé une seule fois.");
 
   const baselineTitles = await page.locator(".article-copy > strong").evaluateAll(
@@ -716,14 +759,81 @@ try {
     "Le défaut global doit revenir à dense pour la suite du parcours.",
   );
 
+  // Le virtualiseur positionne les lignes par transform : densité et filtres
+  // doivent conserver une ancre sémantique, pas un scrollTop devenu faux.
+  const primaryList = filPanel.locator(".article-list");
+  await primaryList.evaluate((list) => {
+    list.scrollTop = list.scrollHeight * 0.62;
+  });
+  await settleAnimationFrames(page, 3);
+  const deepAnchor = await visibleFeedAnchor(primaryList);
+  assert.ok(deepAnchor.sourceName, "L’ancre profonde doit exposer sa source.");
+
+  await comfortModeButton.click();
+  await page.waitForFunction(() =>
+    document.querySelector(".dashboard-panel--fil")?.getAttribute("data-density") === "comfort");
+  await settleAnimationFrames(page);
+  const comfortAnchor = await visibleFeedAnchor(primaryList, deepAnchor.id);
+  assertWithin(
+    comfortAnchor.top,
+    deepAnchor.top,
+    SUBPIXEL_EPSILON,
+    "ancre profonde après passage en confort",
+  );
+
+  await denseModeButton.click();
+  await page.waitForFunction(() =>
+    document.querySelector(".dashboard-panel--fil")?.getAttribute("data-density") === "dense");
+  await settleAnimationFrames(page);
+  const denseAnchor = await visibleFeedAnchor(primaryList, deepAnchor.id);
+  assertWithin(
+    denseAnchor.top,
+    deepAnchor.top,
+    SUBPIXEL_EPSILON,
+    "ancre profonde après retour en dense",
+  );
+
+  const anchorSourceFilter = filPanel
+    .locator('[data-panel-focus-key^="feed-filter:source:"]')
+    .filter({ hasText: deepAnchor.sourceName })
+    .first();
+  assert.equal(await anchorSourceFilter.count(), 1, "Le filtre de la source ancrée doit exister.");
+  await anchorSourceFilter.click();
+  await settleAnimationFrames(page);
+  const filteredAnchor = await visibleFeedAnchor(primaryList, deepAnchor.id);
+  assertWithin(
+    filteredAnchor.top,
+    deepAnchor.top,
+    SUBPIXEL_EPSILON,
+    "ancre profonde après filtre source",
+  );
+  await filPanel.getByRole("button", { name: /^Toutes/ }).click();
+  await settleAnimationFrames(page);
+  const allSourcesAnchor = await visibleFeedAnchor(primaryList, deepAnchor.id);
+  assertWithin(
+    allSourcesAnchor.top,
+    deepAnchor.top,
+    SUBPIXEL_EPSILON,
+    "ancre profonde après retrait du filtre source",
+  );
+  await primaryList.evaluate((list) => {
+    list.scrollTop = 0;
+  });
+  await settleAnimationFrames(page, 3);
+
   assert.equal(
     await page.locator('.article-row[tabindex="0"]').count(),
     1,
     "Un seul article doit être accessible par Tab dans le fil.",
   );
+  const mountedArticleCount = await page.locator(".article-row").count();
+  assert.ok(
+    mountedArticleCount <= MAX_MOUNTED_FEED_ROWS,
+    "Le fil pilote doit respecter le plafond de virtualisation.",
+  );
   assert.equal(
     await page.locator('.article-row[tabindex="-1"]').count(),
-    baselineArticleCount - 1,
+    mountedArticleCount - 1,
   );
   const firstArticleId = await page.locator(".article-row").first().getAttribute("id");
   assert.ok(firstArticleId, "Le premier article doit avoir un identifiant stable.");
@@ -1046,11 +1156,13 @@ try {
 
   const reference = await page.evaluate(async () => {
     const list = document.querySelector(".article-list");
-    const rows = [...document.querySelectorAll(".article-row")];
-    if (!(list instanceof HTMLElement) || rows.length < 40) {
+    if (!(list instanceof HTMLElement)) {
       throw new Error("Le fil ne contient pas assez d’articles pour tester le scroll.");
     }
-    const row = rows[35];
+    list.scrollTop = Math.round(list.scrollHeight * 0.35);
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const rows = [...document.querySelectorAll(".article-row")];
+    const row = rows[Math.min(10, rows.length - 1)];
     if (!(row instanceof HTMLElement)) throw new Error("Article de référence invalide.");
     list.scrollTop = row.offsetTop - Math.round(list.clientHeight * 0.3);
     row.focus();
@@ -1079,11 +1191,7 @@ try {
     ...articles,
   ];
   await page.keyboard.press("r");
-  await page.waitForFunction(
-    (title) => [...document.querySelectorAll(".article-row")]
-      .some((row) => row.textContent?.includes(title)),
-    newArticleTitle,
-  );
+  await waitForFeedItemCount(page, panelId, baselineArticleCount + 1);
   await page.evaluate(() => new Promise(
     (resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)),
   ));
@@ -1091,11 +1199,15 @@ try {
   const revealed = await readMetrics(page, reference.id);
   assert.equal(primaryRequestCount, 2, "Le rafraîchissement doit relire le flux contrôlé.");
   assert.equal(await page.locator(".feed-arrivals").count(), 0, "Aucun bouton d’arrivée ne doit rester affiché.");
-  assert.equal(revealed.newInDom, true, "L’arrivée doit être rendue automatiquement.");
-  assert.equal(revealed.newRowIndex, 0, "L’arrivée doit être insérée en tête du fil.");
+  assert.equal(
+    revealed.newInDom,
+    false,
+    "Une arrivée hors viewport doit rester virtualisée tout en étant comptée immédiatement.",
+  );
+  assert.equal(revealed.newRowIndex, -1);
   assert.equal(revealed.activeId, reference.id, "L’arrivée ne doit pas voler le focus DOM.");
   assert.equal(revealed.focusedId, reference.id, "La sélection clavier doit rester sur le même article.");
-  assertWithin(revealed.selectedTop, beforeArrival.selectedTop, 1, "position après insertion");
+  assertWithin(revealed.selectedTop, beforeArrival.selectedTop, 0.5, "position après insertion");
   assert.ok(revealed.scrollTop > beforeArrival.scrollTop, "Le scroll doit compenser la ligne insérée.");
   const arrivalsPill = page.locator(".arrivals-pill");
   await arrivalsPill.waitFor({ state: "visible" });
@@ -1194,9 +1306,14 @@ try {
   // première rangée ; l'insertion, elle, n'attend jamais ce clic.
   const pillReference = await page.evaluate(async () => {
     const list = document.querySelector(".article-list");
+    if (!(list instanceof HTMLElement)) {
+      throw new Error("La référence du scénario de pastille est introuvable.");
+    }
+    list.scrollTop = Math.round(list.scrollHeight * 0.35);
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const rows = [...document.querySelectorAll(".article-row")];
-    const row = rows[30];
-    if (!(list instanceof HTMLElement) || !(row instanceof HTMLElement)) {
+    const row = rows[Math.min(10, rows.length - 1)];
+    if (!(row instanceof HTMLElement)) {
       throw new Error("La référence du scénario de pastille est introuvable.");
     }
     list.scrollTop = row.offsetTop - Math.round(list.clientHeight * 0.3);
@@ -1214,8 +1331,7 @@ try {
     ...articles,
   ];
   await page.evaluate((id) => window.vibedeck.refreshSource(id), sourceId);
-  await page.locator(".article-row").filter({ hasText: pillArrivalTitle }).first()
-    .waitFor({ state: "attached" });
+  await waitForFeedItemCount(page, panelId, baselineArticleCount + 4);
   await arrivalsPill.waitFor({ state: "visible" });
   assert.match(
     (await arrivalsPill.textContent()) ?? "",
@@ -1324,13 +1440,7 @@ try {
   await narrowWindow.dispose();
   const panelLeaf = page.locator(`.split-layout__leaf[data-panel-id="${panelId}"]`);
   const narrowLeaf = page.locator(`.split-layout__leaf[data-panel-id="${narrowPanelId}"]`);
-  await page.waitForFunction(
-    ({ targetPanelId, count }) =>
-      document.querySelectorAll(
-        `.split-layout__leaf[data-panel-id="${targetPanelId}"] .article-row`,
-      ).length === count,
-    { targetPanelId: narrowPanelId, count: initialArticleCount + 4 },
-  );
+  await waitForFeedItemCount(page, narrowPanelId, initialArticleCount + 4);
   await page.waitForFunction(
     (targetPanelId) => {
       const panel = document.querySelector(
@@ -1411,7 +1521,7 @@ try {
     if (!(list instanceof HTMLElement) || !(row instanceof HTMLElement)) {
       throw new Error("Origine de recherche invalide.");
     }
-    list.scrollTop = row.offsetTop - 60;
+    list.scrollTop += row.getBoundingClientRect().top - list.getBoundingClientRect().top - 60;
     row.focus({ preventScroll: true });
   });
   const searchOriginScrollTop = await panelLeaf.locator(".article-list").evaluate(
@@ -1717,29 +1827,44 @@ try {
     /échec.+dernière réussite.+Le cache reste affiché\./,
     "L’échec manuel doit indiquer sa date, la dernière réussite et la conservation du cache.",
   );
-  assert.equal(
-    await panelLeaf.locator(".article-row").count(),
-    baselineArticleCount + 4,
-    "Une panne de rafraîchissement ne doit retirer aucun article en cache.",
-  );
+  await waitForFeedItemCount(page, panelId, baselineArticleCount + 4);
 
   primaryShouldFail = false;
   await page.evaluate((id) => window.vibedeck.refreshSource(id), sourceId);
   await errorNotice.waitFor({ state: "detached" });
-  const sharedViewportBefore = await page.evaluate(({ firstPanelId, secondPanelId }) => {
+  const sharedViewportBefore = await page.evaluate(async ({ firstPanelId, secondPanelId }) => {
+    const panelIds = [firstPanelId, secondPanelId];
+    for (const panelId of panelIds) {
+      const list = document.querySelector(
+        `.split-layout__leaf[data-panel-id="${panelId}"] .article-list`,
+      );
+      if (!(list instanceof HTMLElement)) {
+        throw new Error("Le viewport du panel partagé est introuvable.");
+      }
+      list.scrollTop = Math.round(list.scrollHeight * 0.35);
+    }
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
     const measure = (panelId) => {
       const leaf = document.querySelector(`.split-layout__leaf[data-panel-id="${panelId}"]`);
       const list = leaf?.querySelector(".article-list");
       const rows = [...(leaf?.querySelectorAll(".article-row") ?? [])];
-      const reference = rows[20];
-      if (!(list instanceof HTMLElement) || !(reference instanceof HTMLElement)) {
+      if (!(list instanceof HTMLElement)) {
         throw new Error("Le panel partagé ne contient pas assez d’articles.");
       }
-      list.scrollTop = reference.offsetTop - Math.round(list.clientHeight * 0.3);
+      const listRect = list.getBoundingClientRect();
+      // Même contrat que l'application : l'ancre est le premier article
+      // visible, y compris lorsqu'il est partiellement rogné en haut.
+      const reference = rows.find((row) => row.getBoundingClientRect().bottom > listRect.top);
+      if (!(reference instanceof HTMLElement)) {
+        throw new Error("Le panel partagé ne contient aucune ligne visible.");
+      }
       return {
         panelId,
         referenceId: reference.id,
         scrollTop: list.scrollTop,
+        listTop: listRect.top,
+        referenceViewportTop: reference.getBoundingClientRect().top - listRect.top,
         referenceTop: reference.getBoundingClientRect().top,
       };
     };
@@ -1761,28 +1886,52 @@ try {
     ...articles,
   ];
   await page.evaluate((id) => window.vibedeck.refreshSource(id), sourceId);
-  const sharedRows = panelLeaf.locator(".article-row").filter({ hasText: sharedArrivalTitle });
-  const sharedSiblingRow = narrowLeaf.locator(".article-row").filter({ hasText: sharedArrivalTitle });
-  await sharedRows.waitFor({ state: "visible" });
-  await sharedSiblingRow.waitFor({ state: "visible" });
+  await waitForFeedItemCount(page, panelId, baselineArticleCount + 6);
+  await waitForFeedItemCount(page, narrowPanelId, initialArticleCount + 6);
+  await page.evaluate(() => new Promise(
+    (resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)),
+  ));
+  assert.ok(
+    await panelLeaf.locator(".article-row").count() <= MAX_MOUNTED_FEED_ROWS,
+    "Le Fil principal doit rester borné après l'arrivée partagée.",
+  );
+  assert.ok(
+    await narrowLeaf.locator(".article-row").count() <= MAX_MOUNTED_FEED_ROWS,
+    "Le Fil étroit doit rester borné après l'arrivée partagée.",
+  );
   assert.equal(await page.locator(".feed-arrivals").count(), 0, "Aucune arrivée ne doit attendre une action utilisateur.");
   const sharedViewportAfter = await page.evaluate((before) => before.map(({ panelId, referenceId }) => {
     const leaf = document.querySelector(`.split-layout__leaf[data-panel-id="${panelId}"]`);
     const list = leaf?.querySelector(".article-list");
-    const reference = document.getElementById(referenceId);
+    const reference = leaf?.querySelector(`#${CSS.escape(referenceId)}`);
     if (!(list instanceof HTMLElement) || !(reference instanceof HTMLElement)) {
       throw new Error("La référence de viewport partagé est introuvable.");
     }
     return {
       panelId,
       scrollTop: list.scrollTop,
+      listTop: list.getBoundingClientRect().top,
+      referenceViewportTop:
+        reference.getBoundingClientRect().top - list.getBoundingClientRect().top,
       referenceTop: reference.getBoundingClientRect().top,
     };
   }), sharedViewportBefore);
   for (const before of sharedViewportBefore) {
     const after = sharedViewportAfter.find(({ panelId: candidate }) => candidate === before.panelId);
     assert.ok(after, "Chaque panel partagé doit conserver sa mesure de viewport.");
-    assertWithin(after.referenceTop, before.referenceTop, 1, `position partagée ${before.panelId}`);
+    assertWithin(
+      after.referenceViewportTop,
+      before.referenceViewportTop,
+      0.5,
+      `ancre relative ${before.panelId === panelId ? "principale" : "étroite"}`,
+    );
+    assertWithin(
+      after.referenceTop,
+      before.referenceTop,
+      0.5,
+      `position partagée ${before.panelId === panelId ? "principale" : "étroite"} ` +
+        `(viewport ${before.listTop} → ${after.listTop})`,
+    );
     assert.ok(after.scrollTop > before.scrollTop, `Le panel ${before.panelId} doit compenser ses arrivées simultanées.`);
   }
 
@@ -1806,7 +1955,7 @@ try {
   );
   await saveFeedConfiguration.click();
   await feedConfigDialog.waitFor({ state: "detached" });
-  await sharedSiblingRow.waitFor({ state: "visible" });
+  await waitForFeedItemCount(page, narrowPanelId, initialArticleCount + 6);
 
   const temporaryPanelId = await page.evaluate(async (targetPanelId) => {
     const before = await window.vibedeck.getState();
@@ -1825,7 +1974,6 @@ try {
   const closeDialog = page.getByRole("alertdialog", { name: /Fermer « Panel temporaire »/ });
   await closeDialog.getByRole("button", { name: "Fermer le panel" }).click();
   await temporaryLeaf.waitFor({ state: "detached" });
-  await sharedSiblingRow.waitFor({ state: "visible" });
 
   const sharedItemId = await page.evaluate(async (title) => {
     const state = await window.vibedeck.getState();
@@ -1835,6 +1983,14 @@ try {
     return item.id;
   }, sharedArrivalTitle);
   assert.ok(sharedItemId, "L’arrivée partagée doit posséder un identifiant.");
+  await narrowLeaf.locator(".article-list").evaluate((list) => {
+    list.scrollTop = 0;
+  });
+  await page.evaluate(() => new Promise(
+    (resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)),
+  ));
+  const sharedSiblingRow = narrowLeaf.locator(".article-row")
+    .filter({ hasText: sharedArrivalTitle });
   await sharedSiblingRow.waitFor({ state: "visible" });
   assert.match(
     (await sharedSiblingRow.locator(".article-meta em").textContent()) ?? "",
@@ -1951,7 +2107,14 @@ try {
       ...articles,
     ];
     await page.evaluate((id) => window.vibedeck.refreshSource(id), sourceId);
-    dwellRow = page.locator(".article-row").filter({ hasText: probeTitle }).first();
+    await waitForFeedItemCount(page, panelId, baselineArticleCount + 6 + attempt);
+    await panelLeaf.locator(".article-list").evaluate((list) => {
+      list.scrollTop = 0;
+    });
+    await page.evaluate(() => new Promise(
+      (resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)),
+    ));
+    dwellRow = panelLeaf.locator(".article-row").filter({ hasText: probeTitle }).first();
     await dwellRow.waitFor({ state: "visible" });
     dwellId = await dwellRow.getAttribute("id");
     assert.equal(

@@ -24,26 +24,68 @@ function newestTimestampFirst(first: number, second: number) {
   return first > second ? -1 : 1;
 }
 
+type FeedSortKey = {
+  baseline: boolean;
+  chronology: number;
+  observation: number;
+};
+
+const feedSortKeys = new WeakMap<FeedItem, FeedSortKey>();
+
+function feedSortKey(item: FeedItem) {
+  const cached = feedSortKeys.get(item);
+  if (cached) return cached;
+  const key = {
+    baseline: item.isBaseline,
+    chronology: firstTimestamp(
+      item.publishedAt,
+      item.updatedAt,
+      item.observedAt,
+      item.firstSeenAt,
+    ),
+    observation: firstTimestamp(item.observedAt, item.firstSeenAt),
+  };
+  feedSortKeys.set(item, key);
+  return key;
+}
+
 /**
  * Keep genuine post-baseline arrivals ahead of the initial history, then use
  * the editorial chronology across every source and refresh cycle.
  */
 export function compareFeedItems(first: FeedItem, second: FeedItem) {
-  if (first.isBaseline !== second.isBaseline) return first.isBaseline ? 1 : -1;
+  const firstKey = feedSortKey(first);
+  const secondKey = feedSortKey(second);
+  if (firstKey.baseline !== secondKey.baseline) return firstKey.baseline ? 1 : -1;
 
   const chronologyOrder = newestTimestampFirst(
-    firstTimestamp(first.publishedAt, first.updatedAt, first.observedAt, first.firstSeenAt),
-    firstTimestamp(second.publishedAt, second.updatedAt, second.observedAt, second.firstSeenAt),
+    firstKey.chronology,
+    secondKey.chronology,
   );
   if (chronologyOrder !== 0) return chronologyOrder;
 
   const observationOrder = newestTimestampFirst(
-    firstTimestamp(first.observedAt, first.firstSeenAt),
-    firstTimestamp(second.observedAt, second.firstSeenAt),
+    firstKey.observation,
+    secondKey.observation,
   );
   if (observationOrder !== 0) return observationOrder;
 
   return stableIdOrder(first, second);
+}
+
+/**
+ * Append search-only rows without turning the merge into one linear scan per
+ * result. Returning the original array when every result is already loaded
+ * also preserves the external-store snapshot identity.
+ */
+export function appendMissingFeedItems(
+  current: readonly FeedItem[],
+  candidates: readonly FeedItem[],
+): FeedItem[] {
+  if (candidates.length === 0) return current as FeedItem[];
+  const currentIds = new Set(current.map(({ id }) => id));
+  const missing = candidates.filter(({ id }) => !currentIds.has(id));
+  return missing.length === 0 ? current as FeedItem[] : [...current, ...missing];
 }
 
 export function feedItemIdsBeforeAnchor(

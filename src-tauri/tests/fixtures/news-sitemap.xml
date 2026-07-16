@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:news="http://www.google.com/schemas/sitemap-news/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
+  <url>
+    <loc>https://news.example/mon-article</loc>
+    <news:news>
+      <news:publication>
+        <news:name>Publication test</news:name>
+      </news:publication>
+      <news:publication_date>2026-07-15T07:10:00Z</news:publication_date>
+      <news:title>Mon article Sitemap</news:title>
+    </news:news>
+    <image:image>
+      <image:loc>https://news.example/image.jpg</image:loc>
+    </image:image>
+    <lastmod>2026-07-15T07:20:00Z</lastmod>
+  </url>
+</urlset>
