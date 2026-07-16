@@ -1,0 +1,19 @@
+site/.gitignore
+  s_77d44717e542d3::t_64b3b55b4023ff 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "9901b0afcf08596f18f0aaa273ec6fcb5677f809",
+  "prompts": {},
+  "sessions": {
+    "s_77d44717e542d3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1ba81d18-714a-4f7b-9257-e896a8f88ba9",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
