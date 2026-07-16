@@ -1575,6 +1575,16 @@ try {
   );
   await page.keyboard.press("Escape");
   await page.locator(".search-filter-summary").waitFor({ state: "detached" });
+  await page.waitForFunction(
+    (articleId) => document.activeElement?.id === articleId,
+    searchOriginId,
+  );
+  assertWithin(
+    await panelLeaf.locator(".article-list").evaluate((list) => list.scrollTop),
+    searchOriginScrollTop,
+    1,
+    "scrollTop restauré après retrait du filtre",
+  );
 
   await page.keyboard.press("ControlOrMeta+K");
   await searchPalette.waitFor({ state: "visible" });
@@ -1593,16 +1603,6 @@ try {
   );
   await page.keyboard.press("Escape");
   await page.locator(".search-filter-summary").waitFor({ state: "detached" });
-  await page.waitForFunction(
-    (articleId) => document.activeElement?.id === articleId,
-    searchOriginId,
-  );
-  assertWithin(
-    await panelLeaf.locator(".article-list").evaluate((list) => list.scrollTop),
-    searchOriginScrollTop,
-    1,
-    "scrollTop restauré après retrait du filtre",
-  );
 
   await page.keyboard.press("ControlOrMeta+K");
   await searchPalette.waitFor({ state: "visible" });
