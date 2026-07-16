@@ -434,19 +434,25 @@ button:disabled {
   white-space: nowrap;
 }
 
-.link-reader__toolbar {
-  gap: 3px;
-}
-
+.link-reader__original,
 .link-reader__external {
   display: inline-flex;
-  height: 22px;
+  height: 20px;
   min-height: 22px;
   align-items: center;
   gap: 5px;
-  padding: 0 8px;
+  padding: 0 7px;
   white-space: nowrap;
   font: 8.5px/1 var(--mono);
+}
+
+.reader-status {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-dim);
+  font: 8.5px/1 var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .split-layout__leaf {
@@ -554,12 +560,14 @@ button:disabled {
 }
 
 .panel-header {
+  position: relative;
+  z-index: 10;
   display: flex;
-  height: 31px;
-  min-height: 31px;
+  height: 28px;
+  min-height: 28px;
   align-items: center;
-  gap: 7px;
-  padding: 0 5px 0 9px;
+  gap: 4px;
+  padding: 0 3px 0 6px;
   border-bottom: 1px solid var(--line-soft);
   background: var(--head);
   cursor: grab;
@@ -568,6 +576,31 @@ button:disabled {
 
 .panel-header:active {
   cursor: grabbing;
+}
+
+.panel-identity {
+  display: flex;
+  min-width: 52px;
+  max-width: 220px;
+  flex: 0 1 220px;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+}
+
+.dashboard-panel--fil .panel-identity {
+  max-width: 180px;
+  flex-basis: 180px;
+}
+
+.panel-header__context {
+  display: flex;
+  min-width: 0;
+  height: 100%;
+  flex: 1;
+  align-items: center;
+  overflow: hidden;
+  cursor: default;
 }
 
 .panel-kind {
@@ -602,7 +635,7 @@ button:disabled {
 
 .panel-title-input {
   min-width: 0;
-  height: auto;
+  height: 22px;
   min-height: 22px;
   flex: 1;
   padding: 2px 6px;
@@ -613,13 +646,6 @@ button:disabled {
   color: var(--text);
   font-size: calc(11.5px * var(--feed-text-scale));
   font-weight: 650;
-}
-
-.panel-count {
-  flex: 0 0 auto;
-  color: var(--muted);
-  font: 9px/1 var(--mono);
-  font-variant-numeric: tabular-nums;
 }
 
 .panel-actions {
@@ -637,17 +663,104 @@ button:disabled {
   opacity: 1;
 }
 
+.panel-overflow-trigger {
+  display: none;
+}
+
+.panel-action-menu {
+  position: fixed;
+  z-index: 280;
+  display: flex;
+  width: max-content;
+  min-width: 218px;
+  max-width: min(300px, calc(100vw - 12px));
+  max-height: calc(100vh - 12px);
+  padding: 4px;
+  overflow-y: auto;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--raised);
+  box-shadow: 0 12px 30px rgb(0 0 0 / 0.46);
+}
+
+.panel-action-menu > button {
+  display: grid;
+  min-height: 29px;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 7px;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  text-align: left;
+}
+
+.panel-action-menu > button.is-separated {
+  margin-top: 4px;
+  border-top: 1px solid var(--line-soft);
+  border-radius: 0 0 4px 4px;
+  padding-top: 7px;
+}
+
+.panel-action-menu > button:hover:not(:disabled),
+.panel-action-menu > button:focus-visible {
+  background: var(--line-soft);
+  color: var(--text);
+}
+
+.panel-action-menu > button.is-active {
+  color: var(--amber-light);
+}
+
+.panel-action-menu > button.is-danger {
+  color: var(--danger);
+}
+
+.panel-action-menu > button[aria-disabled="true"] {
+  cursor: default;
+  opacity: 0.42;
+}
+
+.panel-action-menu > button > span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.panel-action-menu > button > strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 10.5px;
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panel-action-menu kbd {
+  color: var(--muted-dim);
+  font: 8px/1 var(--mono);
+  white-space: nowrap;
+}
+
 .icon-button {
   display: inline-flex;
-  width: 24px;
-  height: 24px;
-  flex: 0 0 24px;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
   align-items: center;
   justify-content: center;
   border-radius: 4px;
   background: transparent;
   color: var(--muted);
   cursor: pointer;
+}
+
+.panel-header button:focus-visible,
+.panel-header input:focus-visible {
+  outline-offset: -2px;
 }
 
 .icon-button:hover:not(:disabled),
@@ -665,6 +778,36 @@ button:disabled {
   color: var(--danger);
 }
 
+.feed-refresh-action {
+  position: relative;
+}
+
+.feed-refresh-action::after {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  display: none;
+  width: 4px;
+  height: 4px;
+  border: 1px solid var(--head);
+  border-radius: 50%;
+  background: var(--muted-dim);
+  content: "";
+}
+
+.feed-refresh-action--healthy::after {
+  background: var(--success);
+}
+
+.feed-refresh-action--refreshing::after,
+.feed-refresh-action--stale::after {
+  background: var(--amber);
+}
+
+.feed-refresh-action--error::after {
+  background: var(--danger);
+}
+
 .panel-content {
   display: flex;
   min-width: 0;
@@ -677,15 +820,17 @@ button:disabled {
 .feed-toolbar,
 .web-toolbar {
   display: flex;
-  height: 30px;
-  min-height: 30px;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  flex: 1;
   align-items: center;
-  gap: 4px;
-  padding: 0 7px;
+  gap: 3px;
+  padding: 0;
   overflow-x: hidden;
   overflow-y: hidden;
-  border-bottom: 1px solid var(--line-soft);
-  background: var(--panel);
+  border: 0;
+  background: transparent;
   scrollbar-width: none;
 }
 
@@ -699,7 +844,7 @@ button:disabled {
   min-width: 0;
   flex: 1;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
@@ -707,11 +852,11 @@ button:disabled {
 
 .feed-toolbar__filters > button {
   display: inline-flex;
-  height: 22px;
+  height: 20px;
   flex: 0 0 auto;
   align-items: center;
-  gap: 5px;
-  padding: 0 7px;
+  gap: 4px;
+  padding: 0 6px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: transparent;
@@ -738,7 +883,7 @@ button:disabled {
 
 .feed-toolbar__freshness {
   flex: 0 0 auto;
-  padding: 0 3px 0 9px;
+  padding: 0 3px 0 7px;
   border-left: 1px solid var(--line-soft);
   color: var(--muted-dim);
   font: 8.5px/1 var(--mono);
@@ -756,7 +901,7 @@ button:disabled {
 .feed-toolbar__search-state {
   display: inline-flex;
   min-width: 0;
-  height: 22px;
+  height: 20px;
   flex: 0 1 190px;
   align-items: center;
   gap: 5px;
@@ -800,8 +945,8 @@ button:disabled {
 }
 
 .feed-toolbar__density > button {
-  height: 20px;
-  padding: 0 7px;
+  height: 18px;
+  padding: 0 6px;
   border: none;
   background: transparent;
   color: var(--muted-dim);
@@ -1203,8 +1348,8 @@ button:disabled {
 
 .web-toolbar {
   gap: 1px;
-  padding: 0 6px;
-  overflow-x: auto;
+  padding: 0;
+  overflow-x: hidden;
 }
 
 .web-toolbar .icon-button {
@@ -1215,7 +1360,7 @@ button:disabled {
 
 .web-address {
   min-width: 0;
-  height: 22px;
+  height: 20px;
   flex: 1;
   overflow: hidden;
   padding: 3px 8px;
@@ -3004,13 +3149,19 @@ button:disabled {
   font: 9px/1 var(--mono);
 }
 
-@container (max-width: 520px) {
-  .panel-actions .icon-button[aria-label^="Diviser"] {
-    display: none;
+@container (max-width: 760px) {
+  .panel-identity,
+  .dashboard-panel--fil .panel-identity {
+    max-width: 120px;
+    flex-basis: 120px;
   }
 
-  .article-summary {
-    display: none;
+  .panel-action--secondary {
+    display: none !important;
+  }
+
+  .panel-overflow-trigger {
+    display: inline-flex;
   }
 
   .feed-toolbar__freshness-full {
@@ -3019,6 +3170,44 @@ button:disabled {
 
   .feed-toolbar__freshness-compact {
     display: inline;
+  }
+}
+
+@container (max-width: 520px) {
+  .panel-header {
+    gap: 2px;
+    padding-left: 4px;
+  }
+
+  .panel-kind {
+    display: none;
+  }
+
+  .panel-identity,
+  .dashboard-panel--fil .panel-identity {
+    min-width: 32px;
+    max-width: 72px;
+    flex-basis: 72px;
+  }
+
+  .feed-toolbar__freshness {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .feed-refresh-action::after {
+    display: block;
+  }
+
+  .article-summary {
+    display: none;
   }
 
   .article-row {
@@ -3036,16 +3225,8 @@ button:disabled {
 }
 
 @container (max-width: 390px) {
-  .panel-count {
-    display: none;
-  }
-
   .article-meta {
     gap: 4px;
-  }
-
-  .panel-header {
-    gap: 5px;
   }
 
   .article-row {
