@@ -1,0 +1,26 @@
+scripts/test-pilot-ui.mjs
+  s_5f30fb2681d270::t_3a3a7a110fc251 1433-1434,1573,1575-1597
+  s_5f30fb2681d270::t_d5ed311ec82082 1430-1432,1435-1447
+  s_5f30fb2681d270::t_2a974ba955f233 1543-1544,1546,1549,1551,1554-1558,1567-1570,1598-1600
+  s_5f30fb2681d270::t_4aa2566cb44fea 1545,1550,1552,1559-1564,1571-1572
+  s_5f30fb2681d270::t_bd97570ef6c95d 1547-1548
+src/App.tsx
+  s_5f30fb2681d270::t_3a3a7a110fc251 2618
+  s_5f30fb2681d270::t_d5ed311ec82082 2242-2249,2293,2297-2298,2314-2315,2317-2318,2320
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "d55c25c92ce5f76dec4be038578cea7fc9e27ff5",
+  "prompts": {},
+  "sessions": {
+    "s_5f30fb2681d270": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6b14-37d8-7982-8866-51b3b0feaf2d",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
