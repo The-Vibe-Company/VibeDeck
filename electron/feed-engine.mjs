@@ -14,6 +14,14 @@ import {
   isPrivateNetworkHostname,
   proxyRouteKind,
 } from "./network-safety.mjs";
+import {
+  CURATED_PROXY_ROOTS,
+  PUBLICATIONS,
+  SOURCE_CATALOG,
+  publicSourceCatalog,
+  publicationById,
+  publicationForFeedUrl,
+} from "./publication-registry.mjs";
 
 export { isNonPublicIpAddress } from "./network-safety.mjs";
 
@@ -37,21 +45,7 @@ const MAX_CONCURRENT_REFRESHES = 6;
 const MAX_CONCURRENT_REFRESHES_PER_HOST = 2;
 const MAX_SOURCE_PROBE_SAMPLES = 3;
 const CONNECTOR_PREFERENCES = new Set(["auto", "rss", "atom", "news-sitemap"]);
-const OPTIMIZED_SOURCE_CAPABILITIES = Object.freeze([
-  "optimized-feed",
-  "simplified-reading",
-]);
-const LE_MONDE_FEED_URL = "https://www.lemonde.fr/rss/en_continu.xml";
-const LE_FIGARO_FEED_URL = "https://www.lefigaro.fr/rss/figaro_flash-actu.xml";
-const LE_PARISIEN_FEED_URL = "https://feeds.leparisien.fr/leparisien/rss";
-const LE_PARISIEN_NEWS_SITEMAP_URL =
-  "https://www.leparisien.fr/arc/outboundfeeds/sitemapnews/?outputType=xml&from=0";
-const CURATED_PROXY_ENDPOINTS = new Set([
-  LE_MONDE_FEED_URL,
-  LE_FIGARO_FEED_URL,
-  LE_PARISIEN_FEED_URL,
-  LE_PARISIEN_NEWS_SITEMAP_URL,
-]);
+const CURATED_PROXY_ENDPOINTS = new Set(CURATED_PROXY_ROOTS);
 const TRACKING_PARAMETERS = new Set([
   "fbclid",
   "gclid",
@@ -74,63 +68,11 @@ const xmlParser = new XMLParser({
   ignorePiTags: true,
 });
 
-export const KNOWN_PUBLICATIONS = Object.freeze([
-  {
-    id: "le-monde",
-    name: "Le Monde",
-    description: "L’actualité en continu, avec une lecture facilitée des articles.",
-    homepageUrl: "https://www.lemonde.fr/",
-    hostnames: ["lemonde.fr"],
-    feedUrl: LE_MONDE_FEED_URL,
-    connectorKind: "rss",
-    refreshIntervalSeconds: 300,
-  },
-  {
-    id: "le-figaro",
-    name: "Le Figaro",
-    description: "Le fil Flash Actu, avec une lecture facilitée des articles.",
-    homepageUrl: "https://www.lefigaro.fr/",
-    hostnames: ["lefigaro.fr"],
-    feedUrl: LE_FIGARO_FEED_URL,
-    connectorKind: "rss",
-    refreshIntervalSeconds: 600,
-  },
-  {
-    id: "le-parisien",
-    name: "Le Parisien",
-    description: "L’actualité du Parisien, enrichie pour une lecture facilitée.",
-    homepageUrl: "https://www.leparisien.fr/",
-    hostnames: ["leparisien.fr"],
-    feedUrl: LE_PARISIEN_FEED_URL,
-    connectorKind: "rss",
-    refreshIntervalSeconds: 180,
-  },
-]);
-
-export const SOURCE_CATALOG = Object.freeze(
-  KNOWN_PUBLICATIONS.map(
-    ({ id, name, description, homepageUrl, connectorKind, refreshIntervalSeconds }) =>
-      Object.freeze({
-        id,
-        name,
-        description,
-        homepageUrl,
-        connectorKind,
-        refreshIntervalSeconds,
-        capabilities: OPTIMIZED_SOURCE_CAPABILITIES,
-      }),
-  ),
-);
-
-function publicSourceCatalog() {
-  return SOURCE_CATALOG.map((source) => ({
-    ...source,
-    capabilities: [...source.capabilities],
-  }));
-}
+export const KNOWN_PUBLICATIONS = PUBLICATIONS;
+export { SOURCE_CATALOG };
 
 function connectorIdForFeedUrl(feedUrl) {
-  return KNOWN_PUBLICATIONS.find((publication) => publication.feedUrl === feedUrl)?.id ?? null;
+  return publicationForFeedUrl(feedUrl)?.id ?? null;
 }
 
 function asArray(value) {
@@ -334,6 +276,8 @@ export function assertSafeFeedUrl(
 
 export function matchKnownPublication(input) {
   const inputUrl = normalizeInputUrl(input);
+  const exactPublication = KNOWN_PUBLICATIONS.find(({ feedUrl }) => feedUrl === inputUrl);
+  if (exactPublication) return { ...exactPublication, inputUrl };
   const url = new URL(inputUrl);
   const hostname = baseHostname(url.hostname);
   const publication = KNOWN_PUBLICATIONS.find(({ hostnames }) =>
@@ -347,10 +291,9 @@ export function matchKnownPublication(input) {
   // explicitly pasted section feed or news sitemap must remain user-selectable.
   const path = url.pathname.toLowerCase();
   const looksExplicit =
-    inputUrl !== publication.feedUrl &&
-    (url.hostname.toLowerCase().startsWith("feeds.") ||
+    url.hostname.toLowerCase().startsWith("feeds.") ||
       /(?:^|\/)(?:rss|feed|feeds|sitemap)(?:\/|[-_.]|$)/.test(path) ||
-      /\.(?:xml|rss|atom)(?:\/)?$/.test(path));
+      /\.(?:xml|rss|atom)(?:\/)?$/.test(path);
   if (looksExplicit) return null;
   return { ...publication, inputUrl };
 }
@@ -1547,12 +1490,12 @@ export class FeedEngine {
 
     // An HTTP/SOCKS proxy may perform target DNS remotely, so local
     // Session.resolveHost cannot prove the endpoint the proxy will contact.
-    // V0 therefore permits non-DIRECT routes only when the request root is one
-    // of four exact, hardcoded HTTPS connector endpoints, then for HTTPS
+    // V0 therefore permits non-DIRECT routes only when the request root is an
+    // exact HTTPS endpoint from the optimized publication registry, then for HTTPS
     // same-site redirects already validated by the redirect loop. A custom URL
     // under the same publisher domain never inherits that trust.
     throw new Error(
-      "Cette source personnalisée nécessite un proxy. Dans cette version, utilisez une connexion directe ou l’un des trois connecteurs optimisés.",
+      "Cette source personnalisée nécessite un proxy. Utilisez une connexion directe ou un connecteur optimisé.",
     );
   }
 
@@ -1924,16 +1867,17 @@ export class FeedEngine {
   }
 
   async #enrichSpecializedSource(feedUrl, parsed, { signal = null } = {}) {
-    if (feedUrl !== LE_PARISIEN_FEED_URL) return parsed;
+    const enrichment = publicationForFeedUrl(feedUrl)?.enrichment;
+    if (!enrichment) return parsed;
     try {
-      const response = await this.fetchEndpoint(LE_PARISIEN_NEWS_SITEMAP_URL, {
-        ttlSeconds: 120,
+      const response = await this.fetchEndpoint(enrichment.url, {
+        ttlSeconds: enrichment.ttlSeconds,
         accept: "application/xml, text/xml;q=0.9, */*;q=0.1",
         signal,
       });
       const sitemap = parseFeedDocument(
         response.body,
-        response.finalUrl ?? LE_PARISIEN_NEWS_SITEMAP_URL,
+        response.finalUrl ?? enrichment.url,
       );
       if (sitemap.kind !== "news-sitemap") return parsed;
       return {
@@ -2051,7 +1995,7 @@ export class FeedEngine {
     if (typeof catalogId !== "string" || !catalogId.trim()) {
       throw new TypeError("Source du catalogue invalide.");
     }
-    const publication = KNOWN_PUBLICATIONS.find(({ id }) => id === catalogId.trim());
+    const publication = publicationById(catalogId.trim());
     if (!publication) throw new Error("Cette source n’existe pas dans le catalogue.");
     return this.#addSource(panelId, {
       url: publication.homepageUrl,

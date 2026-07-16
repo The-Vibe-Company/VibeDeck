@@ -1044,22 +1044,20 @@ button:disabled {
 }
 
 /* ---- Mode dense : une rangée par article, colonnes explicites ----
-   Le titre est roi : il démarre juste après la pastille média et n'est
+   Le titre est roi : il démarre juste après l'icône du média et n'est
    jamais tronqué (retour à la ligne). L'heure, compacte, ferme la ligne. */
 
-.article-identity,
-.article-source__abbr {
+.article-provider {
   display: none;
 }
 
 .dashboard-panel[data-density="dense"] .article-row {
   grid-template-columns:
-    5px
-    max-content
+    20px
     minmax(0, 1fr)
     max-content
     max-content;
-  align-items: baseline;
+  align-items: start;
   gap: 7px;
   padding-block: 5px;
   border-left: 2px solid transparent;
@@ -1078,23 +1076,18 @@ button:disabled {
   display: contents;
 }
 
-.dashboard-panel[data-density="dense"] .article-identity {
-  /* Baseline : la pastille suit la première ligne d'un titre multi-lignes. */
-  display: inline-block;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: oklch(70% 0.09 calc(var(--source-hue, 0) * 1deg));
+.dashboard-panel[data-density="dense"] .article-provider {
+  display: block;
+  width: 20px;
+  height: 20px;
   grid-area: 1 / 1;
 }
 
-.dashboard-panel[data-density="dense"] .article-source {
-  grid-area: 1 / 2;
+.dashboard-panel[data-density="dense"] .article-provider .provider-mark {
+  border-radius: 5px;
 }
 
-/* Le nom complet reste dans le nom accessible de la rangée ; à l'écran,
-   seule l'abréviation deux lettres identifie le média avec sa pastille. */
-.dashboard-panel[data-density="dense"] .article-source__full {
+.dashboard-panel[data-density="dense"] .article-source {
   position: absolute;
   overflow: hidden;
   width: 1px;
@@ -1103,15 +1096,11 @@ button:disabled {
   white-space: nowrap;
 }
 
-.dashboard-panel[data-density="dense"] .article-source__abbr {
-  display: inline;
-}
-
 .dashboard-panel[data-density="dense"] .article-copy > strong {
   display: block;
   overflow-wrap: anywhere;
   line-height: 1.35;
-  grid-area: 1 / 3;
+  grid-area: 1 / 2;
 }
 
 .dashboard-panel[data-density="dense"] .article-row--seen .article-copy > strong,
@@ -1120,7 +1109,7 @@ button:disabled {
 }
 
 .dashboard-panel[data-density="dense"] .article-meta > em {
-  grid-area: 1 / 4;
+  grid-area: 1 / 3;
 }
 
 /* Le liseré ambre + la graisse portent déjà le signal « Nouveau » : le
@@ -1141,7 +1130,7 @@ button:disabled {
   overflow: hidden;
   max-width: calc(80px * var(--feed-text-scale));
   text-overflow: ellipsis;
-  grid-area: 1 / 5;
+  grid-area: 1 / 4;
 }
 
 .dashboard-panel[data-density="dense"] .article-summary,
@@ -1191,14 +1180,6 @@ button:disabled {
 .arrivals-pill:hover {
   border-color: var(--amber);
   color: var(--text);
-}
-
-/* Panel très étroit : la pastille couleur suffit à identifier le média,
-   l'abréviation rend elle aussi sa place au titre. */
-@container (max-width: 390px) {
-  .dashboard-panel[data-density="dense"] .article-source__abbr {
-    display: none;
-  }
 }
 
 .web-toolbar {
@@ -1521,6 +1502,34 @@ button:disabled {
 .custom-source-input {
   display: flex;
   gap: 7px;
+}
+
+.custom-source-input {
+  position: relative;
+}
+
+.custom-source-input__loader {
+  position: absolute;
+  top: 9px;
+  right: 10px;
+  color: var(--amber);
+  pointer-events: none;
+}
+
+.custom-source-input:has(.custom-source-input__loader) input {
+  padding-right: 30px;
+}
+
+.source-probe-error {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.source-probe-error .quiet-button {
+  min-height: 30px;
+  margin-top: 6px;
 }
 
 .compact-select-field {
@@ -2077,6 +2086,100 @@ button:disabled {
   background: var(--bg);
 }
 
+.provider-language-group:not(:last-child) {
+  border-bottom: 1px solid var(--line);
+}
+
+.provider-language-group__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  background: var(--head);
+  color: var(--text);
+}
+
+.provider-language-group__heading > span {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.provider-language-group__heading strong {
+  font-size: 10px;
+}
+
+.provider-language-group__heading small,
+.provider-language-group__heading em {
+  color: var(--muted);
+  font: 8px/1.2 var(--mono);
+  font-style: normal;
+}
+
+.provider-group__heading {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  border-top: 1px solid var(--line-soft);
+  background: var(--bg);
+  color: var(--muted);
+  cursor: pointer;
+  font: 8px/1.2 var(--mono);
+  letter-spacing: 0.06em;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.provider-group__heading:hover:not(:disabled),
+.provider-group__heading[aria-expanded="true"] {
+  background: var(--raised);
+  color: var(--text);
+}
+
+.provider-group__heading > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.provider-group__heading svg {
+  transition: transform 120ms ease;
+}
+
+.provider-group__heading[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+
+.provider-group__heading em {
+  color: var(--muted-dim);
+  font-style: normal;
+}
+
+.provider-mark {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: #f4f1e9;
+}
+
+.provider-mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.provider-mark--fallback {
+  border: 0;
+  background: transparent;
+}
+
 .provider-row {
   display: flex;
   width: 100%;
@@ -2216,7 +2319,7 @@ button:disabled {
   color: var(--text-read);
 }
 
-.current-source-list > button > span {
+.current-source-list > button > .current-source-copy {
   display: flex;
   min-width: 0;
   flex: 1;
@@ -2332,6 +2435,13 @@ button:disabled {
 
 .source-probe__summary .primary-button {
   flex: 0 0 auto;
+}
+
+.source-probe__ready {
+  flex: 0 0 auto;
+  color: var(--success);
+  font: 8px/1.2 var(--mono);
+  font-style: normal;
 }
 
 .source-probe > p {

@@ -256,6 +256,7 @@ let primaryDelayMs = 0;
 let probeDelayMs = 0;
 let delayedProbeRequestCount = 0;
 let delayedProbeAbortCount = 0;
+let retryProbeShouldFail = true;
 let origin = "";
 
 const server = createServer((request, response) => {
@@ -278,13 +279,15 @@ const server = createServer((request, response) => {
   if (
     request.url !== "/feed.xml" &&
     request.url !== "/feed-secondary.xml" &&
-    request.url !== "/feed-probe-delayed.xml"
+    request.url !== "/feed-probe-delayed.xml" &&
+    request.url !== "/feed-probe-retry.xml"
   ) {
     response.writeHead(404).end("Not found");
     return;
   }
   const isSecondary = request.url === "/feed-secondary.xml";
   const isDelayedProbe = request.url === "/feed-probe-delayed.xml";
+  const isRetryProbe = request.url === "/feed-probe-retry.xml";
   if (isDelayedProbe) {
     delayedProbeRequestCount += 1;
     let abortCounted = false;
@@ -297,7 +300,16 @@ const server = createServer((request, response) => {
     response.once("close", countAbort);
   }
   if (isSecondary) secondaryRequestCount += 1;
-  else if (!isDelayedProbe) primaryRequestCount += 1;
+  else if (!isDelayedProbe && !isRetryProbe) primaryRequestCount += 1;
+  if (isRetryProbe && retryProbeShouldFail) {
+    retryProbeShouldFail = false;
+    response.writeHead(503, {
+      "Cache-Control": "no-store",
+      "Content-Type": "text/plain; charset=utf-8",
+    });
+    response.end("Panne transitoire contrôlée");
+    return;
+  }
   if (!isSecondary && primaryShouldFail) {
     response.writeHead(503, {
       "Cache-Control": "no-store",
@@ -645,13 +657,10 @@ try {
     true,
     "Le résumé doit être masqué en mode dense.",
   );
-  const identityHues = await page.locator(".article-row .article-identity").evaluateAll(
-    (dots) => [...new Set(dots.map((dot) => dot.style.getPropertyValue("--source-hue")))],
-  );
   assert.equal(
-    identityHues.length,
-    2,
-    "Chaque média doit porter sa teinte d'identité stable dans les rangées denses.",
+    await page.locator(".article-row .article-provider .provider-mark--fallback").count() > 0,
+    true,
+    "Une source personnalisée doit utiliser le pictogramme générique plutôt que des initiales.",
   );
   assert.equal(
     await page.locator(".article-copy > strong").first().evaluate(
@@ -660,14 +669,13 @@ try {
     "normal",
     "Le titre dense ne doit jamais être tronqué : il passe à la ligne.",
   );
-  await page.locator(".article-source__abbr").first().waitFor({ state: "visible" });
-  assert.match(
-    (await page.locator(".article-source__abbr").first().textContent()) ?? "",
-    /^[\p{Lu}\p{N}]{1,2}$/u,
-    "L'abréviation de source doit tenir en deux caractères majuscules.",
+  assert.equal(
+    await page.locator(".article-source__abbr").count(),
+    0,
+    "Les initiales de source ne doivent plus être rendues.",
   );
   assert.equal(
-    await page.locator(".article-source__full").first().evaluate(
+    await page.locator(".article-source").first().evaluate(
       (element) => getComputedStyle(element).width,
     ),
     "1px",
@@ -813,22 +821,79 @@ try {
     true,
     "Entrer dans le constructeur de Fil doit placer le vrai focus dans son premier champ.",
   );
+  const categoryButtons = draftLeaf.locator(".provider-group__heading");
+  assert.equal(await categoryButtons.count(), 6, "Le catalogue doit être regroupé par langue et type.");
+  for (let index = 0; index < await categoryButtons.count(); index += 1) {
+    const categoryButton = categoryButtons.nth(index);
+    assert.equal(await categoryButton.getAttribute("aria-expanded"), "false");
+    await categoryButton.click();
+  }
+  assert.equal(await draftLeaf.locator(".provider-row").count(), 30, "Ouvrir les catégories doit révéler les trente publications.");
   assert.equal(
-    await draftLeaf.locator(".provider-row").count(),
-    3,
-    "Le catalogue V1 doit afficher les trois connecteurs vérifiés.",
+    await draftLeaf.locator(".provider-row .provider-mark img").count(),
+    30,
+    "Chaque publication optimisée doit disposer de sa véritable icône locale.",
   );
+  await page.waitForFunction(() => {
+    const images = [...document.querySelectorAll(
+      '.split-layout__leaf[data-panel-id^="draft:"] .provider-row .provider-mark img',
+    )];
+    return images.length === 30 && images.every((image) =>
+      image.complete && image.naturalWidth === 96 && image.naturalHeight === 96);
+  });
+  assert.deepEqual(
+    await draftLeaf.locator(".provider-row .provider-mark img").evaluateAll((images) =>
+      images.map((image) => ({
+        complete: image.complete,
+        naturalWidth: image.naturalWidth,
+        naturalHeight: image.naturalHeight,
+      }))),
+    Array.from({ length: 30 }, () => ({ complete: true, naturalWidth: 96, naturalHeight: 96 })),
+    "Les trente fichiers d’icône doivent réellement être décodés par le renderer.",
+  );
+  assert.equal(await draftLeaf.locator('.provider-language-group[aria-label="Français"] .provider-row').count(), 20);
   assert.equal(
-    await draftLeaf.locator(".provider-row > svg").count(),
-    3,
-    "Chaque connecteur vérifié doit disposer d’une marque locale.",
+    await draftLeaf.locator('.provider-language-group[aria-label="Anglais"] .provider-row').count(),
+    10,
   );
+  const catalogSearch = draftLeaf.getByLabel("Rechercher un connecteur optimisé");
+  await catalogSearch.fill("BBC");
+  assert.equal(await draftLeaf.locator(".provider-row").count(), 1, "La recherche doit filtrer les deux sections.");
+  const bbcRow = draftLeaf.getByRole("button", { name: /BBC/ });
+  await catalogSearch.focus();
+  await page.keyboard.press("Tab");
+  assert.equal(
+    await bbcRow.evaluate((button) => document.activeElement === button),
+    true,
+    "La publication filtrée doit être atteignable directement au clavier.",
+  );
+  await page.keyboard.press("Space");
+  assert.equal(await bbcRow.getAttribute("aria-pressed"), "true");
+  await page.keyboard.press("Space");
+  await catalogSearch.fill("");
   const customSourceInput = draftLeaf.getByLabel("Adresse du site ou du flux");
-  const customSourceTestButton = draftLeaf.getByRole("button", { name: "Tester" });
+  await customSourceInput.fill(`${origin}/feed-probe-retry.xml`);
+  await draftLeaf.getByRole("button", { name: "Réessayer" }).waitFor({ state: "visible" });
+  await draftLeaf.getByRole("button", { name: "Réessayer" }).click();
+  await draftLeaf.locator(".source-probe").filter({ hasText: "Flux contrôlé VibeDeck" })
+    .waitFor({ state: "visible" });
+  await draftLeaf.getByRole("button", { name: new RegExp(`Retirer ${origin}/feed-probe-retry\\.xml`) }).click();
+
+  await bbcRow.click();
+  assert.equal(await bbcRow.getAttribute("aria-pressed"), "true");
   probeDelayMs = 1_200;
   await customSourceInput.fill(`${origin}/feed-probe-delayed.xml`);
-  await customSourceTestButton.click();
+  assert.equal(
+    await draftLeaf.getByRole("button", { name: "Créer le fil" }).isDisabled(),
+    true,
+    "La création doit attendre la résolution de l’URL dès le début du délai de 700 ms.",
+  );
   await draftLeaf.locator(".source-probe--loading").waitFor({ state: "visible" });
+  assert.equal(
+    await draftLeaf.getByRole("button", { name: "Créer le fil" }).isDisabled(),
+    true,
+    "La création doit rester bloquée pendant le téléchargement de vérification.",
+  );
   await waitForLocalCondition(
     () => delayedProbeRequestCount === 1,
     "le premier test de source doit atteindre le serveur",
@@ -838,12 +903,6 @@ try {
     () => delayedProbeAbortCount === 1,
     "modifier l’URL doit interrompre le premier téléchargement",
   );
-  assert.equal(
-    await customSourceTestButton.isEnabled(),
-    true,
-    "Modifier l’URL pendant un test doit permettre de relancer immédiatement le contrôle.",
-  );
-  await customSourceTestButton.click();
   await draftLeaf.locator(".source-probe").filter({ hasText: "Flux contrôlé VibeDeck" })
     .waitFor({ state: "visible" });
   assert.equal(
@@ -856,12 +915,17 @@ try {
     0,
     "Une réponse tardive ne doit pas remplacer le résultat du test courant.",
   );
-  await draftLeaf.getByRole("button", { name: "Ajouter au fil" }).click();
   assert.equal(
     await draftLeaf.locator(".queued-source-list").filter({ hasText: "test réussi" }).count(),
     1,
     "Une source testée doit être mise en attente sans créer le fil.",
   );
+  assert.equal(
+    await bbcRow.getAttribute("aria-pressed"),
+    "true",
+    "La résolution asynchrone ne doit pas écraser une sélection effectuée pendant la sonde.",
+  );
+  await bbcRow.click();
   const advancedSummary = draftLeaf.locator("summary").filter({ hasText: "Options avancées" });
   await advancedSummary.focus();
   await page.locator(".global-bar").hover();
@@ -895,6 +959,14 @@ try {
   await customFeedDialog.waitFor({ state: "visible" });
   const attachedSource = customFeedDialog.locator(".current-source-list > button");
   assert.equal(await attachedSource.getAttribute("aria-pressed"), "true");
+  assert.deepEqual(
+    await attachedSource.locator(".provider-mark").evaluate((mark) => ({
+      width: mark.getBoundingClientRect().width,
+      height: mark.getBoundingClientRect().height,
+    })),
+    { width: 34, height: 34 },
+    "Le logo d’une source existante doit rester une vignette carrée et ne jamais s’étirer.",
+  );
   await attachedSource.click();
   assert.equal(await attachedSource.getAttribute("aria-pressed"), "false");
   await customFeedDialog.getByRole("button", { name: "Enregistrer les sources" }).click();
@@ -914,8 +986,17 @@ try {
   probeDelayMs = 5_000;
   await customFeedDialog.getByLabel("Adresse du site ou du flux")
     .fill(`${origin}/feed-probe-delayed.xml`);
-  await customFeedDialog.getByRole("button", { name: "Tester" }).click();
+  assert.equal(
+    await customFeedDialog.getByRole("button", { name: "Enregistrer les sources" }).isDisabled(),
+    true,
+    "Enregistrer doit attendre une URL encore dans son délai de vérification.",
+  );
   await customFeedDialog.locator(".source-probe--loading").waitFor({ state: "visible" });
+  assert.equal(
+    await customFeedDialog.getByRole("button", { name: "Enregistrer les sources" }).isDisabled(),
+    true,
+    "Enregistrer doit rester bloqué pendant une sonde réseau.",
+  );
   await waitForLocalCondition(
     () => delayedProbeRequestCount === 2,
     "le test lancé depuis l’édition doit atteindre le serveur",
@@ -1385,15 +1466,11 @@ try {
     "L’état de lecture doit rester explicite dans le panel le plus étroit.",
   );
 
-  // La source dense reste minuscule dans un fil étroit : pastille seule sous
-  // 390 px, pastille + abréviation au-delà — et jamais de débordement latéral.
-  const narrowDensePanelWidth = await narrowLeaf.locator(".dashboard-panel").evaluate(
-    (panel) => panel.getBoundingClientRect().width,
-  );
+  // L'icône reste lisible dans un fil étroit et ne provoque aucun débordement.
   assert.equal(
-    await narrowLeaf.locator(".article-source__abbr").first().isVisible(),
-    narrowDensePanelWidth >= 390,
-    `L'abréviation de source doit suivre le seuil de 390 px (largeur ${Math.round(narrowDensePanelWidth)}px).`,
+    await narrowLeaf.locator(".article-provider .provider-mark").first().isVisible(),
+    true,
+    "L'icône de source doit rester visible dans le panel le plus étroit.",
   );
   assert.equal(
     await narrowLeaf.locator(".article-list").evaluate(
@@ -2006,7 +2083,7 @@ try {
   console.log(`✓ viewport initial: scrollTop ${beforeArrival.scrollTop.toFixed(1)}px`);
   console.log(`✓ arrivée automatique: même article à ${revealed.selectedTop.toFixed(1)}px, compensation ${(revealed.scrollTop - beforeArrival.scrollTop).toFixed(1)}px`);
   console.log("✓ arrivée en tête: scrollTop reste à zéro");
-  console.log("✓ mode dense par défaut: titre jamais tronqué, source réduite à pastille + abréviation, bascule Confort persistée");
+  console.log("✓ mode dense par défaut: titre jamais tronqué, source réduite à son icône, bascule Confort persistée");
   console.log("✓ pastille « nouveaux »: compte hors viewport, clic ramène en haut, jamais de barrière d'insertion");
   console.log("✓ date ancienne explicite et fraîcheur compacte dans un fil étroit");
   console.log("✓ lecteur natif: Échap rend le focus au fil et les flèches reprennent immédiatement");

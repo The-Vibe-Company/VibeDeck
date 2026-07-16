@@ -3,6 +3,7 @@ import {
   ArrowRight,
   ArrowUpRight,
   Check,
+  ChevronDown,
   Columns2,
   Download,
   ExternalLink,
@@ -24,9 +25,11 @@ import {
   X,
 } from "lucide-react";
 import {
+  type Dispatch,
   type FormEvent,
   type MouseEvent,
   type RefObject,
+  type SetStateAction,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -49,13 +52,11 @@ import {
   updateSplitRatio,
 } from "./dashboard";
 import {
-  abbreviateSourceName,
   compareFeedItems,
   feedItemIdsBeforeAnchor,
   formatCheckedAt,
   formatItemTime,
   formatNextRefresh,
-  sourceHue,
   withDaySeparators,
 } from "./feed-presentation";
 import { saveFeedPanelConfiguration } from "./feed-settings";
@@ -3266,6 +3267,7 @@ function FeedPanelView({
               }
               const { item } = row;
               const source = state.sources.find(({ id }) => id === item.sourceId);
+              const catalogEntry = state.sourceCatalog.find(({ id }) => id === source?.connectorId);
               const seen = item.seenAt !== null;
               const opened = item.openedAt !== null;
               const focused = ui.focusedItemId === item.id;
@@ -3316,18 +3318,17 @@ function FeedPanelView({
                   >
                     {formatItemTime(item)}
                   </time>
-                  <i
-                    className="article-identity"
-                    aria-hidden="true"
-                    style={{ "--source-hue": String(sourceHue(item.sourceId)) } as React.CSSProperties}
-                  />
+                  <span className="article-provider">
+                    <ProviderMark
+                      providerId={source?.connectorId ?? "custom"}
+                      iconPath={catalogEntry?.iconPath}
+                      size={20}
+                    />
+                  </span>
                   <span className="article-copy">
                     <span className="article-meta">
                       <span className="article-source">
                         <span className="article-source__full">{source?.name ?? "Source"}</span>
-                        <span className="article-source__abbr" aria-hidden="true">
-                          {abbreviateSourceName(source?.name ?? "Source")}
-                        </span>
                       </span>
                       {!seen && !opened && <em>Nouveau</em>}
                       {seen && !opened && (
@@ -3639,8 +3640,21 @@ function LinkPreviewView({
 
 function catalogCapabilityLabel(capability: SourceCatalogEntry["capabilities"][number]) {
   if (capability === "optimized-feed") return "Fil optimisé";
-  return "Lecture facilitée";
+  return "Lecture simplifiée prioritaire";
 }
+
+const CATALOG_LANGUAGES = [
+  { id: "france", label: "Français", context: "France" },
+  { id: "english-world", label: "Anglais", context: "International" },
+] as const;
+
+const CATALOG_CATEGORIES = [
+  { id: "general", label: "Actualité générale" },
+  { id: "local", label: "Actualité locale" },
+  { id: "business", label: "Économie" },
+  { id: "sports", label: "Sport" },
+  { id: "culture", label: "Culture & divertissement" },
+] as const;
 
 function sourceHealthLabel(source: Source) {
   if (source.status === "refreshing") return "Actualisation en cours";
@@ -3663,12 +3677,15 @@ function SourceCatalogPicker({
   onToggle: (catalogId: string) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [openCategories, setOpenCategories] = useState<Set<string>>(new Set());
   const normalizedQuery = query.trim().toLocaleLowerCase("fr");
-  const filtered = catalog.filter((entry) =>
-    `${entry.name} ${entry.description} ${entry.homepageUrl}`
-      .toLocaleLowerCase("fr")
-      .includes(normalizedQuery),
-  );
+  const filtered = catalog
+    .filter((entry) =>
+      `${entry.name} ${entry.description} ${entry.homepageUrl}`
+        .toLocaleLowerCase("fr")
+        .includes(normalizedQuery),
+    )
+    .sort((left, right) => left.rank - right.rank);
 
   return (
     <div className="catalog-picker">
@@ -3683,35 +3700,82 @@ function SourceCatalogPicker({
         />
       </label>
       <div className="provider-list" aria-label="Connecteurs optimisés">
-        {filtered.map((entry) => {
-          const attached = attachedConnectorIds.has(entry.id);
-          const selected = selectedIds.has(entry.id);
+        {CATALOG_LANGUAGES.map((language) => {
+          const languageEntries = filtered.filter((entry) => entry.group === language.id);
+          if (languageEntries.length === 0) return null;
           return (
-            <button
-              type="button"
-              key={entry.id}
-              className={`provider-row${selected ? " is-selected" : ""}${attached ? " is-added" : ""}`}
-              aria-pressed={selected || attached}
-              disabled={disabled || attached}
-              onClick={() => onToggle(entry.id)}
-            >
-              <ProviderMark providerId={entry.id} size={42} />
-              <span className="provider-row__copy">
-                <span className="provider-row__title">
-                  <strong>{entry.name}</strong>
-                  {attached && <em>Déjà dans le fil</em>}
+            <section className="provider-language-group" key={language.id} aria-label={language.label}>
+              <div className="provider-language-group__heading">
+                <span>
+                  <strong>{language.label}</strong>
+                  <small>{language.context}</small>
                 </span>
-                <small>{entry.description}</small>
-                <span className="provider-row__capabilities">
-                  {entry.capabilities.map((capability) => (
-                    <span key={capability}>{catalogCapabilityLabel(capability)}</span>
-                  ))}
-                </span>
-              </span>
-              <span className="provider-row__selection" aria-hidden="true">
-                {(selected || attached) ? <Check size={14} /> : <Plus size={14} />}
-              </span>
-            </button>
+                <em>{languageEntries.length} médias</em>
+              </div>
+              {CATALOG_CATEGORIES.map((category) => {
+                const entries = languageEntries.filter((entry) => entry.category === category.id);
+                if (entries.length === 0) return null;
+                const categoryKey = `${language.id}:${category.id}`;
+                const isOpen = Boolean(normalizedQuery) || openCategories.has(categoryKey);
+                return (
+                  <section className="provider-group" key={categoryKey} aria-label={`${language.label} · ${category.label}`}>
+                    <button
+                      type="button"
+                      className="provider-group__heading"
+                      aria-expanded={isOpen}
+                      tabIndex={normalizedQuery ? -1 : 0}
+                      disabled={disabled}
+                      onClick={() => setOpenCategories((current) => {
+                        const next = new Set(current);
+                        if (next.has(categoryKey)) next.delete(categoryKey);
+                        else next.add(categoryKey);
+                        return next;
+                      })}
+                    >
+                      <span>
+                        <ChevronDown size={13} aria-hidden="true" />
+                        <strong>{category.label}</strong>
+                      </span>
+                      <em>{entries.length}</em>
+                    </button>
+                    {isOpen && entries.map((entry) => {
+                      const attached = attachedConnectorIds.has(entry.id);
+                      const selected = selectedIds.has(entry.id);
+                      return (
+                  <button
+                    type="button"
+                    key={entry.id}
+                    className={`provider-row${selected ? " is-selected" : ""}${attached ? " is-added" : ""}`}
+                    aria-pressed={selected || attached}
+                    disabled={disabled || attached}
+                    onClick={() => {
+                      setOpenCategories((current) => new Set(current).add(categoryKey));
+                      onToggle(entry.id);
+                    }}
+                  >
+                    <ProviderMark providerId={entry.id} iconPath={entry.iconPath} size={42} />
+                    <span className="provider-row__copy">
+                      <span className="provider-row__title">
+                        <strong>{entry.name}</strong>
+                        {attached && <em>Déjà dans le fil</em>}
+                      </span>
+                      <small>{entry.description}</small>
+                      <span className="provider-row__capabilities">
+                        {entry.capabilities.map((capability) => (
+                          <span key={capability}>{catalogCapabilityLabel(capability)}</span>
+                        ))}
+                      </span>
+                    </span>
+                    <span className="provider-row__selection" aria-hidden="true">
+                      {(selected || attached) ? <Check size={14} /> : <Plus size={14} />}
+                    </span>
+                  </button>
+                      );
+                    })}
+                  </section>
+                );
+              })}
+            </section>
           );
         })}
         {filtered.length === 0 && (
@@ -3726,11 +3790,13 @@ function SourceCatalogPicker({
 
 function CurrentSourcePicker({
   sources,
+  catalog,
   keptSourceIds,
   disabled = false,
   onToggle,
 }: {
   sources: Source[];
+  catalog: SourceCatalogEntry[];
   keptSourceIds: Set<string>;
   disabled?: boolean;
   onToggle: (sourceId: string) => void;
@@ -3747,6 +3813,7 @@ function CurrentSourcePicker({
       <div className="current-source-list">
         {sources.map((source) => {
           const kept = keptSourceIds.has(source.id);
+          const catalogEntry = catalog.find((entry) => entry.id === source.connectorId);
           return (
             <button
               type="button"
@@ -3756,8 +3823,12 @@ function CurrentSourcePicker({
               disabled={disabled}
               onClick={() => onToggle(source.id)}
             >
-              <ProviderMark providerId={source.connectorId ?? "custom"} size={34} />
-              <span>
+              <ProviderMark
+                providerId={source.connectorId ?? "custom"}
+                iconPath={catalogEntry?.iconPath}
+                size={34}
+              />
+              <span className="current-source-copy">
                 <strong>{source.name}</strong>
                 <small>
                   {sourceHealthLabel(source)} · {connectorKindLabel(source.connectorKind)} · toutes les{" "}
@@ -3789,27 +3860,42 @@ function CustomSourceTester({
   inputId,
   sources,
   disabled = false,
+  onCatalogSourceResolved,
+  onResolutionPendingChange,
   onSourcesChange,
 }: {
   inputId: string;
   sources: PendingCustomSource[];
   disabled?: boolean;
-  onSourcesChange: (sources: PendingCustomSource[]) => void;
+  onCatalogSourceResolved: (catalogId: string) => void;
+  onResolutionPendingChange: (pending: boolean) => void;
+  onSourcesChange: Dispatch<SetStateAction<PendingCustomSource[]>>;
 }) {
   const [input, setInput] = useState("");
   const [connectorKind, setConnectorKind] = useState<ConnectorPreference>("auto");
   const [pending, setPending] = useState(false);
   const [probe, setProbe] = useState<SourceProbeResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [readyMessage, setReadyMessage] = useState<string | null>(null);
   const [latestProbe] = useState(createLatestAsyncOperation);
   const testedKeyRef = useRef<string | null>(null);
   const probeIdRef = useRef<string | null>(null);
+  const onCatalogSourceResolvedRef = useRef(onCatalogSourceResolved);
   const currentKey = `${connectorKind}\u0000${input.trim()}`;
+  const resolutionPending = Boolean(input.trim()) && testedKeyRef.current !== currentKey;
+
+  onCatalogSourceResolvedRef.current = onCatalogSourceResolved;
 
   useEffect(() => () => {
     const probeId = probeIdRef.current;
     if (probeId) void window.vibedeck.cancelSourceProbe(probeId).catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    onResolutionPendingChange(resolutionPending || pending);
+  }, [onResolutionPendingChange, pending, resolutionPending]);
+
+  useEffect(() => () => onResolutionPendingChange(false), [onResolutionPendingChange]);
 
   function invalidate(nextInput?: string, nextKind?: ConnectorPreference) {
     latestProbe.invalidate();
@@ -3820,6 +3906,7 @@ function CustomSourceTester({
     setPending(false);
     setProbe(null);
     setError(null);
+    setReadyMessage(null);
     if (nextInput !== undefined) setInput(nextInput);
     if (nextKind !== undefined) setConnectorKind(nextKind);
   }
@@ -3840,9 +3927,23 @@ function CustomSourceTester({
           onSuccess: (result) => {
             testedKeyRef.current = requestKey;
             setProbe(result);
+            if (result.connectorId) {
+              onCatalogSourceResolvedRef.current(result.connectorId);
+              setReadyMessage("Journal optimisé sélectionné");
+              return;
+            }
+            const candidate = {
+              url: result.normalizedInputUrl,
+              connectorKind,
+            } satisfies PendingCustomSource;
+            onSourcesChange((currentSources) => currentSources.some(
+              (source) =>
+                source.url === candidate.url && source.connectorKind === candidate.connectorKind,
+            ) ? currentSources : [...currentSources, candidate]);
+            setReadyMessage("Source prête à enregistrer");
           },
           onError: (caught) => {
-            testedKeyRef.current = null;
+            testedKeyRef.current = requestKey;
             setError(cleanError(caught));
           },
           onSettled: () => setPending(false),
@@ -3853,24 +3954,11 @@ function CustomSourceTester({
     }
   }
 
-  function addTestedSource() {
-    if (!probe || testedKeyRef.current !== currentKey) return;
-    const candidate = {
-      url: probe.normalizedInputUrl,
-      connectorKind,
-    } satisfies PendingCustomSource;
-    if (
-      sources.some(
-        (source) =>
-          source.url === candidate.url && source.connectorKind === candidate.connectorKind,
-      )
-    ) {
-      setError("Cette source est déjà prête à être ajoutée.");
-      return;
-    }
-    onSourcesChange([...sources, candidate]);
-    invalidate("");
-  }
+  useEffect(() => {
+    if (!input.trim() || disabled || pending || testedKeyRef.current === currentKey) return;
+    const timeout = window.setTimeout(() => void testSource(), 700);
+    return () => window.clearTimeout(timeout);
+  }, [currentKey, disabled, pending]);
 
   return (
     <div className="custom-source-tester">
@@ -3889,10 +3977,7 @@ function CustomSourceTester({
             void testSource();
           }}
         />
-        <button type="button" disabled={!input.trim() || disabled || pending} onClick={() => void testSource()}>
-          {pending && <LoaderCircle className="is-spinning" size={13} />}
-          Tester
-        </button>
+        {pending && <LoaderCircle className="is-spinning custom-source-input__loader" size={14} />}
       </div>
       <details className="connector-options">
         <summary>Options avancées · {connectorKindLabel(connectorKind)}</summary>
@@ -3934,9 +4019,7 @@ function CustomSourceTester({
                 {probe.connectorId ? " · connecteur optimisé reconnu" : ""}
               </small>
             </div>
-            <button type="button" className="primary-button" onClick={addTestedSource} disabled={disabled}>
-              Ajouter au fil
-            </button>
+            {readyMessage && <em className="source-probe__ready">{readyMessage}</em>}
           </div>
           {probe.warning && <p>{probe.warning}</p>}
           {probe.samples.length > 0 && (
@@ -3951,7 +4034,14 @@ function CustomSourceTester({
           )}
         </div>
       )}
-      {error && <p className="form-error" role="alert">{error}</p>}
+      {error && (
+        <div className="source-probe-error">
+          <p className="form-error" role="alert">{error}</p>
+          <button type="button" className="quiet-button" disabled={disabled || pending} onClick={() => void testSource()}>
+            Réessayer
+          </button>
+        </div>
+      )}
       {sources.length > 0 && (
         <div className="queued-source-list" aria-label="Sources personnalisées prêtes">
           {sources.map((source) => (
@@ -3966,8 +4056,8 @@ function CustomSourceTester({
                 aria-label={`Retirer ${source.url}`}
                 disabled={disabled}
                 onClick={() =>
-                  onSourcesChange(
-                    sources.filter(
+                  onSourcesChange((currentSources) =>
+                    currentSources.filter(
                       (candidate) =>
                         candidate.url !== source.url ||
                         candidate.connectorKind !== source.connectorKind,
@@ -3996,6 +4086,7 @@ function FeedSourceSelector({
   onKeptSourceIdsChange,
   onSelectedCatalogIdsChange,
   onCustomSourcesChange,
+  onResolutionPendingChange,
 }: {
   idPrefix: string;
   catalog: SourceCatalogEntry[];
@@ -4004,9 +4095,10 @@ function FeedSourceSelector({
   selectedCatalogIds: Set<string>;
   customSources: PendingCustomSource[];
   disabled?: boolean;
-  onKeptSourceIdsChange: (sourceIds: Set<string>) => void;
-  onSelectedCatalogIdsChange: (catalogIds: Set<string>) => void;
-  onCustomSourcesChange: (sources: PendingCustomSource[]) => void;
+  onKeptSourceIdsChange: Dispatch<SetStateAction<Set<string>>>;
+  onSelectedCatalogIdsChange: Dispatch<SetStateAction<Set<string>>>;
+  onCustomSourcesChange: Dispatch<SetStateAction<PendingCustomSource[]>>;
+  onResolutionPendingChange: (pending: boolean) => void;
 }) {
   const attachedConnectorIds = new Set(
     currentSources
@@ -4019,13 +4111,16 @@ function FeedSourceSelector({
     <div className="feed-source-selector">
       <CurrentSourcePicker
         sources={currentSources}
+        catalog={catalog}
         keptSourceIds={keptSourceIds}
         disabled={disabled}
         onToggle={(sourceId) => {
-          const next = new Set(keptSourceIds);
-          if (next.has(sourceId)) next.delete(sourceId);
-          else next.add(sourceId);
-          onKeptSourceIdsChange(next);
+          onKeptSourceIdsChange((currentIds) => {
+            const next = new Set(currentIds);
+            if (next.has(sourceId)) next.delete(sourceId);
+            else next.add(sourceId);
+            return next;
+          });
         }}
       />
       <section className="feed-source-section">
@@ -4044,10 +4139,12 @@ function FeedSourceSelector({
           attachedConnectorIds={attachedConnectorIds}
           disabled={disabled}
           onToggle={(catalogId) => {
-            const next = new Set(selectedCatalogIds);
-            if (next.has(catalogId)) next.delete(catalogId);
-            else next.add(catalogId);
-            onSelectedCatalogIdsChange(next);
+            onSelectedCatalogIdsChange((currentIds) => {
+              const next = new Set(currentIds);
+              if (next.has(catalogId)) next.delete(catalogId);
+              else next.add(catalogId);
+              return next;
+            });
           }}
         />
       </section>
@@ -4055,13 +4152,22 @@ function FeedSourceSelector({
         <div className="feed-source-section__heading">
           <div>
             <h3>Autre source</h3>
-            <p>Testez une URL avant de l’ajouter. Rien ne sera attaché au fil pendant le test.</p>
+            <p>Collez un site ou un flux : il sera vérifié et préparé automatiquement.</p>
           </div>
         </div>
         <CustomSourceTester
           inputId={`${idPrefix}-custom-source-url`}
           sources={customSources}
           disabled={disabled}
+          onResolutionPendingChange={onResolutionPendingChange}
+          onCatalogSourceResolved={(catalogId) => {
+            if (attachedConnectorIds.has(catalogId)) return;
+            onSelectedCatalogIdsChange((currentIds) => {
+              const next = new Set(currentIds);
+              next.add(catalogId);
+              return next;
+            });
+          }}
           onSourcesChange={onCustomSourcesChange}
         />
       </section>
@@ -4107,7 +4213,9 @@ function DraftPanelView({
   const [defaultRefreshInterval, setDefaultRefreshInterval] = useState(60);
   const [selectedCatalog, setSelectedCatalog] = useState<Set<string>>(new Set());
   const [customSources, setCustomSources] = useState<PendingCustomSource[]>([]);
+  const [sourceResolutionPending, setSourceResolutionPending] = useState(false);
   const busy = pending || previewPending || draft.pending;
+  const feedBusy = busy || sourceResolutionPending;
 
   useLayoutEffect(() => {
     if (draft.pending) return;
@@ -4155,7 +4263,7 @@ function DraftPanelView({
 
   async function createFeed(event: FormEvent) {
     event.preventDefault();
-    if (selectedCatalog.size + customSources.length === 0 || busy) {
+    if (selectedCatalog.size + customSources.length === 0 || feedBusy) {
       setError("Sélectionnez au moins une source.");
       return;
     }
@@ -4384,6 +4492,7 @@ function DraftPanelView({
               onKeptSourceIdsChange={() => undefined}
               onSelectedCatalogIdsChange={setSelectedCatalog}
               onCustomSourcesChange={setCustomSources}
+              onResolutionPendingChange={setSourceResolutionPending}
             />
             {error && <p className="form-error" role="alert">{error}</p>}
             <div className="feed-builder__footer">
@@ -4393,7 +4502,7 @@ function DraftPanelView({
               <button
                 type="submit"
                 className="primary-button"
-                disabled={selectedCatalog.size + customSources.length === 0 || busy}
+                disabled={selectedCatalog.size + customSources.length === 0 || feedBusy}
               >
                 {pending && <LoaderCircle className="is-spinning" size={13} />} Créer le fil
               </button>
@@ -4472,8 +4581,8 @@ function EmptyDashboard({
       <span className="step-kicker">Prêt à surveiller</span>
       <h1>Retrouvez vos sources au même endroit</h1>
       <p>
-        Commencez avec Le Monde, Le Figaro et Le Parisien. Le fil se met à jour sans
-        déplacer ce que vous êtes en train de lire.
+        Choisissez parmi 30 publications optimisées ou collez simplement l’adresse d’une source.
+        Le fil se met à jour sans déplacer ce que vous êtes en train de lire.
       </p>
       <div className="empty-dashboard__actions">
         <button type="button" className="primary-button" onClick={onStartTemplate}>
@@ -4959,12 +5068,13 @@ function FeedConfigModal({
     panel.defaultRefreshIntervalSeconds,
   );
   const [customSources, setCustomSources] = useState<PendingCustomSource[]>([]);
+  const [sourceResolutionPending, setSourceResolutionPending] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function save(event: FormEvent) {
     event.preventDefault();
-    if (!name.trim() || pending) return;
+    if (!name.trim() || pending || sourceResolutionPending) return;
     setPending(true);
     setError(null);
     try {
@@ -5033,6 +5143,7 @@ function FeedConfigModal({
             onKeptSourceIdsChange={setKeptSourceIds}
             onSelectedCatalogIdsChange={setSelectedCatalogIds}
             onCustomSourcesChange={setCustomSources}
+            onResolutionPendingChange={setSourceResolutionPending}
           />
           {error && <p className="form-error" role="alert">{error}</p>}
         </div>
@@ -5040,7 +5151,11 @@ function FeedConfigModal({
           <button type="button" className="quiet-button" onClick={onClose} disabled={pending}>
             Annuler
           </button>
-          <button type="submit" className="primary-button" disabled={!name.trim() || pending}>
+          <button
+            type="submit"
+            className="primary-button"
+            disabled={!name.trim() || pending || sourceResolutionPending}
+          >
             {pending && <LoaderCircle className="is-spinning" size={13} />} Enregistrer les sources
           </button>
         </footer>

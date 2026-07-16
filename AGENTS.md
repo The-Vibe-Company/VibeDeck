@@ -73,7 +73,16 @@ Les futurs types de panels doivent étendre le modèle existant sans spécialise
 - Refuser `DOCTYPE`, `ENTITY` et les instructions de traitement XML non essentielles avant parsing.
 - Un échec réseau conserve toujours le dernier cache exploitable et produit une erreur compréhensible.
 - Les tests unitaires utilisent des réponses déterministes ; `npm run test:live` est la seule preuve dépendante du réseau réel.
-- Ajouter un connecteur spécialisé dans `electron/feed-engine.mjs`, avec une solution générique RSS/Atom/Sitemap comme repli quand elle existe.
+- Les publications optimisées sont déclarées uniquement dans `electron/publication-registry.mjs` avec `definePublication()` ; `feed-engine.mjs`, le catalogue public, les racines proxy et les adaptateurs lecteur en sont dérivés.
+
+### Ajouter une publication optimisée
+
+1. Vérifier un flux officiel HTTPS RSS, Atom ou News Sitemap et un article public lisible sans contournement.
+2. Déposer une icône officielle PNG de `96 × 96 px`, limitée à 64 Kio, dans `public/provider-icons/<id>.png`.
+3. Ajouter une définition au registre avec identité, langue/groupe, catégorie éditoriale, rang, page d’accueil, domaines exacts, flux, intervalle et uniquement les exceptions du lecteur commun.
+4. Fournir ou adapter le fixture lecteur déterministe ; couvrir le bon domaine, le mauvais domaine, les publicités, le paywall et le blocage.
+5. Exécuter `npm run test:publications`, `npm test`, `npm run build`, puis `npm run test:live` si le réseau est disponible.
+6. Vérifier les droits du flux et de l’icône. Toute nouvelle racine proxy exacte exige une revue sécurité explicite ; ne jamais autoriser un domaine entier ou un motif large.
 
 ### Vues web
 
