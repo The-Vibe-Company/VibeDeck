@@ -144,6 +144,20 @@ export type FeedListRow =
   | { kind: "separator"; key: string; label: string }
   | { kind: "item"; item: FeedItem };
 
+export function feedDaySeparator(
+  item: FeedItem,
+  previousItem: FeedItem | null,
+  now = new Date(),
+) {
+  const date = firstDate(item.publishedAt, item.updatedAt);
+  if (!date) return null;
+  const previousDate = previousItem
+    ? firstDate(previousItem.publishedAt, previousItem.updatedAt)
+    : null;
+  if (previousDate && dayStart(previousDate) === dayStart(date)) return null;
+  return formatDayLabel(date, now);
+}
+
 /**
  * Intercale un séparateur de journée quand le jour change entre deux rangées
  * consécutives. Le tri remonte les arrivées en tête quelle que soit leur date :

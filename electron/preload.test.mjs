@@ -36,12 +36,21 @@ async function loadPreloadApi() {
 test("exposes the pilot persistence and local-file IPC commands", async () => {
   const { api, calls } = await loadPreloadApi();
 
+  const pageRequest = {
+    panelId: "panel-1",
+    sourceFilter: "all",
+    visibilityFilter: "all",
+    offset: 0,
+    limit: 200,
+  };
+  await api.getFeedPage(pageRequest);
   await api.markItemsSeen(["item-1", "item-2"]);
   await api.markItemOpened("item-2");
   await api.exportDashboard();
   await api.importDashboard();
   await api.exportDiagnostics();
   assert.deepEqual(calls, [
+    ["aggregator:get-feed-page", pageRequest],
     ["aggregator:mark-items-seen", ["item-1", "item-2"]],
     ["aggregator:mark-item-opened", "item-2"],
     ["aggregator:export-dashboard"],

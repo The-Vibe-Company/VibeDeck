@@ -192,7 +192,7 @@ test("migrates every legacy panel into a feed layout without losing sources or a
       database.getEndpointCache("https://cache.test/feed").finalUrl,
       "https://cache.test/feed",
     );
-    assert.equal(database.database.prepare("PRAGMA user_version").get().user_version, 7);
+    assert.equal(database.database.prepare("PRAGMA user_version").get().user_version, 8);
     assert.deepEqual(
       database.database.prepare("PRAGMA table_info(panels)").all().map(({ name }) => name),
       [
@@ -271,7 +271,7 @@ test("upgrades a version 4 database through daily pilot usage without changing i
 
   const migrated = createLocalFeedDatabase(databasePath);
   try {
-    assert.equal(migrated.database.prepare("PRAGMA user_version").get().user_version, 7);
+    assert.equal(migrated.database.prepare("PRAGMA user_version").get().user_version, 8);
     assert.equal(migrated.getState().panels[0].id, panel.id);
     assert.equal(
       migrated.database
@@ -313,7 +313,7 @@ test("migrates version 5 session totals to their local start day without losing 
     usageTimeZone: "Europe/Paris",
   });
   try {
-    assert.equal(migrated.database.prepare("PRAGMA user_version").get().user_version, 7);
+    assert.equal(migrated.database.prepare("PRAGMA user_version").get().user_version, 8);
     const diagnostics = migrated.getPilotDiagnostics("2026-07-12T08:00:00.000Z");
     assert.deepEqual(diagnostics.usage, {
       totalActiveDurationMs: 1_050_000,
@@ -423,7 +423,7 @@ test("migrates version 6 catch-up arrivals into shared minute batches without lo
   const migrated = createLocalFeedDatabase(databasePath);
   try {
     const state = migrated.getState("2026-07-15T09:10:00.000Z");
-    assert.equal(migrated.database.prepare("PRAGMA user_version").get().user_version, 7);
+    assert.equal(migrated.database.prepare("PRAGMA user_version").get().user_version, 8);
     assert.equal(state.panels.find(({ id }) => id === panelId).sourceIds.length, 2);
     assert.equal(state.items.length, 2);
     assert.deepEqual(state.items.map(({ sourceId }) => sourceId), [sourceB, sourceA]);
@@ -659,6 +659,141 @@ test("atomically restores an exact feed configuration and shared source interval
   }
 });
 
+test("pages a multisource feed without gaps and keeps SQLite order identical to the renderer", () => {
+  const database = createLocalFeedDatabase();
+  const baselineAt = "2026-07-10T08:00:00.000Z";
+  const arrivalAt = "2026-07-10T12:00:00.000Z";
+  try {
+    const panel = database.createPanel({ kind: "feed", name: "Grand fil" }, null, baselineAt);
+    const sourceIds = ["source-page-a", "source-page-b"].map((id) => database.putSource({
+      id,
+      name: id,
+      inputUrl: `https://${id}.test/feed.xml`,
+      feedUrl: `https://${id}.test/feed.xml`,
+      connectorId: null,
+      connectorKind: "rss",
+      refreshIntervalSeconds: 60,
+      status: "healthy",
+      lastCheckedAt: baselineAt,
+      lastSuccessAt: baselineAt,
+      errorMessage: null,
+    }, baselineAt));
+    for (const sourceId of sourceIds) {
+      database.attachSource(panel.id, sourceId);
+      database.upsertItems(sourceId, [{
+        id: `${sourceId}-baseline`,
+        canonicalUrl: `https://${sourceId}.test/baseline`,
+        title: "Historique",
+        summary: null,
+        imageUrl: null,
+        publishedAt: "2026-07-11T12:00:00.000Z",
+        updatedAt: null,
+      }], baselineAt);
+      database.upsertItems(sourceId, Array.from({ length: 230 }, (_, index) => {
+        const chronology = new Date(Date.parse(arrivalAt) - (index % 17) * 60_000).toISOString();
+        return {
+          id: `${sourceId}-arrival-${String(index).padStart(3, "0")}`,
+          canonicalUrl: `https://${sourceId}.test/article-${index}`,
+          title: `Article ${index}`,
+          summary: index % 2 === 0 ? `Résumé ${index}` : null,
+          imageUrl: null,
+          publishedAt: index % 11 === 0 ? null : chronology,
+          updatedAt: index % 11 === 0 ? chronology : null,
+        };
+      }), arrivalAt);
+    }
+
+    const expected = database.getState(arrivalAt).items.toSorted(compareFeedItems);
+    const request = {
+      panelId: panel.id,
+      sourceFilter: "all",
+      visibilityFilter: "all",
+      limit: 200,
+    };
+    const pages = [0, 200, 400].map((offset) => database.getFeedPage({
+      ...request,
+      offset,
+      anchorItemId: expected[217].id,
+    }));
+    assert.equal(pages[0].queryTotalCount, 462);
+    assert.equal(pages[0].panelTotalCount, 462);
+    assert.equal(pages[0].panelUnseenCount, 460);
+    assert.equal(pages[2].items.length, 62);
+    assert.equal(pages[0].anchorIndex, 217);
+    assert.equal(pages[2].previousItemDate, (
+      expected[399].publishedAt ?? expected[399].updatedAt ?? expected[399].firstSeenAt
+    ));
+    assert.deepEqual(
+      pages.flatMap(({ items }) => items.map(({ id }) => id)),
+      expected.map(({ id }) => id),
+    );
+    assert.equal(new Set(pages.flatMap(({ items }) => items.map(({ id }) => id))).size, 462);
+
+    const oneSource = database.getFeedPage({
+      ...request,
+      sourceFilter: sourceIds[0],
+      offset: 0,
+    });
+    assert.equal(oneSource.queryTotalCount, 231);
+    const unseen = database.getFeedPage({
+      ...request,
+      visibilityFilter: "unseen",
+      offset: 0,
+    });
+    assert.equal(unseen.queryTotalCount, 460);
+    const arrivalRevision = database.getState(arrivalAt).arrivalRevision;
+    assert.equal(arrivalRevision, 2);
+    assert.deepEqual(
+      database.getState(arrivalAt).sources.map(({ arrivalRevision: revision }) => revision),
+      [1, 1],
+    );
+
+    const editedItem = expected[100];
+    database.upsertItems(editedItem.sourceId, [{
+      id: editedItem.id,
+      canonicalUrl: editedItem.canonicalUrl,
+      title: "Titre éditorial corrigé",
+      summary: editedItem.summary,
+      imageUrl: editedItem.imageUrl,
+      publishedAt: "2026-07-10T12:30:00.000Z",
+      updatedAt: editedItem.updatedAt,
+    }], "2026-07-10T12:04:00.000Z");
+    const editedPage = database.getFeedPage({ ...request, offset: 0 });
+    assert.equal(editedPage.revision, pages[0].revision + 1);
+    assert.equal(editedPage.items[0].id, editedItem.id);
+    assert.equal(editedPage.items[0].title, "Titre éditorial corrigé");
+    assert.equal(database.getState(arrivalAt).arrivalRevision, arrivalRevision);
+    assert.deepEqual(
+      database.getState(arrivalAt).sources.map(({ arrivalRevision: revision }) => revision),
+      [1, 1],
+    );
+
+    const previousRevision = editedPage.revision;
+    database.markItemsSeen([expected[0].id], "2026-07-10T12:05:00.000Z");
+    const focusedSeen = database.getFeedPage({
+      ...request,
+      visibilityFilter: "unseen",
+      focusedItemId: expected[0].id,
+      offset: 0,
+    });
+    assert.equal(focusedSeen.revision, previousRevision + 1);
+    assert.equal(focusedSeen.panelUnseenCount, 459);
+    assert.equal(focusedSeen.queryTotalCount, 460);
+    assert.ok(focusedSeen.items.some(({ id }) => id === expected[0].id));
+    assert.equal(database.getState(arrivalAt).arrivalRevision, arrivalRevision);
+
+    assert.throws(() => database.getFeedPage({ ...request, offset: -1 }), /Décalage/);
+    assert.throws(() => database.getFeedPage({ ...request, offset: 0, limit: 201 }), /maximum 200/);
+    assert.throws(() => database.getFeedPage({
+      ...request,
+      sourceFilter: "source-absente",
+      offset: 0,
+    }), /n’appartient pas/);
+  } finally {
+    database.close();
+  }
+});
+
 test("fails closed before editing when a feed checkpoint would exceed its bound", () => {
   const database = createLocalFeedDatabase();
   const now = "2026-07-10T12:00:00.000Z";
@@ -814,14 +949,18 @@ test("establishes a seen baseline then persists distinct seen and opened article
     assert.equal(arrival.publishedAt, "2020-07-09T12:04:00.000Z");
 
     now = new Date("2026-07-09T12:06:00.000Z");
-    state = await engine.markItemsSeen([newItemId, newItemId, "article-inconnu"]);
+    const compactSeenState = await engine.markItemsSeen([newItemId, newItemId, "article-inconnu"]);
+    assert.deepEqual(compactSeenState.items, []);
+    state = engine.getState();
     const seen = state.items.find(({ id }) => id === newItemId);
     assert.equal(seen.seenAt, "2026-07-09T12:06:00.000Z");
     assert.equal(seen.openedAt, null);
     assert.equal(seen.isNew, false);
 
     now = new Date("2026-07-09T12:07:00.000Z");
-    state = await engine.markItemOpened(newItemId);
+    const compactOpenedState = await engine.markItemOpened(newItemId);
+    assert.deepEqual(compactOpenedState.items, []);
+    state = engine.getState();
     const opened = state.items.find(({ id }) => id === newItemId);
     assert.equal(opened.seenAt, "2026-07-09T12:06:00.000Z");
     assert.equal(opened.openedAt, "2026-07-09T12:07:00.000Z");

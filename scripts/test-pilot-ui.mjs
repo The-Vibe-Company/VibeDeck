@@ -2006,13 +2006,9 @@ try {
   await temporaryLeaf.waitFor({ state: "detached" });
   await sharedSiblingRow.waitFor({ state: "visible" });
 
-  const sharedItemId = await page.evaluate(async (title) => {
-    const state = await window.vibedeck.getState();
-    const item = state.items.find((candidate) => candidate.title === title);
-    if (!item) throw new Error("L’arrivée partagée est introuvable.");
-    await window.vibedeck.markItemOpened(item.id);
-    return item.id;
-  }, sharedArrivalTitle);
+  const sharedItemId = await sharedRows.first().getAttribute("data-feed-item-id");
+  if (!sharedItemId) throw new Error("L’arrivée partagée est introuvable.");
+  await page.evaluate((itemId) => window.vibedeck.markItemOpened(itemId), sharedItemId);
   assert.ok(sharedItemId, "L’arrivée partagée doit posséder un identifiant.");
   await sharedSiblingRow.waitFor({ state: "visible" });
   assert.match(
@@ -2180,6 +2176,119 @@ try {
   );
   await globalBar.hover();
 
+  // Charge renderer : quatre fils partagent la source principale et doivent
+  // rester bornés en DOM une fois la source passée au-dessus du seuil virtuel.
+  const loadPanelIds = await page.evaluate(async ({ firstPanelId, secondPanelId, feedUrl }) => {
+    const createAttachedPanel = async (targetPanelId, name) => {
+      const before = await window.vibedeck.getState();
+      const knownIds = new Set(before.panels.map(({ id }) => id));
+      const next = await window.vibedeck.createPanel(
+        { kind: "feed", name, defaultRefreshIntervalSeconds: 1_800 },
+        { targetPanelId, side: "bottom" },
+      );
+      const panel = next.panels.find(({ id }) => !knownIds.has(id));
+      if (!panel || panel.kind !== "feed") throw new Error(`Création impossible : ${name}`);
+      await window.vibedeck.addSource(panel.id, {
+        url: feedUrl,
+        connectorKind: "rss",
+        refreshIntervalSeconds: 1_800,
+      });
+      return panel.id;
+    };
+    const thirdPanelId = await createAttachedPanel(firstPanelId, "Charge virtuelle 3");
+    const fourthPanelId = await createAttachedPanel(secondPanelId, "Charge virtuelle 4");
+    return [firstPanelId, secondPanelId, thirdPanelId, fourthPanelId];
+  }, {
+    firstPanelId: panelId,
+    secondPanelId: narrowPanelId,
+    feedUrl: `${origin}/feed-redirect.xml`,
+  });
+  articles = Array.from({ length: 1_200 }, (_, index) => ({
+    id: `virtual-load-${String(index).padStart(4, "0")}`,
+    title: `Charge virtuelle ${String(index + 1).padStart(4, "0")} — titre variable multilingue`,
+    summary: index % 4 === 0
+      ? `Résumé de charge ${index} avec unmottrèslongsansespacepourtesterlescoupures.`
+      : `Résumé de charge contrôlé ${index}.`,
+    publishedAt: new Date(Date.now() - index * 1_000),
+  }));
+  await page.evaluate((id) => window.vibedeck.refreshSource(id), sourceId);
+  await page.waitForFunction((panelIds) => panelIds.every((targetPanelId) => {
+    const leaf = document.querySelector(`.split-layout__leaf[data-panel-id="${targetPanelId}"]`);
+    return leaf?.querySelector(".article-virtual-space") !== null;
+  }), loadPanelIds);
+  await page.waitForFunction((panelIds) => panelIds.every((targetPanelId) => {
+    const list = document.querySelector(
+      `.split-layout__leaf[data-panel-id="${targetPanelId}"] .article-list`,
+    );
+    if (!(list instanceof HTMLElement)) return false;
+    const indexes = [...document.querySelectorAll(
+      `.split-layout__leaf[data-panel-id="${targetPanelId}"] .article-row[data-feed-index]`,
+    )].map((row) => Number(row.getAttribute("data-feed-index")));
+    const reached = indexes.some((index) => index >= 1_100);
+    if (!reached) list.scrollTop = list.scrollHeight;
+    return reached;
+  }), loadPanelIds, { polling: "raf", timeout: 30_000 });
+  const virtualizationMetrics = await page.evaluate((panelIds) => {
+    const perPanel = panelIds.map((targetPanelId) => document.querySelectorAll(
+      `.split-layout__leaf[data-panel-id="${targetPanelId}"] .article-row`,
+    ).length);
+    return { perPanel, total: perPanel.reduce((sum, count) => sum + count, 0) };
+  }, loadPanelIds);
+  assert.ok(
+    virtualizationMetrics.perPanel.every((count) => count < 100),
+    `Chaque fil doit rester sous 100 lignes DOM : ${virtualizationMetrics.perPanel.join(", ")}`,
+  );
+  assert.ok(
+    virtualizationMetrics.total < 400,
+    `Les quatre fils doivent rester sous 400 lignes DOM : ${virtualizationMetrics.total}`,
+  );
+
+  const loadKeyboardMetrics = await page.evaluate((targetPanelId) => {
+    const rows = [...document.querySelectorAll(
+      `.split-layout__leaf[data-panel-id="${targetPanelId}"] .article-row[data-feed-index]`,
+    )];
+    const target = rows.at(-2);
+    if (!(target instanceof HTMLElement)) throw new Error("Ligne profonde introuvable.");
+    target.focus();
+    const durations = [];
+    for (let index = 0; index < 80; index += 1) {
+      const key = index % 2 === 0 ? "ArrowDown" : "ArrowUp";
+      const startedAt = performance.now();
+      document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", {
+        key,
+        bubbles: true,
+        repeat: index > 0,
+      }));
+      durations.push(performance.now() - startedAt);
+    }
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowDown" }));
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowUp" }));
+    durations.sort((first, second) => first - second);
+    return {
+      p95: durations[Math.floor(durations.length * 0.95)],
+      max: durations.at(-1),
+      activeId: document.activeElement?.id ?? null,
+    };
+  }, loadPanelIds[0]);
+  assert.ok(loadKeyboardMetrics.activeId, "Le saut profond doit conserver un vrai focus DOM.");
+  assert.ok(
+    loadKeyboardMetrics.p95 < 16,
+    `Le p95 clavier synchrone doit rester sous 16 ms (${loadKeyboardMetrics.p95.toFixed(2)} ms).`,
+  );
+  assert.ok(
+    loadKeyboardMetrics.max < 50,
+    `Aucune flèche ne doit créer une tâche synchrone de 50 ms (${loadKeyboardMetrics.max.toFixed(2)} ms).`,
+  );
+  await page.keyboard.press("Enter");
+  await page.locator(".link-reader").waitFor({ state: "visible" });
+  await page.keyboard.press("Escape");
+  await page.locator(".link-reader").waitFor({ state: "detached" });
+  assert.equal(
+    await page.evaluate(() => document.activeElement?.classList.contains("article-row") ?? false),
+    true,
+    "Entrée puis Échap près de la fin doit rendre le vrai focus au fil virtuel.",
+  );
+
   console.log(`✓ baseline: ${baselineArticleCount} articles interclassés, roving tabindex actif`);
   console.log("✓ échelle de texte: défaut global 14px, override par fil (clavier, en-tête, pastille), plafond annoncé, menu sans rôles zoom");
   console.log(`✓ viewport initial: scrollTop ${beforeArrival.scrollTop.toFixed(1)}px`);
@@ -2195,6 +2304,10 @@ try {
   console.log("✓ panne manuelle explicite: toast honnête, diagnostic daté et cache conservé");
   console.log("✓ glisser-déposer: texte externe ignoré, MIME interne conservé");
   console.log("✓ survol immobile: la ligne passe « vue » après le délai, un survol bref l’annule");
+  console.log(
+    `✓ virtualisation: ${virtualizationMetrics.perPanel.join("/")} lignes DOM par panel, ` +
+    `p95 clavier ${loadKeyboardMetrics.p95.toFixed(2)} ms près de la ligne 1 200`,
+  );
 } finally {
   if (electronApp) await electronApp.close().catch(() => undefined);
   await closeServer(server).catch(() => undefined);

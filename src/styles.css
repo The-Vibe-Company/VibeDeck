@@ -908,6 +908,24 @@ button:disabled {
   overflow-y: auto;
 }
 
+.article-virtual-space {
+  position: relative;
+  width: 100%;
+}
+
+.article-virtual-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+}
+
+.article-row-placeholder {
+  min-height: 34px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--panel);
+}
+
 .article-row {
   position: relative;
   display: grid;
@@ -1099,7 +1117,7 @@ button:disabled {
 
 .dashboard-panel[data-density="dense"] .article-copy > strong {
   display: block;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   line-height: 1.35;
   grid-area: 1 / 2;
 }
