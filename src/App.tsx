@@ -6,6 +6,7 @@ import {
   ChevronDown,
   Columns2,
   Download,
+  Ellipsis,
   ExternalLink,
   Globe2,
   Home,
@@ -32,12 +33,14 @@ import {
   type SetStateAction,
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
+import { createPortal } from "react-dom";
 import SplitLayout, {
   MIN_PANEL_HEIGHT,
   MIN_PANEL_WIDTH,
@@ -103,6 +106,8 @@ const FEED_TEXT_SCALE_MAX = 1.6;
 const FEED_TEXT_SCALE_STEP = 0.1;
 const FEED_DENSITY_STORAGE_KEY = "vibedeck.feedDensity";
 const FEED_DENSITY_OVERRIDES_STORAGE_KEY = "vibedeck.feedDensity.overrides";
+const PANEL_OVERFLOW_BREAKPOINT = 760;
+const PANEL_ACTION_MENU_EVENT = "vibedeck:panel-action-menu-change";
 
 type FeedDensity = "comfort" | "dense";
 const MIN_HORIZONTAL_SPLIT_WIDTH = MIN_PANEL_WIDTH * 2 + SPLIT_DIVIDER_SIZE;
@@ -430,6 +435,9 @@ export default function App() {
   const [linkPreview, setLinkPreview] = useState<LinkPreview | null>(null);
   const [modal, setModal] = useState<ModalState | null>(null);
   const [interactionActive, setInteractionActive] = useState(false);
+  const [openPanelActionMenuIds, setOpenPanelActionMenuIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [fatalError, setFatalError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [updateState, setUpdateState] = useState<UpdateState | null>(null);
@@ -458,7 +466,28 @@ export default function App() {
     Boolean(modal) ||
     semanticSearchOpen ||
     updateInstallConfirmationOpen ||
-    interactionActive;
+    interactionActive ||
+    openPanelActionMenuIds.size > 0;
+
+  useEffect(() => {
+    const handlePanelActionMenuChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ id?: string; open?: boolean }>).detail;
+      if (!detail?.id || typeof detail.open !== "boolean") return;
+      const menuId = detail.id;
+      const menuOpen = detail.open;
+      setOpenPanelActionMenuIds((current) => {
+        const next = new Set(current);
+        if (menuOpen) next.add(menuId);
+        else next.delete(menuId);
+        if (next.size === current.size && [...next].every((id) => current.has(id))) {
+          return current;
+        }
+        return next;
+      });
+    };
+    window.addEventListener(PANEL_ACTION_MENU_EVENT, handlePanelActionMenuChange);
+    return () => window.removeEventListener(PANEL_ACTION_MENU_EVENT, handlePanelActionMenuChange);
+  }, []);
 
   useEffect(() => {
     if (updateInstallConfirmationOpen && !readyUpdateVersion) {
@@ -2768,7 +2797,6 @@ interface PanelFrameProps {
   panelId: string;
   kind: "FIL" | "PAGE WEB" | "NOUVEAU";
   name: string;
-  count?: string;
   focused: boolean;
   maximized?: boolean;
   actionsDisabled?: boolean;
@@ -2780,17 +2808,299 @@ interface PanelFrameProps {
   onMaximize?: () => void;
   onClose: () => void;
   closeDisabled?: boolean;
+  headerContext?: React.ReactNode;
   primaryActions?: React.ReactNode;
+  secondaryActions?: PanelMenuAction[];
   style?: React.CSSProperties;
   dataDensity?: FeedDensity;
   children: React.ReactNode;
+}
+
+interface PanelMenuAction {
+  id: string;
+  label: string;
+  icon: React.ReactNode;
+  onSelect: (event?: MouseEvent<HTMLButtonElement>) => void;
+  disabled?: boolean;
+  ariaDisabled?: boolean;
+  active?: boolean;
+  danger?: boolean;
+  shortcut?: string;
+  group?: "panel" | "view";
+}
+
+function AdaptiveActionMenu({ actions }: { actions: PanelMenuAction[] }) {
+  const menuId = useId();
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const compactRef = useRef<boolean | null>(null);
+  const lastSecondaryFocusRef = useRef<HTMLElement | null>(null);
+  const openRef = useRef(open);
+  openRef.current = open;
+
+  useEffect(() => {
+    if (!open) return;
+    const notify = (nextOpen: boolean) => {
+      window.dispatchEvent(new CustomEvent(
+        PANEL_ACTION_MENU_EVENT,
+        { detail: { id: menuId, open: nextOpen } },
+      ));
+    };
+    notify(true);
+    return () => notify(false);
+  }, [menuId, open]);
+
+  const close = useCallback((restoreFocus = false) => {
+    setOpen(false);
+    setPosition(null);
+    if (restoreFocus) {
+      window.requestAnimationFrame(() => triggerRef.current?.focus({ preventScroll: true }));
+    }
+  }, []);
+
+  const closeToAdjacentControl = useCallback((backward: boolean) => {
+    const trigger = triggerRef.current;
+    const panel = trigger?.closest<HTMLElement>(".dashboard-panel");
+    const focusable = panel
+      ? [...panel.querySelectorAll<HTMLElement>(PANEL_FOCUSABLE_SELECTOR)].filter((candidate) => {
+          if (candidate.getClientRects().length === 0) return false;
+          const style = window.getComputedStyle(candidate);
+          return style.display !== "none" && style.visibility !== "hidden";
+        })
+      : [];
+    const triggerIndex = trigger ? focusable.indexOf(trigger) : -1;
+    const target = triggerIndex >= 0
+      ? focusable[triggerIndex + (backward ? -1 : 1)] ?? trigger
+      : trigger;
+    setOpen(false);
+    setPosition(null);
+    window.requestAnimationFrame(() => target?.focus({ preventScroll: true }));
+  }, []);
+
+  useLayoutEffect(() => {
+    const trigger = triggerRef.current;
+    const panel = trigger?.closest<HTMLElement>(".dashboard-panel");
+    if (!trigger || !panel) return;
+    const rememberFocus = (event: FocusEvent) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      lastSecondaryFocusRef.current = panel.contains(target) &&
+        target.closest(".panel-action--secondary")
+        ? target
+        : null;
+    };
+    const clearRememberedFocus = (event: PointerEvent) => {
+      const target = event.target;
+      if (
+        target instanceof Node &&
+        !lastSecondaryFocusRef.current?.contains(target)
+      ) {
+        lastSecondaryFocusRef.current = null;
+      }
+    };
+    document.addEventListener("focusin", rememberFocus, true);
+    document.addEventListener("pointerdown", clearRememberedFocus, true);
+    const observer = new ResizeObserver(([entry]) => {
+      const compact = (entry?.contentRect.width ?? panel.getBoundingClientRect().width) <=
+        PANEL_OVERFLOW_BREAKPOINT;
+      const wasCompact = compactRef.current;
+      compactRef.current = compact;
+      if (wasCompact === true && !compact && openRef.current) {
+        const directAction = [...panel.querySelectorAll<HTMLElement>(PANEL_FOCUSABLE_SELECTOR)]
+          .find((candidate) =>
+            Boolean(candidate.closest(".panel-action--secondary")) &&
+            candidate.getClientRects().length > 0 &&
+            window.getComputedStyle(candidate).visibility !== "hidden");
+        const fallback = panel.querySelector<HTMLElement>(".panel-title") ?? panel;
+        setOpen(false);
+        setPosition(null);
+        window.requestAnimationFrame(() => (directAction ?? fallback).focus({ preventScroll: true }));
+        return;
+      }
+      if (wasCompact !== false || !compact) return;
+      const active = document.activeElement;
+      const secondaryStillFocused =
+        active instanceof HTMLElement &&
+        panel.contains(active) &&
+        active.closest(".panel-action--secondary");
+      if (secondaryStillFocused || (
+        active === document.body && lastSecondaryFocusRef.current
+      )) {
+        window.requestAnimationFrame(() => trigger.focus({ preventScroll: true }));
+      }
+    });
+    observer.observe(panel);
+    return () => {
+      observer.disconnect();
+      document.removeEventListener("focusin", rememberFocus, true);
+      document.removeEventListener("pointerdown", clearRememberedFocus, true);
+    };
+  }, []);
+
+  const placeMenu = useCallback(() => {
+    const trigger = triggerRef.current;
+    const menu = menuRef.current;
+    if (!trigger || !menu || trigger.getClientRects().length === 0) {
+      setOpen(false);
+      return;
+    }
+    const triggerRect = trigger.getBoundingClientRect();
+    const menuRect = menu.getBoundingClientRect();
+    const edge = 6;
+    const gap = 4;
+    const left = Math.min(
+      window.innerWidth - menuRect.width - edge,
+      Math.max(edge, triggerRect.right - menuRect.width),
+    );
+    const below = triggerRect.bottom + gap;
+    const top = below + menuRect.height <= window.innerHeight - edge
+      ? below
+      : Math.max(edge, triggerRect.top - menuRect.height - gap);
+    setPosition({ left, top });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    placeMenu();
+    const reposition = () => placeMenu();
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    return () => {
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+    };
+  }, [open, placeMenu]);
+
+  useEffect(() => {
+    if (!open) return;
+    const dismiss = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (menuRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
+      close();
+    };
+    document.addEventListener("pointerdown", dismiss, true);
+    return () => document.removeEventListener("pointerdown", dismiss, true);
+  }, [close, open]);
+
+  useLayoutEffect(() => {
+    if (!open || !position) return;
+    menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus({
+      preventScroll: true,
+    });
+  }, [open, position]);
+
+  function moveMenuFocus(direction: 1 | -1 | "first" | "last") {
+    const items = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [])]
+      .filter((item) => !item.disabled);
+    if (items.length === 0) return;
+    if (direction === "first") return items[0]?.focus({ preventScroll: true });
+    if (direction === "last") return items.at(-1)?.focus({ preventScroll: true });
+    const current = document.activeElement instanceof HTMLButtonElement
+      ? items.indexOf(document.activeElement)
+      : -1;
+    const next = current < 0
+      ? direction === 1 ? 0 : items.length - 1
+      : (current + direction + items.length) % items.length;
+    items[next]?.focus({ preventScroll: true });
+  }
+
+  if (actions.length === 0) return null;
+
+  const menu = open
+    ? createPortal(
+        <div
+          ref={menuRef}
+          className="panel-action-menu"
+          role="menu"
+          aria-label="Actions secondaires du panel"
+          style={position ?? { left: 0, top: 0, visibility: "hidden" }}
+          onKeyDown={(event) => {
+            if (event.altKey && ["ArrowLeft", "ArrowRight"].includes(event.key)) {
+              close();
+              return;
+            }
+            if (event.key === "ArrowDown") {
+              event.preventDefault();
+              moveMenuFocus(1);
+            } else if (event.key === "ArrowUp") {
+              event.preventDefault();
+              moveMenuFocus(-1);
+            } else if (event.key === "Home") {
+              event.preventDefault();
+              moveMenuFocus("first");
+            } else if (event.key === "End") {
+              event.preventDefault();
+              moveMenuFocus("last");
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              close(true);
+            } else if (event.key === "Tab") {
+              event.preventDefault();
+              event.stopPropagation();
+              closeToAdjacentControl(event.shiftKey);
+            }
+          }}
+        >
+          {actions.map((action, index) => {
+            const separated = index > 0 && actions[index - 1]?.group !== action.group;
+            return (
+              <button
+                type="button"
+                key={action.id}
+                role="menuitem"
+                className={`${action.active ? " is-active" : ""}${
+                  action.danger ? " is-danger" : ""
+                }${separated ? " is-separated" : ""}`}
+                disabled={action.disabled}
+                aria-disabled={action.ariaDisabled || undefined}
+                onClick={(event) => {
+                  if (action.ariaDisabled) return;
+                  action.onSelect(event);
+                  close(true);
+                }}
+              >
+                <span aria-hidden="true">{action.icon}</span>
+                <strong>{action.label}</strong>
+                {action.shortcut && <kbd>{action.shortcut}</kbd>}
+              </button>
+            );
+          })}
+        </div>,
+        document.body,
+      )
+    : null;
+
+  return (
+    <>
+      <button
+        type="button"
+        ref={triggerRef}
+        className="icon-button panel-overflow-trigger"
+        aria-label="Plus d’actions"
+        title="Plus d’actions"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={(event) => {
+          event.stopPropagation();
+          setPosition(null);
+          setOpen((current) => !current);
+        }}
+      >
+        <Ellipsis size={13} />
+      </button>
+      {menu}
+    </>
+  );
 }
 
 function PanelFrame({
   panelId,
   kind,
   name,
-  count,
   focused,
   maximized,
   actionsDisabled = false,
@@ -2802,7 +3112,9 @@ function PanelFrame({
   onMaximize,
   onClose,
   closeDisabled = false,
+  headerContext,
   primaryActions,
+  secondaryActions = [],
   style,
   dataDensity,
   children,
@@ -2834,6 +3146,30 @@ function PanelFrame({
     if (!active || active === document.body || active === panelElement) return true;
     return active instanceof HTMLElement && active.matches(".dashboard-panel");
   }
+
+  const panelMenuActions: PanelMenuAction[] = [
+    ...secondaryActions,
+    ...(onSplit
+      ? [
+          {
+            id: "split-row",
+            label: "Diviser côte à côte",
+            icon: <Columns2 size={13} />,
+            onSelect: () => onSplit("row"),
+            disabled: actionsDisabled,
+            group: "panel" as const,
+          },
+          {
+            id: "split-column",
+            label: "Diviser horizontalement",
+            icon: <Rows2 size={13} />,
+            onSelect: () => onSplit("column"),
+            disabled: actionsDisabled,
+            group: "panel" as const,
+          },
+        ]
+      : []),
+  ];
 
   return (
     <section
@@ -2894,59 +3230,76 @@ function PanelFrame({
       aria-label={`${kind} — ${name}`}
     >
       <header className="panel-header" {...dragHandle}>
-        <span className="panel-kind">{kind}</span>
-        {renaming ? (
-          <input
-            className="panel-title-input"
-            aria-label={`Renommer le panel ${name}`}
-            value={nameValue}
-            autoFocus
-            onChange={(event) => setNameValue(event.target.value)}
-            onBlur={finishRename}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") finishRename();
-              if (event.key === "Escape") {
-                setNameValue(name);
-                setRenaming(false);
-              }
-            }}
-          />
-        ) : canRename ? (
-          <button
-            type="button"
-            className="panel-title"
-            data-panel-focus-key="panel-title"
-            title={
-              canRename
-                ? "F2 pour renommer · Alt + ←/→ pour déplacer · glisser à la souris"
-                : name
-            }
-            aria-keyshortcuts={onMove ? "Alt+ArrowLeft Alt+ArrowRight" : undefined}
-            onDoubleClick={(event) => {
-              event.stopPropagation();
-              if (canRename) setRenaming(true);
-            }}
-            onKeyDown={(event) => {
-              if (!canRename || !["Enter", " ", "F2"].includes(event.key)) return;
+        <div className="panel-identity">
+          <span className="panel-kind">{kind}</span>
+          {renaming ? (
+            <input
+              className="panel-title-input"
+              aria-label={`Renommer le panel ${name}`}
+              value={nameValue}
+              autoFocus
+              onChange={(event) => setNameValue(event.target.value)}
+              onBlur={finishRename}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") finishRename();
+                if (event.key === "Escape") {
+                  setNameValue(name);
+                  setRenaming(false);
+                }
+              }}
+            />
+          ) : canRename ? (
+            <button
+              type="button"
+              className="panel-title"
+              data-panel-focus-key="panel-title"
+              title="F2 pour renommer · Alt + ←/→ pour déplacer · glisser à la souris"
+              aria-keyshortcuts={onMove ? "Alt+ArrowLeft Alt+ArrowRight" : undefined}
+              onDoubleClick={(event) => {
+                event.stopPropagation();
+                if (canRename) setRenaming(true);
+              }}
+              onKeyDown={(event) => {
+                if (!canRename || !["Enter", " ", "F2"].includes(event.key)) return;
+                event.preventDefault();
+                event.stopPropagation();
+                setRenaming(true);
+              }}
+            >
+              {name}
+            </button>
+          ) : (
+            <span className="panel-title" title={name}>
+              {name}
+            </span>
+          )}
+        </div>
+        {headerContext && (
+          <div
+            className="panel-header__context"
+            onMouseDown={(event) => event.stopPropagation()}
+            onDragStart={(event) => {
               event.preventDefault();
               event.stopPropagation();
-              setRenaming(true);
             }}
           >
-            {name}
-          </button>
-        ) : (
-          <span className="panel-title" title={name}>
-            {name}
-          </span>
+            {headerContext}
+          </div>
         )}
-        {count && <span className="panel-count">{count}</span>}
-        <div className="panel-actions" onMouseDown={(event) => event.stopPropagation()}>
+        <div
+          className="panel-actions"
+          onMouseDown={(event) => event.stopPropagation()}
+          onDragStart={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+        >
           {primaryActions}
           {onSplit && (
             <>
               <IconButton
                 label="Diviser côte à côte"
+                className="panel-action--secondary"
                 disabled={actionsDisabled}
                 onClick={() => onSplit("row")}
               >
@@ -2954,6 +3307,7 @@ function PanelFrame({
               </IconButton>
               <IconButton
                 label="Diviser horizontalement"
+                className="panel-action--secondary"
                 disabled={actionsDisabled}
                 onClick={() => onSplit("column")}
               >
@@ -2961,6 +3315,7 @@ function PanelFrame({
               </IconButton>
             </>
           )}
+          <AdaptiveActionMenu actions={panelMenuActions} />
           {onMaximize && (
             <IconButton
               label={maximized ? "Restaurer" : "Agrandir"}
@@ -2988,6 +3343,8 @@ function PanelFrame({
 function IconButton({
   label,
   onClick,
+  className,
+  ariaDescribedBy,
   disabled,
   ariaDisabled,
   active,
@@ -2996,6 +3353,8 @@ function IconButton({
 }: {
   label: string;
   onClick: () => void;
+  className?: string;
+  ariaDescribedBy?: string;
   disabled?: boolean;
   ariaDisabled?: boolean;
   active?: boolean;
@@ -3005,10 +3364,11 @@ function IconButton({
   return (
     <button
       type="button"
-      className={`icon-button${active ? " icon-button--active" : ""}${
+      className={`icon-button${className ? ` ${className}` : ""}${active ? " icon-button--active" : ""}${
         danger ? " icon-button--danger" : ""
       }`}
       aria-label={label}
+      aria-describedby={ariaDescribedBy}
       title={label}
       disabled={disabled}
       aria-disabled={ariaDisabled || undefined}
@@ -3358,136 +3718,123 @@ function FeedPanelView({
     );
   };
 
-  return (
-    <PanelFrame
-      panelId={panel.id}
-      kind="FIL"
-      name={panel.name}
-      count={`${allCount}`}
-      {...frame}
-      style={
-        textScaleOverride !== null
-          ? ({ "--feed-text-scale": String(textScaleOverride) } as React.CSSProperties)
-          : undefined
-      }
-      dataDensity={density}
-      primaryActions={
-        <>
-          <IconButton
-            label="Réduire le texte de ce fil"
-            ariaDisabled={textScale <= FEED_TEXT_SCALE_MIN}
-            onClick={() => onTextScale(-1)}
-          >
-            <span className="text-scale-glyph" aria-hidden="true">A−</span>
-          </IconButton>
-          {textScaleOverride !== null && (
-            <IconButton
-              label={`Texte de ce fil : ${Math.round(textScaleOverride * 100)} % — revenir à la taille par défaut`}
-              onClick={() => onTextScale(0)}
-            >
-              <span className="text-scale-glyph text-scale-glyph--value" aria-hidden="true">
-                {Math.round(textScaleOverride * 100)}%
-              </span>
-            </IconButton>
-          )}
-          <IconButton
-            label="Agrandir le texte de ce fil"
-            ariaDisabled={textScale >= FEED_TEXT_SCALE_MAX}
-            onClick={() => onTextScale(1)}
-          >
-            <span className="text-scale-glyph" aria-hidden="true">A+</span>
-          </IconButton>
-          <IconButton label="Actualiser ce panel" disabled={refreshing} onClick={() => void onRefresh()}>
-            <RefreshCw className={refreshing ? "is-spinning" : ""} size={13} />
-          </IconButton>
-          <IconButton label="Rechercher dans ce fil" onClick={onSearch}>
-            <Search size={13} />
-          </IconButton>
-          <IconButton label="Configurer les sources" onClick={onConfigure}>
-            <SlidersHorizontal size={13} />
-          </IconButton>
-        </>
-      }
-    >
-      <div className="feed-toolbar" aria-label="Filtrer les sources">
-        <div className="feed-toolbar__filters">
+  const refreshState = refreshing
+    ? "refreshing"
+    : failedSources.length > 0
+      ? "error"
+      : sources.every(sourceIsFresh)
+        ? "healthy"
+        : "stale";
+  const refreshStatusId = `feed-refresh-status-${panel.id}`;
+  const secondaryActions: PanelMenuAction[] = [
+    {
+      id: "text-smaller",
+      label: "Réduire le texte",
+      icon: <span className="text-scale-glyph">A−</span>,
+      onSelect: () => onTextScale(-1),
+      ariaDisabled: textScale <= FEED_TEXT_SCALE_MIN,
+      group: "view",
+    },
+    ...(textScaleOverride !== null
+      ? [{
+          id: "text-reset",
+          label: `Revenir à la taille par défaut (${Math.round(textScaleOverride * 100)} %)`,
+          icon: <span className="text-scale-glyph text-scale-glyph--value">{Math.round(textScaleOverride * 100)}%</span>,
+          onSelect: () => onTextScale(0),
+          group: "view" as const,
+        }]
+      : []),
+    {
+      id: "text-larger",
+      label: "Agrandir le texte",
+      icon: <span className="text-scale-glyph">A+</span>,
+      onSelect: () => onTextScale(1),
+      ariaDisabled: textScale >= FEED_TEXT_SCALE_MAX,
+      group: "view",
+    },
+    {
+      id: "density-dense",
+      label: "Affichage dense",
+      icon: <Rows2 size={13} />,
+      onSelect: (event) => onDensity("dense", event?.altKey ?? false),
+      active: density === "dense",
+      shortcut: "Alt : défaut global",
+      group: "view",
+    },
+    {
+      id: "density-comfort",
+      label: "Affichage confort",
+      icon: <Columns2 size={13} />,
+      onSelect: (event) => onDensity("comfort", event?.altKey ?? false),
+      active: density === "comfort",
+      shortcut: "Alt : défaut global",
+      group: "view",
+    },
+    {
+      id: "configure-feed",
+      label: "Configurer les sources",
+      icon: <SlidersHorizontal size={13} />,
+      onSelect: onConfigure,
+      group: "view",
+    },
+  ];
+
+  const feedHeader = (
+    <div className="feed-toolbar" aria-label="Filtrer les sources">
+      <div className="feed-toolbar__filters">
+        <button
+          type="button"
+          data-panel-focus-key="feed-filter:all"
+          className={activeSourceFilter === "all" ? "is-active" : ""}
+          aria-pressed={activeSourceFilter === "all"}
+          onClick={() =>
+            onUi({ sourceFilter: "all", focusedItemId: null, pendingArrivalIds: new Set() })
+          }
+        >
+          Toutes <span>· {allCount}</span>
+        </button>
+        <button
+          type="button"
+          data-panel-focus-key="feed-filter:unseen"
+          className={`feed-toolbar__unseen${
+            ui.visibilityFilter === "unseen" ? " is-active" : ""
+          }`}
+          aria-pressed={ui.visibilityFilter === "unseen"}
+          onClick={() =>
+            onUi({
+              visibilityFilter: ui.visibilityFilter === "unseen" ? "all" : "unseen",
+              focusedItemId: null,
+              pendingArrivalIds: new Set(),
+            })
+          }
+        >
+          Non vus <span>· {unseenCount}</span>
+        </button>
+        {sources.map((source, sourceIndex) => (
           <button
             type="button"
-            data-panel-focus-key="feed-filter:all"
-            className={activeSourceFilter === "all" ? "is-active" : ""}
-            aria-pressed={activeSourceFilter === "all"}
-            onClick={() =>
-              onUi({ sourceFilter: "all", focusedItemId: null, pendingArrivalIds: new Set() })
-            }
-          >
-            Toutes <span>· {allCount}</span>
-          </button>
-          <button
-            type="button"
-            data-panel-focus-key="feed-filter:unseen"
-            className={`feed-toolbar__unseen${
-              ui.visibilityFilter === "unseen" ? " is-active" : ""
+            key={source.id}
+            data-panel-focus-key={`feed-filter:source:${source.id}`}
+            className={activeSourceFilter === source.id ? "is-active" : ""}
+            aria-pressed={activeSourceFilter === source.id}
+            aria-label={`${source.name} — source ${sourceIndex + 1} sur ${sources.length} — ${
+              source.status === "error"
+                ? "indisponible"
+                : source.status === "refreshing"
+                  ? "actualisation en cours"
+                  : sourceIsFresh(source)
+                    ? "à jour"
+                    : "en retard"
             }`}
-            aria-pressed={ui.visibilityFilter === "unseen"}
+            title={source.errorMessage ?? source.name}
             onClick={() =>
-              onUi({
-                visibilityFilter: ui.visibilityFilter === "unseen" ? "all" : "unseen",
-                focusedItemId: null,
-                pendingArrivalIds: new Set(),
-              })
+              onUi({ sourceFilter: source.id, focusedItemId: null, pendingArrivalIds: new Set() })
             }
           >
-            Non vus <span>· {unseenCount}</span>
+            <i className={`source-dot source-dot--${source.status}`} />
+            {source.name}
           </button>
-          {sources.map((source, sourceIndex) => (
-            <button
-              type="button"
-              key={source.id}
-              data-panel-focus-key={`feed-filter:source:${source.id}`}
-              className={activeSourceFilter === source.id ? "is-active" : ""}
-              aria-pressed={activeSourceFilter === source.id}
-              aria-label={`${source.name} — source ${sourceIndex + 1} sur ${sources.length} — ${
-                source.status === "error"
-                  ? "indisponible"
-                  : source.status === "refreshing"
-                    ? "actualisation en cours"
-                    : sourceIsFresh(source)
-                      ? "à jour"
-                      : "en retard"
-              }`}
-              title={source.errorMessage ?? source.name}
-              onClick={() =>
-                onUi({ sourceFilter: source.id, focusedItemId: null, pendingArrivalIds: new Set() })
-              }
-            >
-              <i className={`source-dot source-dot--${source.status}`} />
-              {source.name}
-            </button>
-          ))}
-        </div>
-        <div className="feed-toolbar__density" role="group" aria-label="Densité d’affichage">
-          <button
-            type="button"
-            data-panel-focus-key="feed-density:dense"
-            className={density === "dense" ? "is-active" : ""}
-            aria-pressed={density === "dense"}
-            title="Affichage dense — Alt+clic : défaut pour tous les fils"
-            onClick={(event) => onDensity("dense", event.altKey)}
-          >
-            Dense
-          </button>
-          <button
-            type="button"
-            data-panel-focus-key="feed-density:comfort"
-            className={density === "comfort" ? "is-active" : ""}
-            aria-pressed={density === "comfort"}
-            title="Affichage confort — Alt+clic : défaut pour tous les fils"
-            onClick={(event) => onDensity("comfort", event.altKey)}
-          >
-            Confort
-          </button>
-        </div>
-        {sources.length > 0 && <FeedRefreshStatus sources={sources} />}
+        ))}
         {ui.searchItemIds && searchQuery && (
           <button
             type="button"
@@ -3502,6 +3849,101 @@ function FeedPanelView({
           </button>
         )}
       </div>
+      <div
+        className="feed-toolbar__density panel-action--secondary"
+        role="group"
+        aria-label="Densité d’affichage"
+      >
+        <button
+          type="button"
+          data-panel-focus-key="feed-density:dense"
+          className={density === "dense" ? "is-active" : ""}
+          aria-pressed={density === "dense"}
+          title="Affichage dense — Alt+clic : défaut pour tous les fils"
+          onClick={(event) => onDensity("dense", event.altKey)}
+        >
+          Dense
+        </button>
+        <button
+          type="button"
+          data-panel-focus-key="feed-density:comfort"
+          className={density === "comfort" ? "is-active" : ""}
+          aria-pressed={density === "comfort"}
+          title="Affichage confort — Alt+clic : défaut pour tous les fils"
+          onClick={(event) => onDensity("comfort", event.altKey)}
+        >
+          Confort
+        </button>
+      </div>
+      {sources.length > 0 && <FeedRefreshStatus id={refreshStatusId} sources={sources} />}
+    </div>
+  );
+
+  return (
+    <PanelFrame
+      panelId={panel.id}
+      kind="FIL"
+      name={panel.name}
+      {...frame}
+      style={
+        textScaleOverride !== null
+          ? ({ "--feed-text-scale": String(textScaleOverride) } as React.CSSProperties)
+          : undefined
+      }
+      dataDensity={density}
+      headerContext={feedHeader}
+      secondaryActions={secondaryActions}
+      primaryActions={
+        <>
+          <IconButton
+            label="Réduire le texte de ce fil"
+            className="panel-action--secondary"
+            ariaDisabled={textScale <= FEED_TEXT_SCALE_MIN}
+            onClick={() => onTextScale(-1)}
+          >
+            <span className="text-scale-glyph" aria-hidden="true">A−</span>
+          </IconButton>
+          {textScaleOverride !== null && (
+            <IconButton
+              label={`Texte de ce fil : ${Math.round(textScaleOverride * 100)} % — revenir à la taille par défaut`}
+              className="panel-action--secondary"
+              onClick={() => onTextScale(0)}
+            >
+              <span className="text-scale-glyph text-scale-glyph--value" aria-hidden="true">
+                {Math.round(textScaleOverride * 100)}%
+              </span>
+            </IconButton>
+          )}
+          <IconButton
+            label="Agrandir le texte de ce fil"
+            className="panel-action--secondary"
+            ariaDisabled={textScale >= FEED_TEXT_SCALE_MAX}
+            onClick={() => onTextScale(1)}
+          >
+            <span className="text-scale-glyph" aria-hidden="true">A+</span>
+          </IconButton>
+          <IconButton
+            label="Actualiser ce panel"
+            className={`feed-refresh-action feed-refresh-action--${refreshState}`}
+            ariaDescribedBy={sources.length > 0 ? refreshStatusId : undefined}
+            disabled={refreshing}
+            onClick={() => void onRefresh()}
+          >
+            <RefreshCw className={refreshing ? "is-spinning" : ""} size={13} />
+          </IconButton>
+          <IconButton label="Rechercher dans ce fil" onClick={onSearch}>
+            <Search size={13} />
+          </IconButton>
+          <IconButton
+            label="Configurer les sources"
+            className="panel-action--secondary"
+            onClick={onConfigure}
+          >
+            <SlidersHorizontal size={13} />
+          </IconButton>
+        </>
+      }
+    >
       {failedSources.length > 0 && (
         <div className="panel-notice" role="status" aria-label="Sources indisponibles">
           <i />
@@ -3664,7 +4106,7 @@ function FeedPanelView({
   );
 }
 
-function FeedRefreshStatus({ sources }: { sources: Source[] }) {
+function FeedRefreshStatus({ id, sources }: { id: string; sources: Source[] }) {
   const [now, setNow] = useState(() => new Date());
 
   useEffect(() => {
@@ -3686,6 +4128,7 @@ function FeedRefreshStatus({ sources }: { sources: Source[] }) {
 
   return (
     <span
+      id={id}
       className={`feed-toolbar__freshness${
         freshSourceCount < sources.length ? " is-stale" : ""
       }`}
@@ -3732,83 +4175,125 @@ function WebPanelView({
     }
   }
 
-  return (
-    <PanelFrame panelId={panel.id} kind="PAGE WEB" name={panel.name} {...frame}>
-      <div className="web-toolbar">
-        <IconButton
-          label="Page précédente"
-          disabled={!runtime?.canGoBack}
-          onClick={() => void window.vibedeck.goBackWebPanel(panel.id)}
-        >
-          <ArrowLeft size={12} />
-        </IconButton>
-        <IconButton
-          label="Page suivante"
-          disabled={!runtime?.canGoForward}
-          onClick={() => void window.vibedeck.goForwardWebPanel(panel.id)}
-        >
-          <ArrowRight size={12} />
-        </IconButton>
-        <IconButton label="Accueil" onClick={() => void window.vibedeck.homeWebPanel(panel.id)}>
-          <Home size={12} />
-        </IconButton>
-        <IconButton
-          label={runtime?.loading ? "Arrêter" : "Recharger"}
-          onClick={() =>
-            void (runtime?.loading
-              ? window.vibedeck.stopWebPanel(panel.id)
-              : window.vibedeck.reloadWebPanel(panel.id))
-          }
-        >
-          {runtime?.loading ? <X size={12} /> : <RefreshCw size={12} />}
-        </IconButton>
-        {editingUrl ? (
-          <form className="web-address web-address--editing" onSubmit={submitUrl}>
-            <input
-              aria-label="URL d’accueil de la page web"
-              value={urlValue}
-              autoFocus
-              onChange={(event) => setUrlValue(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  setUrlValue(panel.url);
-                  setEditingUrl(false);
-                }
-              }}
-            />
-            <button type="submit" disabled={saving}>
-              OK
-            </button>
-          </form>
-        ) : (
-          <button
-            type="button"
-            className="web-address"
-            title="Modifier l’URL d’accueil"
-            onClick={() => {
-              setUrlValue(panel.url);
-              setEditingUrl(true);
+  const secondaryActions: PanelMenuAction[] = [
+    {
+      id: "web-home",
+      label: "Accueil",
+      icon: <Home size={13} />,
+      onSelect: () => void window.vibedeck.homeWebPanel(panel.id),
+      group: "view",
+    },
+    {
+      id: "web-sound",
+      label: runtime?.muted === false ? "Couper le son" : "Activer le son",
+      icon: runtime?.muted === false ? <Volume2 size={13} /> : <VolumeX size={13} />,
+      onSelect: () =>
+        void window.vibedeck.setWebPanelMuted(panel.id, runtime?.muted === false),
+      active: runtime?.muted === false,
+      group: "view",
+    },
+    {
+      id: "web-external",
+      label: "Ouvrir dans le navigateur",
+      icon: <ExternalLink size={13} />,
+      onSelect: () => void window.vibedeck.openExternalWebPanel(panel.id),
+      group: "view",
+    },
+  ];
+
+  const webHeader = (
+    <div className="web-toolbar">
+      <IconButton
+        label="Page précédente"
+        disabled={!runtime?.canGoBack}
+        onClick={() => void window.vibedeck.goBackWebPanel(panel.id)}
+      >
+        <ArrowLeft size={12} />
+      </IconButton>
+      <IconButton
+        label="Page suivante"
+        disabled={!runtime?.canGoForward}
+        onClick={() => void window.vibedeck.goForwardWebPanel(panel.id)}
+      >
+        <ArrowRight size={12} />
+      </IconButton>
+      <IconButton
+        label="Accueil"
+        className="panel-action--secondary"
+        onClick={() => void window.vibedeck.homeWebPanel(panel.id)}
+      >
+        <Home size={12} />
+      </IconButton>
+      <IconButton
+        label={runtime?.loading ? "Arrêter" : "Recharger"}
+        onClick={() =>
+          void (runtime?.loading
+            ? window.vibedeck.stopWebPanel(panel.id)
+            : window.vibedeck.reloadWebPanel(panel.id))
+        }
+      >
+        {runtime?.loading ? <X size={12} /> : <RefreshCw size={12} />}
+      </IconButton>
+      {editingUrl ? (
+        <form className="web-address web-address--editing" onSubmit={submitUrl}>
+          <input
+            aria-label="URL d’accueil de la page web"
+            value={urlValue}
+            autoFocus
+            onChange={(event) => setUrlValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                setUrlValue(panel.url);
+                setEditingUrl(false);
+              }
             }}
-          >
-            {currentUrl}
+          />
+          <button type="submit" disabled={saving}>
+            OK
           </button>
-        )}
-        <IconButton
-          label={runtime?.muted === false ? "Couper le son" : "Activer le son"}
-          active={runtime?.muted === false}
-          onClick={() =>
-            void window.vibedeck.setWebPanelMuted(panel.id, runtime?.muted === false)
-          }
+        </form>
+      ) : (
+        <button
+          type="button"
+          className="web-address"
+          title="Modifier l’URL d’accueil"
+          onClick={() => {
+            setUrlValue(panel.url);
+            setEditingUrl(true);
+          }}
         >
-          {runtime?.muted === false ? <Volume2 size={12} /> : <VolumeX size={12} />}
-        </IconButton>
-        <IconButton
-          label="Ouvrir dans le navigateur"
-          onClick={() => void window.vibedeck.openExternalWebPanel(panel.id)}
-        >
-          <ExternalLink size={12} />
-        </IconButton>
-      </div>
+          {currentUrl}
+        </button>
+      )}
+      <IconButton
+        label={runtime?.muted === false ? "Couper le son" : "Activer le son"}
+        className="panel-action--secondary"
+        active={runtime?.muted === false}
+        onClick={() =>
+          void window.vibedeck.setWebPanelMuted(panel.id, runtime?.muted === false)
+        }
+      >
+        {runtime?.muted === false ? <Volume2 size={12} /> : <VolumeX size={12} />}
+      </IconButton>
+      <IconButton
+        label="Ouvrir dans le navigateur"
+        className="panel-action--secondary"
+        onClick={() => void window.vibedeck.openExternalWebPanel(panel.id)}
+      >
+        <ExternalLink size={12} />
+      </IconButton>
+    </div>
+  );
+
+  return (
+    <PanelFrame
+      panelId={panel.id}
+      kind="PAGE WEB"
+      name={panel.name}
+      headerContext={webHeader}
+      secondaryActions={secondaryActions}
+      {...frame}
+    >
       <div className="web-surface-wrap">
         {failed && (
           <PanelEmpty
@@ -3859,33 +4344,45 @@ function LinkPreviewView({
     closeButtonRef.current?.focus({ preventScroll: true });
   }, [preview.itemId]);
 
+  const secondaryActions: PanelMenuAction[] = [
+    ...(readerMode === "simplified"
+      ? [{
+          id: "reader-original",
+          label: "Page originale",
+          icon: <Globe2 size={13} />,
+          onSelect: () => void window.vibedeck.showOriginalArticle(preview.itemId),
+          group: "view" as const,
+        }]
+      : []),
+    {
+      id: "reader-external",
+      label: "Ouvrir à l’extérieur",
+      icon: <ExternalLink size={13} />,
+      onSelect: () => void window.vibedeck.openExternalWebPanel(LINK_READER_ID),
+      disabled: !runtime,
+      group: "view",
+    },
+  ];
+
   return (
     <section className="dashboard-panel link-reader" aria-label={`Lecture — ${preview.title}`}>
       <header className="panel-header">
-        <span className="panel-kind">Lecture</span>
-        <strong className="link-reader__title" title={preview.title}>
-          {preview.title}
-        </strong>
-        <button
-          type="button"
-          ref={closeButtonRef}
-          className="icon-button icon-button--danger"
-          aria-label="Retour au fil"
-          title="Retour au fil"
-          onClick={onClose}
-        >
-          <X size={13} />
-        </button>
-      </header>
-      <div className="panel-content">
-        <div className="web-toolbar link-reader__toolbar">
-          <span className="web-address" aria-live="polite">
+        <div className="panel-identity">
+          <span className="panel-kind">Lecture</span>
+          <strong className="link-reader__title" title={preview.title}>
+            {preview.title}
+          </strong>
+        </div>
+        <div className="panel-header__context">
+          <span className="reader-status" aria-live="polite" title={readerStatus}>
             {readerStatus}
           </span>
+        </div>
+        <div className="panel-actions">
           {readerMode === "simplified" && (
             <button
               type="button"
-              className="quiet-button"
+              className="quiet-button link-reader__original panel-action--secondary"
               onClick={() => void window.vibedeck.showOriginalArticle(preview.itemId)}
             >
               Page originale
@@ -3893,13 +4390,26 @@ function LinkPreviewView({
           )}
           <button
             type="button"
-            className="quiet-button link-reader__external"
+            className="quiet-button link-reader__external panel-action--secondary"
             disabled={!runtime}
             onClick={() => void window.vibedeck.openExternalWebPanel(LINK_READER_ID)}
           >
             <ExternalLink size={12} /> Ouvrir à l’extérieur
           </button>
+          <AdaptiveActionMenu actions={secondaryActions} />
+          <button
+            type="button"
+            ref={closeButtonRef}
+            className="icon-button icon-button--danger"
+            aria-label="Retour au fil"
+            title="Retour au fil"
+            onClick={onClose}
+          >
+            <X size={13} />
+          </button>
         </div>
+      </header>
+      <div className="panel-content">
         <div className="web-surface-wrap">
           {failed && (
             <PanelEmpty

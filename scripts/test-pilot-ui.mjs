@@ -80,6 +80,17 @@ async function waitForLocalCondition(predicate, label, timeoutMs = 5_000) {
   }
 }
 
+async function clickPanelAction(page, panelLeaf, label) {
+  const direct = panelLeaf.getByLabel(label, { exact: true });
+  if (await direct.isVisible()) {
+    await direct.click();
+    return;
+  }
+  await panelLeaf.getByLabel("Plus d’actions", { exact: true }).click();
+  const menu = page.getByRole("menu", { name: "Actions secondaires du panel" });
+  await menu.getByRole("menuitem", { name: label, exact: true }).click();
+}
+
 async function nativeWebViewSnapshots(electronApp, expectedUrl) {
   return electronApp.evaluate(async ({ BrowserWindow }, url) => {
     const window = BrowserWindow.getAllWindows()[0];
@@ -960,7 +971,7 @@ try {
   const customFeedLeaf = page.locator(
     `.split-layout__leaf[data-panel-id="${customFeedPanelId}"]`,
   );
-  await customFeedLeaf.getByLabel("Configurer les sources").click();
+  await clickPanelAction(page, customFeedLeaf, "Configurer les sources");
   let customFeedDialog = page.getByRole("dialog", { name: "Configuration du fil" });
   await customFeedDialog.waitFor({ state: "visible" });
   const attachedSource = customFeedDialog.locator(".current-source-list > button");
@@ -994,7 +1005,7 @@ try {
     "L’édition par le sélecteur partagé doit retirer la source après enregistrement.",
   );
 
-  await customFeedLeaf.getByLabel("Configurer les sources").click();
+  await clickPanelAction(page, customFeedLeaf, "Configurer les sources");
   customFeedDialog = page.getByRole("dialog", { name: "Configuration du fil" });
   await customFeedDialog.waitFor({ state: "visible" });
   probeDelayMs = 5_000;
@@ -1036,6 +1047,13 @@ try {
   await page.keyboard.press("ControlOrMeta+N");
   const webDraftLeaf = page.locator('.split-layout__leaf[data-panel-id^="draft:"]');
   await webDraftLeaf.waitFor({ state: "visible" });
+  assertWithin(
+    await webDraftLeaf.locator(".panel-header").evaluate((header) =>
+      header.getBoundingClientRect().height),
+    28,
+    0.01,
+    "hauteur de l’en-tête du Nouveau panel",
+  );
   await webDraftLeaf.getByRole("button", { name: /Page web/ }).click();
   const webNameInput = webDraftLeaf.getByLabel("Nom du panel web");
   await waitForDomFocus(
@@ -1070,6 +1088,48 @@ try {
   assert.ok(previewWebPanelId, "La preview doit être confirmée depuis son URL main-owned.");
   const previewWebLeaf = page.locator(
     `.split-layout__leaf[data-panel-id="${previewWebPanelId}"]`,
+  );
+  const webHeaderMetrics = await previewWebLeaf.locator(".dashboard-panel").evaluate((panel) => {
+    const header = panel.querySelector(".panel-header");
+    const toolbar = panel.querySelector(".web-toolbar");
+    if (!(header instanceof HTMLElement) || !(toolbar instanceof HTMLElement)) {
+      throw new Error("En-tête web compact introuvable.");
+    }
+    return {
+      height: header.getBoundingClientRect().height,
+      toolbarInsideHeader: header.contains(toolbar),
+    };
+  });
+  assertWithin(webHeaderMetrics.height, 28, 0.01, "hauteur de l’en-tête web compact");
+  assert.equal(
+    webHeaderMetrics.toolbarInsideHeader,
+    true,
+    "Le panel web doit fusionner son identité et sa navigation dans la même barre.",
+  );
+  const webOverflowTrigger = previewWebLeaf.getByLabel("Plus d’actions", { exact: true });
+  await webOverflowTrigger.waitFor({ state: "visible" });
+  await webOverflowTrigger.click();
+  const webActionMenu = page.getByRole("menu", { name: "Actions secondaires du panel" });
+  await waitForNativeWebView(
+    electronApp,
+    previewUrl,
+    false,
+    "ouvrir le menu web compact doit masquer la vue native placée au-dessus du renderer",
+  );
+  for (const label of ["Accueil", "Activer le son", "Ouvrir dans le navigateur"]) {
+    assert.equal(
+      await webActionMenu.getByRole("menuitem", { name: label, exact: true }).isVisible(),
+      true,
+      `L’action web compacte « ${label} » doit rester disponible.`,
+    );
+  }
+  await page.keyboard.press("Escape");
+  await webActionMenu.waitFor({ state: "detached" });
+  await waitForNativeWebView(
+    electronApp,
+    previewUrl,
+    true,
+    "fermer le menu web compact doit restaurer la vue native",
   );
   await waitForNativeWebView(
     electronApp,
@@ -1344,11 +1404,19 @@ try {
   await readerSourceRow.focus();
   const readerDecisionStartedAt = performance.now();
   await page.keyboard.press("Enter");
-  await page.locator(".link-reader").waitFor({ state: "visible" });
+  const compactReader = page.locator(".link-reader");
+  await compactReader.waitFor({ state: "visible" });
   await page
-    .locator(".link-reader__toolbar .web-address")
+    .locator(".link-reader .reader-status")
     .filter({ hasText: "Page originale · lecture simplifiée indisponible" })
     .waitFor({ state: "visible" });
+  assertWithin(
+    await compactReader.locator(".panel-header").evaluate((header) =>
+      header.getBoundingClientRect().height),
+    28,
+    0.01,
+    "hauteur de l’en-tête du lecteur",
+  );
   assert.ok(
     performance.now() - readerDecisionStartedAt < 1_000,
     "La décision du lecteur doit rester sous une seconde.",
@@ -1414,9 +1482,6 @@ try {
     5,
     "Réutiliser un connecteur existant dans un autre panel ne doit pas le retélécharger.",
   );
-  const narrowWindow = await electronApp.browserWindow(page);
-  await narrowWindow.evaluate((window) => window.setSize(900, 820));
-  await narrowWindow.dispose();
   const panelLeaf = page.locator(`.split-layout__leaf[data-panel-id="${panelId}"]`);
   const narrowLeaf = page.locator(`.split-layout__leaf[data-panel-id="${narrowPanelId}"]`);
   await page.waitForFunction(
@@ -1426,6 +1491,69 @@ try {
       ).length === count,
     { targetPanelId: narrowPanelId, count: initialArticleCount + 4 },
   );
+  const narrowWindow = await electronApp.browserWindow(page);
+  await narrowWindow.evaluate((window) => window.setSize(1_600, 820));
+  await page.waitForFunction(
+    (targetPanelId) => {
+      const panel = document.querySelector(
+        `.split-layout__leaf[data-panel-id="${targetPanelId}"] .dashboard-panel`,
+      );
+      return panel instanceof HTMLElement && panel.getBoundingClientRect().width > 760;
+    },
+    panelId,
+  );
+  const secondaryAction = panelLeaf.getByLabel("Réduire le texte de ce fil", { exact: true });
+  await secondaryAction.focus();
+  await narrowWindow.evaluate((window) => window.setSize(1_000, 820));
+  await page.waitForFunction(
+    (targetPanelId) => {
+      const panel = document.querySelector(
+        `.split-layout__leaf[data-panel-id="${targetPanelId}"] .dashboard-panel`,
+      );
+      return panel instanceof HTMLElement && panel.getBoundingClientRect().width <= 760;
+    },
+    panelId,
+  );
+  await page.evaluate(() => new Promise(
+    (resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)),
+  ));
+  assert.equal(
+    await panelLeaf.getByLabel("Plus d’actions", { exact: true }).evaluate(
+      (trigger) => document.activeElement === trigger,
+    ),
+    true,
+    "Masquer un contrôle secondaire focalisé doit transférer le vrai focus vers Plus d’actions.",
+  );
+  await page.keyboard.press("Enter");
+  const thresholdMenu = page.getByRole("menu", { name: "Actions secondaires du panel" });
+  await thresholdMenu.waitFor({ state: "visible" });
+  await narrowWindow.evaluate((window) => window.setSize(1_600, 820));
+  await thresholdMenu.waitFor({ state: "detached" });
+  assert.equal(
+    await panelLeaf.locator(".dashboard-panel").evaluate((panel) => {
+      const active = document.activeElement;
+      return active instanceof HTMLElement &&
+        panel.contains(active) &&
+        Boolean(active.closest(".panel-action--secondary")) &&
+        active.getClientRects().length > 0;
+    }),
+    true,
+    "Repasser au mode large doit fermer le menu et focaliser une action directe visible.",
+  );
+  await narrowWindow.evaluate((window) => window.setSize(900, 820));
+  await page.waitForFunction(
+    (targetPanelId) => {
+      const panel = document.querySelector(
+        `.split-layout__leaf[data-panel-id="${targetPanelId}"] .dashboard-panel`,
+      );
+      const overflowTrigger = panel?.querySelector('[aria-label="Plus d’actions"]');
+      return panel instanceof HTMLElement &&
+        panel.getBoundingClientRect().width < 520 &&
+        document.activeElement === overflowTrigger;
+    },
+    panelId,
+  );
+  await narrowWindow.dispose();
   await page.waitForFunction(
     (targetPanelId) => {
       const panel = document.querySelector(
@@ -1435,16 +1563,53 @@ try {
     },
     panelId,
   );
-  await panelLeaf.locator(".feed-toolbar__freshness-compact").waitFor({ state: "visible" });
+  const compactHeaderMetrics = await panelLeaf.locator(".dashboard-panel").evaluate((panel) => {
+    const header = panel.querySelector(".panel-header");
+    const toolbar = panel.querySelector(".feed-toolbar");
+    if (!(header instanceof HTMLElement) || !(toolbar instanceof HTMLElement)) {
+      throw new Error("En-tête compact introuvable.");
+    }
+    return {
+      height: header.getBoundingClientRect().height,
+      toolbarInsideHeader: header.contains(toolbar),
+      toolbarHeight: toolbar.getBoundingClientRect().height,
+    };
+  });
+  assertWithin(compactHeaderMetrics.height, 28, 0.01, "hauteur de l’en-tête du Fil étroit");
+  assertWithin(compactHeaderMetrics.toolbarHeight, 27, 0.01, "hauteur intégrée des filtres");
+  assert.equal(
+    compactHeaderMetrics.toolbarInsideHeader,
+    true,
+    "Le Fil étroit doit intégrer ses filtres dans la barre de 28 px.",
+  );
+  await page.screenshot({ path: path.join(projectRoot, ".context", "compact-panel-headers.png") });
   assert.equal(
     await panelLeaf.locator(".feed-toolbar__freshness-full").isHidden(),
     true,
-    "Le libellé long doit céder la place au résumé compact dans un panel étroit.",
+    "Le libellé long doit disparaître dans un panel étroit.",
+  );
+  const compactFreshness = panelLeaf.locator(".feed-toolbar__freshness");
+  assert.equal(
+    await compactFreshness.evaluate((freshness) => getComputedStyle(freshness).position),
+    "absolute",
+    "Sous 520 px, la fraîcheur doit rester accessible tout en étant masquée visuellement.",
+  );
+  const compactRefreshButton = panelLeaf.getByLabel("Actualiser ce panel", { exact: true });
+  assert.equal(
+    await compactRefreshButton.getAttribute("aria-describedby"),
+    await compactFreshness.getAttribute("id"),
+    "L’indicateur compact doit décrire le bouton d’actualisation avec le statut complet.",
+  );
+  assert.match(
+    (await compactFreshness.getAttribute("aria-label")) ?? "",
+    /sources à jour/,
+    "Le statut compact doit conserver la fraîcheur détaillée pour les technologies d’assistance.",
   );
   assert.equal(
-    await panelLeaf.locator(".feed-toolbar__freshness").isVisible(),
-    true,
-    "La fraîcheur doit rester visible dans un dashboard splitté.",
+    await compactRefreshButton.evaluate((button) =>
+      getComputedStyle(button, "::after").display),
+    "block",
+    "L’état de fraîcheur doit rester visible sur le bouton d’actualisation.",
   );
   const compactRefreshCountdown = panelLeaf.locator(".feed-toolbar__freshness-compact");
   const refreshCountdownBefore = await compactRefreshCountdown.textContent();
@@ -1471,6 +1636,27 @@ try {
   assert.ok(
     splitWidths.every((width) => width + SUBPIXEL_EPSILON >= MIN_PANEL_WIDTH),
     `Chaque panel doit conserver au moins 256 px utiles après redimensionnement : ${splitWidths.join(", ")}`,
+  );
+  const compactHeaderBounds = await page.locator(".split-layout__leaf").evaluateAll((leaves) =>
+    leaves.map((leaf) => {
+      const header = leaf.querySelector(".panel-header");
+      const close = leaf.querySelector('[aria-label="Fermer le panel"]');
+      const overflow = leaf.querySelector('[aria-label="Plus d’actions"]');
+      if (!(header instanceof HTMLElement) || !(close instanceof HTMLElement)) return null;
+      const headerRect = header.getBoundingClientRect();
+      const closeRect = close.getBoundingClientRect();
+      return {
+        width: headerRect.width,
+        overflow: header.scrollWidth - header.clientWidth,
+        closeInside: closeRect.right <= headerRect.right + 0.5,
+        adaptiveMenuVisible: overflow instanceof HTMLElement && overflow.getClientRects().length > 0,
+      };
+    }),
+  );
+  assert.ok(
+    compactHeaderBounds.every((bounds) =>
+      bounds && bounds.overflow <= 1 && bounds.closeInside && bounds.adaptiveMenuVisible),
+    `Les commandes fixes doivent rester dans chaque en-tête minimal : ${JSON.stringify(compactHeaderBounds)}`,
   );
   const compactReadState = narrowLeaf.locator(".article-meta em").first();
   await compactReadState.waitFor({ state: "visible" });
@@ -1804,8 +1990,59 @@ try {
   );
 
   const primaryTitle = panelLeaf.locator(".panel-title");
-  const primarySplitAction = panelLeaf.getByLabel("Diviser côte à côte");
-  await primarySplitAction.focus();
+  const overflowTrigger = panelLeaf.getByLabel("Plus d’actions", { exact: true });
+  await overflowTrigger.focus();
+  await page.keyboard.press("Enter");
+  const adaptiveMenu = page.getByRole("menu", { name: "Actions secondaires du panel" });
+  await adaptiveMenu.waitFor({ state: "visible" });
+  await page.screenshot({ path: path.join(projectRoot, ".context", "compact-panel-menu.png") });
+  const firstMenuItem = adaptiveMenu.getByRole("menuitem").first();
+  assert.equal(
+    await firstMenuItem.evaluate((item) => document.activeElement === item),
+    true,
+    "Le menu adaptatif doit focaliser sa première action à l’ouverture.",
+  );
+  await page.keyboard.press("End");
+  assert.equal(
+    await adaptiveMenu.getByRole("menuitem").last().evaluate((item) => document.activeElement === item),
+    true,
+    "Fin doit atteindre la dernière action du menu.",
+  );
+  await page.keyboard.press("Escape");
+  await adaptiveMenu.waitFor({ state: "detached" });
+  assert.equal(
+    await overflowTrigger.evaluate((trigger) => document.activeElement === trigger),
+    true,
+    "Échap doit fermer le menu et restituer le focus à son déclencheur.",
+  );
+  await overflowTrigger.click();
+  await adaptiveMenu.waitFor({ state: "visible" });
+  await page.keyboard.press("Tab");
+  await adaptiveMenu.waitFor({ state: "detached" });
+  assert.equal(
+    await panelLeaf.getByLabel("Agrandir", { exact: true }).evaluate(
+      (button) => document.activeElement === button,
+    ),
+    true,
+    "Tab doit fermer le menu portalisé et poursuivre sur le contrôle visible suivant.",
+  );
+  await overflowTrigger.click();
+  await adaptiveMenu.waitFor({ state: "visible" });
+  await page.keyboard.press("Shift+Tab");
+  await adaptiveMenu.waitFor({ state: "detached" });
+  assert.equal(
+    await panelLeaf.getByLabel("Rechercher dans ce fil", { exact: true }).evaluate(
+      (button) => document.activeElement === button,
+    ),
+    true,
+    "Maj + Tab doit fermer le menu portalisé et revenir au contrôle visible précédent.",
+  );
+  await overflowTrigger.click();
+  await adaptiveMenu.waitFor({ state: "visible" });
+  await page.locator(".global-bar").click({ position: { x: 2, y: 2 } });
+  await adaptiveMenu.waitFor({ state: "detached" });
+  await overflowTrigger.click();
+  await adaptiveMenu.getByRole("menuitem", { name: "Diviser côte à côte", exact: true }).focus();
   await page.keyboard.press("Alt+ArrowRight");
   await page.waitForFunction(
     (targetPanelId) =>
@@ -1815,7 +2052,7 @@ try {
   assert.equal(
     await primaryTitle.evaluate((title) => document.activeElement === title),
     true,
-    "Une action masquée dans le panel étroit doit rendre le focus au titre durable.",
+    "Déplacer depuis le menu adaptatif doit fermer le menu et rendre le focus au titre durable.",
   );
   await page.keyboard.press("Alt+ArrowLeft");
   await page.waitForFunction(
@@ -1965,7 +2202,7 @@ try {
     assert.ok(after.scrollTop > before.scrollTop, `Le panel ${before.panelId} doit compenser ses arrivées simultanées.`);
   }
 
-  await narrowLeaf.getByLabel("Configurer les sources").click();
+  await clickPanelAction(page, narrowLeaf, "Configurer les sources");
   const feedConfigDialog = page.getByRole("dialog", { name: "Configuration du fil" });
   const configFeedName = feedConfigDialog.getByLabel("Nom du fil");
   assert.equal(
@@ -2296,7 +2533,7 @@ try {
   console.log("✓ arrivée en tête: scrollTop reste à zéro");
   console.log("✓ mode dense par défaut: titre jamais tronqué, source réduite à son icône, bascule Confort persistée");
   console.log("✓ pastille « nouveaux »: compte hors viewport, clic ramène en haut, jamais de barrière d'insertion");
-  console.log("✓ date ancienne explicite et fraîcheur compacte dans un fil étroit");
+  console.log("✓ en-têtes 28 px, menu adaptatif et fraîcheur signalée dans un fil étroit");
   console.log("✓ lecteur natif: Échap rend le focus au fil et les flèches reprennent immédiatement");
   console.log("✓ contrôles protégés, double-flèche entre panels et Alt+flèche pour les réordonner");
   console.log("✓ arrivées partagées: insertion automatique et viewport restent indépendants par panel");
