@@ -1,0 +1,33 @@
+src/main.tsx
+  s_544a04e8746496::t_c235df3e1d06bf 4
+build/icon.svg
+  s_544a04e8746496::t_f8688e463ff26e 2-7
+src/App.tsx
+  s_544a04e8746496::t_ae7ccd3d204b20 1810
+  s_544a04e8746496::t_8733c7c290d823 1797
+  s_544a04e8746496::t_98332dc2a8ebaa 2650,2652-2659,2661
+src/styles.css
+  s_544a04e8746496::t_57762d55cf430e 181-183,186-187,190-191,194-199,202-204,207-209,212-214,217-219,222,224-226
+  s_544a04e8746496::t_4054f4802fe101 223
+  s_544a04e8746496::t_97865ff44d8221 2983
+package.json
+  s_544a04e8746496::t_384e5d08fc8da2 49
+package-lock.json
+  s_544a04e8746496::t_286dfd7c73b894 21,444-453
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "75792cc7949cafdc45a5c63a5e48570133b92fe9",
+  "prompts": {},
+  "sessions": {
+    "s_544a04e8746496": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a365c64c-8710-4578-81a0-cf870cf0b40b",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
