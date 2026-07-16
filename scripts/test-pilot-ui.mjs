@@ -114,6 +114,20 @@ async function nativeWebViewSnapshots(electronApp, expectedUrl) {
   }, expectedUrl);
 }
 
+async function nativeWebViewGeometry(electronApp, expectedUrl) {
+  return electronApp.evaluate(({ BrowserWindow }, url) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    if (!window) throw new Error("La fenêtre pilote est introuvable.");
+    const views = window.contentView.children.filter(
+      (view) => "webContents" in view && view.webContents.getURL() === url,
+    );
+    if (views.length !== 1) {
+      throw new Error(`Une vue web était attendue, ${views.length} trouvée(s).`);
+    }
+    return { bounds: views[0].getBounds(), visible: views[0].getVisible() };
+  }, expectedUrl);
+}
+
 async function setNativeWebViewStateProbe(electronApp, expectedUrl, stateProbe) {
   await electronApp.evaluate(async ({ BrowserWindow }, { url, probe }) => {
     const window = BrowserWindow.getAllWindows()[0];
@@ -1755,6 +1769,16 @@ try {
     name: "Réinitialiser la taille du texte des fils",
   });
   await globalTextScaleReset.focus();
+  await publishUpdateState("ready", { availableVersion: "0.4.2" });
+  await page.getByRole("button", { name: "Mise à jour 0.4.2 prête", exact: true }).waitFor();
+  await waitForDomFocus(
+    page,
+    page.locator(".global-tools"),
+    "L’apparition d’un contexte compact doit transférer le focus sans redimensionnement",
+  );
+  await publishUpdateState("up-to-date");
+  await page.locator(".update-ready-cta").waitFor({ state: "detached" });
+  await globalTextScaleReset.focus();
   const compactWindow = await electronApp.browserWindow(page);
   await compactWindow.evaluate(
     (window, size) => window.setSize(size.width, size.height),
@@ -1851,22 +1875,28 @@ try {
     document.querySelector(".split-layout__split--row") !== null,
   );
 
-  const thirdPanelId = await page.evaluate(async (targetPanelId) => {
+  const thirdPanelId = await page.evaluate(async ({ targetPanelId, url }) => {
     const before = await window.vibedeck.getState();
     const existingIds = new Set(before.panels.map(({ id }) => id));
     const next = await window.vibedeck.createPanel(
       {
-        kind: "feed",
-        name: "Troisième panel compact",
-        defaultRefreshIntervalSeconds: 1_800,
+        kind: "web",
+        name: "Page web compacte",
+        url,
       },
-      { targetPanelId, side: "right" },
+      { targetPanelId, side: "left" },
     );
     return next.panels.find(({ id }) => !existingIds.has(id))?.id ?? null;
-  }, narrowPanelId);
+  }, { targetPanelId: panelId, url: previewUrl });
   assert.ok(thirdPanelId, "Le troisième panel compact doit être créé.");
   await page.waitForFunction(
     () => document.querySelectorAll(".split-layout__leaf").length === 3,
+  );
+  await waitForNativeWebView(
+    electronApp,
+    previewUrl,
+    true,
+    "la vue web compacte doit être visible avant le défilement du canvas",
   );
   const compactThreeRowMetrics = await page.locator(".dashboard-workspace").evaluate(
     async (workspace) => {
@@ -1910,6 +1940,31 @@ try {
   await page.waitForFunction(() =>
     document.querySelectorAll(".split-layout__split--column").length === 2,
   );
+  const compactWorkspaceBounds = await page.locator(".dashboard-workspace").evaluate(
+    async (workspace, scrollOffset) => {
+      workspace.scrollTop = scrollOffset;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const bounds = workspace.getBoundingClientRect();
+      return { top: bounds.top, bottom: bounds.bottom };
+    },
+    MIN_PANEL_HEIGHT / 2,
+  );
+  await waitForNativeWebView(
+    electronApp,
+    previewUrl,
+    true,
+    "une vue web partiellement visible doit rester bornée au canvas",
+  );
+  const clippedNativeGeometry = await nativeWebViewGeometry(electronApp, previewUrl);
+  assert.ok(
+    clippedNativeGeometry.bounds.y + SUBPIXEL_EPSILON >= compactWorkspaceBounds.top &&
+    clippedNativeGeometry.bounds.y + clippedNativeGeometry.bounds.height <=
+      compactWorkspaceBounds.bottom + SUBPIXEL_EPSILON,
+    `La vue web native scrollée ne doit jamais recouvrir la barre globale : ${JSON.stringify({
+      native: clippedNativeGeometry.bounds,
+      workspace: compactWorkspaceBounds,
+    })}`,
+  );
   const compactThreeColumnMetrics = await page.locator(".dashboard-workspace").evaluate(
     async (workspace) => {
       workspace.scrollTop = workspace.scrollHeight;
@@ -1934,11 +1989,27 @@ try {
     ) && compactThreeColumnMetrics.scrollable && compactThreeColumnMetrics.lastReachable,
     `Trois panels verticaux doivent rester dimensionnés et atteignables : ${JSON.stringify(compactThreeColumnMetrics)}`,
   );
+  await waitForNativeWebView(
+    electronApp,
+    previewUrl,
+    true,
+    "la portion encore visible de la vue web doit rester synchronisée",
+  );
+  const maximallyScrolledNativeGeometry = await nativeWebViewGeometry(electronApp, previewUrl);
+  assert.ok(
+    maximallyScrolledNativeGeometry.bounds.y + SUBPIXEL_EPSILON >= compactWorkspaceBounds.top &&
+    maximallyScrolledNativeGeometry.bounds.y + maximallyScrolledNativeGeometry.bounds.height <=
+      compactWorkspaceBounds.bottom + SUBPIXEL_EPSILON,
+    `La vue web native doit rester bornée au défilement maximal : ${JSON.stringify({
+      native: maximallyScrolledNativeGeometry.bounds,
+      workspace: compactWorkspaceBounds,
+    })}`,
+  );
 
   await page.evaluate(async () => {
     const state = await window.vibedeck.getState();
     const layout = state.dashboard.layout;
-    if (layout?.type !== "split" || layout.children[1].type !== "split") {
+    if (layout?.type !== "split" || !layout.children.some((child) => child.type === "split")) {
       throw new Error("Le layout compact imbriqué attendu est introuvable.");
     }
     await window.vibedeck.saveDashboardLayout(
@@ -1946,10 +2017,9 @@ try {
         ...layout,
         direction: "row",
         ratio: 0.5,
-        children: [
-          layout.children[0],
-          { ...layout.children[1], direction: "column", ratio: 0.5 },
-        ],
+        children: layout.children.map((child) => child.type === "split"
+          ? { ...child, direction: "column", ratio: 0.5 }
+          : child),
       },
       state.dashboard.revision,
     );

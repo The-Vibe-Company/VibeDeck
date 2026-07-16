@@ -468,6 +468,7 @@ export default function App() {
   const pilotToolsUpdateActionRef = useRef<HTMLButtonElement>(null);
   const globalToolsButtonRef = useRef<HTMLButtonElement>(null);
   const globalTextScaleGroupRef = useRef<HTMLDivElement>(null);
+  const globalTextScaleHadFocusRef = useRef(false);
   const linkPreviewRef = useRef<LinkPreview | null>(null);
   const feedUiRef = useRef<Record<string, FeedPanelUi>>({});
   const draftsRef = useRef<Record<string, DraftPanel>>({});
@@ -503,22 +504,38 @@ export default function App() {
     }
   }, [restoreGlobalToolsFocus, updateInstallConfirmationOpen]);
 
-  useEffect(() => {
-    const preserveGlobalFocus = () => {
-      const group = globalTextScaleGroupRef.current;
-      const active = document.activeElement;
-      if (
-        window.innerWidth <= 640 &&
-        group &&
-        active instanceof HTMLElement &&
-        group.contains(active)
-      ) {
-        globalToolsButtonRef.current?.focus({ preventScroll: true });
-      }
-    };
-    window.addEventListener("resize", preserveGlobalFocus);
-    return () => window.removeEventListener("resize", preserveGlobalFocus);
+  const preserveGlobalTextScaleFocus = useCallback(() => {
+    const group = globalTextScaleGroupRef.current;
+    if (!group || group.getClientRects().length > 0) return;
+    const active = document.activeElement;
+    if (
+      globalTextScaleHadFocusRef.current ||
+      (active instanceof HTMLElement && group.contains(active))
+    ) {
+      globalTextScaleHadFocusRef.current = false;
+      globalToolsButtonRef.current?.focus({ preventScroll: true });
+    }
   }, []);
+
+  useEffect(() => {
+    preserveGlobalTextScaleFocus();
+  });
+
+  useEffect(() => {
+    const trackGlobalTextScaleFocus = (event: FocusEvent) => {
+      const group = globalTextScaleGroupRef.current;
+      globalTextScaleHadFocusRef.current = Boolean(
+        group && event.target instanceof Node && group.contains(event.target),
+      );
+    };
+    const preserveAfterResize = () => requestAnimationFrame(preserveGlobalTextScaleFocus);
+    document.addEventListener("focusin", trackGlobalTextScaleFocus, true);
+    window.addEventListener("resize", preserveAfterResize);
+    return () => {
+      document.removeEventListener("focusin", trackGlobalTextScaleFocus, true);
+      window.removeEventListener("resize", preserveAfterResize);
+    };
+  }, [preserveGlobalTextScaleFocus]);
   const pendingRatioLayoutRef = useRef<LayoutNode | null>(null);
   const saveChainRef = useRef<Promise<void>>(Promise.resolve());
   const toastTimerRef = useRef<number | null>(null);
@@ -951,6 +968,28 @@ export default function App() {
 
   const syncWebPanels = useCallback(() => {
     if (!state) return;
+    const workspaceBounds = document
+      .querySelector<HTMLElement>(".dashboard-workspace")
+      ?.getBoundingClientRect();
+    const measureSurface = (surface: HTMLElement | null) => {
+      const rect = surface?.getBoundingClientRect();
+      if (!rect || !workspaceBounds) {
+        return {
+          bounds: { x: 0, y: 0, width: 0, height: 0 },
+          inViewport: false,
+        };
+      }
+      const left = Math.max(rect.left, workspaceBounds.left);
+      const top = Math.max(rect.top, workspaceBounds.top);
+      const right = Math.min(rect.right, workspaceBounds.right);
+      const bottom = Math.min(rect.bottom, workspaceBounds.bottom);
+      const width = Math.max(0, right - left);
+      const height = Math.max(0, bottom - top);
+      return {
+        bounds: { x: left, y: top, width, height },
+        inViewport: width > 0 && height > 0,
+      };
+    };
     const failedPanelIds = new Set(
       failedWebPanelKey ? failedWebPanelKey.split("\u0000") : [],
     );
@@ -965,30 +1004,27 @@ export default function App() {
           !nativeWebSurfacesBlocked &&
           !linkPreview &&
           !failedPanelIds.has(panel.id);
-        const rect = surface?.getBoundingClientRect();
+        const measured = measureSurface(surface);
         return {
           kind: "web",
           panelId: panel.id,
           url: panel.url,
-          bounds: rect
-            ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
-            : { x: 0, y: 0, width: 0, height: 0 },
-          visible: canDisplay,
+          bounds: measured.bounds,
+          visible: canDisplay && measured.inViewport,
         };
       });
     for (const preview of Object.values(webPreviewDrafts)) {
       const surface = document.querySelector<HTMLElement>(
         `[data-web-preview-surface="${CSS.escape(preview.previewId)}"]`,
       );
-      const rect = surface?.getBoundingClientRect();
+      const measured = measureSurface(surface);
       descriptors.push({
         kind: "preview",
         panelId: preview.previewId,
-        bounds: rect
-          ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
-          : { x: 0, y: 0, width: 0, height: 0 },
+        bounds: measured.bounds,
         visible:
           Boolean(surface) &&
+          measured.inViewport &&
           !nativeWebSurfacesBlocked &&
           !linkPreview &&
           !failedPanelIds.has(preview.previewId),
@@ -998,16 +1034,15 @@ export default function App() {
       const surface = document.querySelector<HTMLElement>(
         `[data-web-panel-surface="${LINK_READER_ID}"]`,
       );
-      const rect = surface?.getBoundingClientRect();
+      const measured = measureSurface(surface);
       descriptors.push({
         kind: "reader",
         panelId: LINK_READER_ID,
         itemId: linkPreview.itemId,
-        bounds: rect
-          ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
-          : { x: 0, y: 0, width: 0, height: 0 },
+        bounds: measured.bounds,
         visible:
           Boolean(surface) &&
+          measured.inViewport &&
           !nativeWebSurfacesBlocked &&
           !failedPanelIds.has(LINK_READER_ID),
       });
