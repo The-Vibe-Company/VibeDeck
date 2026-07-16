@@ -9,6 +9,7 @@ plans/
 build/icon.iconset/
 /*.png
 !/artifacts-pilot-final.png
+site/.vercel/
 .env
 .env.*
 !.env.example

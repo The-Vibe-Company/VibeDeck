@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VibeDeck — Suivez tout ce qui compte, sur un seul écran</title>
+<meta name="description" content="VibeDeck rassemble vos sites, flux et médias favoris dans un dashboard de panneaux que vous composez librement. 100% local — sans compte, sans serveur, sans tracking.">
+<meta property="og:title" content="VibeDeck — Suivez tout ce qui compte, sur un seul écran">
+<meta property="og:description" content="Un dashboard de veille local pour journalistes : panneaux composables, chronologie fiable, recherche hors ligne. Open source, licence MIT.">
+<meta property="og:type" content="website">
+<meta property="og:locale" content="fr_FR">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="VibeDeck — Suivez tout ce qui compte, sur un seul écran">
+<meta name="twitter:description" content="Un dashboard de veille local pour journalistes : panneaux composables, chronologie fiable, recherche hors ligne. Open source, licence MIT.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2056%2056'%3E%3Crect%20x='2'%20y='2'%20width='20'%20height='52'%20rx='5'%20fill='%232a2823'/%3E%3Crect%20x='26'%20y='2'%20width='28'%20height='24'%20rx='5'%20fill='%232a2823'/%3E%3Crect%20x='26'%20y='30'%20width='28'%20height='24'%20rx='5'%20fill='%23f5a623'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Libre+Franklin:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+body { margin: 0; background: #faf8f4; font-family: 'Space Grotesk', sans-serif; color: #2a2823; }
+a { color: #b97a10; text-decoration: none; } a:hover { color: #8f5d08; }
+html { scroll-behavior: smooth; }
+@keyframes vd-spin { to { transform: rotate(360deg); } }
+
+.nav-link { color: #5c574c; }
+.nav-link:hover { color: #1c1a16; }
+.btn-header { background: #1c1a16; color: #faf8f4; padding: 9px 18px; border-radius: 9px; font-weight: 500; white-space: nowrap; }
+.btn-header:hover { background: #3a362e; color: #faf8f4; }
+.btn-amber { background: #f5a623; color: #1c1a16; padding: 14px 28px; border-radius: 11px; font-weight: 600; font-size: 16px; white-space: nowrap; box-shadow: 0 2px 0 #d18c0f; }
+.btn-amber:hover { background: #ffb63d; color: #1c1a16; }
+.btn-ghost { border: 1.5px solid #ddd6c8; color: #2a2823; padding: 13px 28px; border-radius: 11px; font-size: 16px; white-space: nowrap; background: #fff; }
+.btn-ghost:hover { border-color: #f5a623; color: #b97a10; }
+
+/* --- Démo interactive (maquette sombre) --- */
+.demo-btn-outline { display: inline-flex; min-height: 29px; align-items: center; padding: 6px 11px; border: 1px solid oklch(34.45% 0.0106 91.6); border-radius: 5px; background: transparent; color: oklch(76.77% 0.0164 86.4); cursor: pointer; font-size: 11.5px; font-weight: 600; font-family: inherit; }
+.demo-btn-outline:hover { border-color: oklch(65.86% 0.0131 79.8); color: oklch(92.81% 0.0112 89.7); }
+.demo-btn-amber { display: inline-flex; min-height: 29px; align-items: center; padding: 6px 12px; border: none; border-radius: 5px; background: oklch(73.05% 0.135 74.8); color: oklch(17.68% 0.004 106.8); cursor: pointer; font-size: 11.5px; font-weight: 650; white-space: nowrap; font-family: inherit; }
+.demo-btn-amber:hover { background: oklch(81.74% 0.1316 79.7); }
+.demo-refresh { display: inline-flex; width: 24px; height: 24px; align-items: center; justify-content: center; border: none; border-radius: 4px; background: transparent; color: oklch(76.77% 0.0164 86.4); cursor: pointer; font-size: 13px; font-family: inherit; }
+.demo-refresh:hover { background: oklch(27.61% 0.0091 97.7); color: oklch(92.81% 0.0112 89.7); }
+.demo-row { display: grid; grid-template-columns: 52px minmax(0,1fr); gap: 10px; width: 100%; padding: 8px 12px 8px 8px; border: none; border-bottom: 1px solid oklch(27.61% 0.0091 97.7); background: transparent; cursor: pointer; text-align: left; font-family: inherit; }
+.demo-row:hover { background: oklch(24.74% 0.0075 95.4); }
+.demo-chips { display: flex; min-width: 0; flex: 1; align-items: center; gap: 4px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.demo-chips::-webkit-scrollbar { display: none; }
+</style>
+</head>
+<body>
+<div style="min-height:100vh; display:flex; flex-direction:column;">
+
+  <header style="display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:16px; padding:20px clamp(20px, 5vw, 56px); border-bottom:1px solid #e9e4da; background:#faf8f4; position:sticky; top:0; z-index:10;">
+    <div style="display:flex; align-items:center; gap:11px;">
+      <svg width="28" height="28" viewBox="0 0 56 56" aria-hidden="true">
+        <rect x="2" y="2" width="20" height="52" rx="5" fill="#2a2823"></rect>
+        <rect x="26" y="2" width="28" height="24" rx="5" fill="#2a2823"></rect>
+        <rect x="26" y="30" width="28" height="24" rx="5" fill="#f5a623"></rect>
+      </svg>
+      <div style="font-size:19px; font-weight:600; letter-spacing:-0.02em; color:#1c1a16;">Vibe<span style="font-weight:400; color:#807a6e;">Deck</span></div>
+    </div>
+    <nav style="display:flex; flex-wrap:wrap; align-items:center; gap:clamp(14px, 3vw, 30px); font-size:15px;">
+      <a href="#fonctions" class="nav-link">Fonctions</a>
+      <a href="#local" class="nav-link">Vie privée</a>
+      <a href="https://github.com/The-Vibe-Company/VibeDeck" class="nav-link">GitHub</a>
+      <a href="#telecharger" class="btn-header">Télécharger</a>
+    </nav>
+  </header>
+
+  <section style="display:flex; flex-direction:column; align-items:center; gap:26px; padding:clamp(56px, 9vw, 104px) clamp(20px, 5vw, 56px) clamp(40px, 6vw, 64px); text-align:center;">
+    <div style="font-family:'IBM Plex Mono',monospace; font-size:13px; letter-spacing:0.16em; color:#b97a10; background:#f9edd6; border:1px solid #f0dcae; padding:6px 14px; border-radius:999px;">VOTRE VEILLE · 100% LOCALE</div>
+    <h1 style="margin:0; font-size:clamp(36px, 6.5vw, 64px); font-weight:700; letter-spacing:-0.03em; line-height:1.04; color:#1c1a16; max-width:800px; text-wrap:balance;">Suivez tout ce qui compte, sur un seul écran.</h1>
+    <p style="margin:0; font-size:clamp(16px, 2vw, 19px); line-height:1.55; color:#5c574c; max-width:600px; text-wrap:pretty;">VibeDeck rassemble vos sites, flux et médias favoris dans un dashboard de panneaux que vous composez librement. Tout reste sur votre machine — sans compte, sans serveur, sans tracking.</p>
+    <div style="display:flex; flex-wrap:wrap; gap:14px; justify-content:center;">
+      <a href="#telecharger" class="btn-amber">Télécharger pour macOS</a>
+      <a href="https://github.com/The-Vibe-Company/VibeDeck" class="btn-ghost">Voir le code</a>
+    </div>
+    <div style="font-family:'IBM Plex Mono',monospace; font-size:12px; color:#a09a8c;">Open source · Licence MIT</div>
+  </section>
+
+  <section style="padding:0 clamp(12px, 4vw, 56px) clamp(48px, 7vw, 80px); display:flex; flex-direction:column; align-items:center; gap:14px;">
+    <div style="background:oklch(17.68% 0.004 106.8); border-radius:clamp(12px, 2vw, 18px); width:min(1020px, 100%); box-sizing:border-box; box-shadow:0 24px 64px rgba(42,40,35,0.22); overflow:hidden; font-family:'Libre Franklin',sans-serif; font-size:13px; -webkit-font-smoothing:antialiased;">
+      <div style="display:flex; align-items:center; gap:12px; height:42px; padding:0 11px 0 14px; border-bottom:1px solid oklch(34.45% 0.0106 91.6); background:oklch(22.21% 0.0059 91.6);">
+        <div style="display:inline-flex; align-items:center; gap:8px; white-space:nowrap;">
+          <svg width="16" height="16" viewBox="0 0 56 56" aria-hidden="true">
+            <rect x="2" y="2" width="20" height="52" rx="6" fill="oklch(50.7% 0.0129 89.8)"></rect>
+            <rect x="26" y="2" width="28" height="24" rx="6" fill="oklch(50.7% 0.0129 89.8)"></rect>
+            <rect x="26" y="30" width="28" height="24" rx="6" fill="oklch(73.05% 0.135 74.8)"></rect>
+          </svg>
+          <span style="font-family:'Space Grotesk',sans-serif; font-size:13px; color:oklch(76.77% 0.0164 86.4);"><strong style="font-weight:600; color:oklch(92.81% 0.0112 89.7);">Vibe</strong>Deck</span>
+        </div>
+        <time style="color:oklch(76.77% 0.0164 86.4); font:10px/1 'IBM Plex Mono',monospace;">09:58</time>
+        <div style="flex:1;"></div>
+        <button type="button" class="demo-btn-outline">Outils</button>
+        <button type="button" class="demo-btn-amber">+ Nouveau panel</button>
+      </div>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:4px; padding:4px; background:oklch(17.68% 0.004 106.8);">
+
+        <div style="display:flex; flex-direction:column; overflow:hidden; border:1px solid oklch(73.05% 0.135 74.8); border-radius:7px; background:oklch(20.34% 0.0058 106.9); min-height:440px;">
+          <div style="display:flex; height:31px; min-height:31px; align-items:center; gap:7px; padding:0 8px 0 9px; border-bottom:1px solid oklch(27.61% 0.0091 97.7); background:oklch(22.21% 0.0059 91.6);">
+            <span style="padding:2px 5px; border:1px solid oklch(34.45% 0.0106 91.6); border-radius:3px; color:oklch(65.86% 0.0131 79.8); font:8px/1.2 'IBM Plex Mono',monospace; letter-spacing:0.12em;">FIL</span>
+            <span style="min-width:0; flex:1; overflow:hidden; color:oklch(92.81% 0.0112 89.7); font-size:11.5px; font-weight:650; text-overflow:ellipsis; white-space:nowrap;">Veille du matin</span>
+            <span id="vd-count" style="color:oklch(76.77% 0.0164 86.4); font:9px/1 'IBM Plex Mono',monospace;">8</span>
+            <button type="button" id="vd-refresh" title="Actualiser" class="demo-refresh"><span id="vd-refresh-icon" style="display:inline-block;">⟳</span></button>
+            <span style="display:inline-flex; width:24px; height:24px; align-items:center; justify-content:center; color:oklch(65.86% 0.0131 79.8); font-size:11px;">⤢</span>
+            <span style="display:inline-flex; width:24px; height:24px; align-items:center; justify-content:center; color:oklch(65.86% 0.0131 79.8); font-size:11px;">✕</span>
+          </div>
+          <div style="display:flex; height:30px; min-height:30px; align-items:center; gap:4px; padding:0 7px; border-bottom:1px solid oklch(27.61% 0.0091 97.7); overflow:hidden;">
+            <div id="vd-chips" class="demo-chips"></div>
+            <span id="vd-freshness" style="flex:0 0 auto; padding:0 3px 0 9px; border-left:1px solid oklch(27.61% 0.0091 97.7); color:oklch(65.86% 0.0131 79.8); font:8.5px/1 'IBM Plex Mono',monospace; white-space:nowrap;">3/3 à jour · il y a 1 min</span>
+          </div>
+          <div style="position:relative; display:flex; flex-direction:column; flex:1; min-height:0; overflow:hidden;">
+            <button type="button" id="vd-pill" style="position:absolute; z-index:5; top:8px; right:14px; display:none; align-items:center; gap:6px; height:24px; padding:0 10px; border:1px solid oklch(44.31% 0.0704 77.4); border-radius:12px; background:oklch(26.3% 0.0243 85.9); color:oklch(81.74% 0.1316 79.7); cursor:pointer; font:500 9px/1 'IBM Plex Mono',monospace; letter-spacing:0.05em; white-space:nowrap; box-shadow:0 4px 14px rgba(0,0,0,0.45);">2 nouveaux · Afficher</button>
+            <div id="vd-rows" style="flex:1; min-height:0; overflow-x:hidden; overflow-y:auto; max-height:378px;"></div>
+          </div>
+        </div>
+
+        <div style="display:flex; flex-direction:column; overflow:hidden; border:1px solid oklch(34.45% 0.0106 91.6); border-radius:7px; background:oklch(20.34% 0.0058 106.9); min-height:440px;">
+          <div style="display:flex; height:31px; min-height:31px; align-items:center; gap:7px; padding:0 8px 0 9px; border-bottom:1px solid oklch(27.61% 0.0091 97.7); background:oklch(22.21% 0.0059 91.6);">
+            <span style="padding:2px 5px; border:1px solid oklch(34.45% 0.0106 91.6); border-radius:3px; color:oklch(65.86% 0.0131 79.8); font:8px/1.2 'IBM Plex Mono',monospace; letter-spacing:0.12em;">WEB</span>
+            <span style="min-width:0; flex:1; overflow:hidden; color:oklch(92.81% 0.0112 89.7); font-size:11.5px; font-weight:650; text-overflow:ellipsis; white-space:nowrap;">Le direct</span>
+            <span style="display:inline-flex; width:24px; height:24px; align-items:center; justify-content:center; color:oklch(65.86% 0.0131 79.8); font-size:11px;">⤢</span>
+            <span style="display:inline-flex; width:24px; height:24px; align-items:center; justify-content:center; color:oklch(65.86% 0.0131 79.8); font-size:11px;">✕</span>
+          </div>
+          <div style="display:flex; height:30px; min-height:30px; align-items:center; gap:4px; padding:0 6px; border-bottom:1px solid oklch(27.61% 0.0091 97.7);">
+            <span style="display:inline-flex; width:22px; height:22px; align-items:center; justify-content:center; color:oklch(76.77% 0.0164 86.4); font-size:11px;">‹</span>
+            <span style="display:inline-flex; width:22px; height:22px; align-items:center; justify-content:center; color:oklch(76.77% 0.0164 86.4); font-size:11px;">›</span>
+            <span style="min-width:0; height:22px; flex:1; overflow:hidden; padding:5px 8px; border:1px solid oklch(27.61% 0.0091 97.7); border-radius:4px; background:oklch(17.68% 0.004 106.8); color:oklch(76.77% 0.0164 86.4); font:9px/1.4 'IBM Plex Mono',monospace; text-overflow:ellipsis; white-space:nowrap; box-sizing:border-box;">https://exemple-direct.fr/live</span>
+          </div>
+          <div style="flex:1; min-height:0; background:repeating-linear-gradient(45deg, oklch(20.34% 0.0058 106.9), oklch(20.34% 0.0058 106.9) 10px, oklch(22.21% 0.0059 91.6) 10px, oklch(22.21% 0.0059 91.6) 20px); display:flex; align-items:center; justify-content:center;">
+            <span style="color:oklch(65.86% 0.0131 79.8); font:9px/1 'IBM Plex Mono',monospace; letter-spacing:0.1em; background:oklch(17.68% 0.004 106.8); padding:6px 10px; border-radius:4px;">SITE AFFICHÉ EN DIRECT</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+    <div style="font-family:'IBM Plex Mono',monospace; font-size:12px; color:#a09a8c; text-align:center;">DÉMO INTERACTIVE — cliquez un article, filtrez par source, guettez les nouveaux.</div>
+  </section>
+
+  <section id="fonctions" style="padding:clamp(40px, 6vw, 72px) clamp(20px, 5vw, 56px); max-width:1100px; margin:0 auto; box-sizing:border-box; display:flex; flex-direction:column; gap:36px; width:100%;">
+    <div style="display:flex; flex-direction:column; gap:10px; text-align:center; align-items:center;">
+      <h2 style="margin:0; font-size:clamp(26px, 4vw, 36px); font-weight:700; letter-spacing:-0.02em; color:#1c1a16;">Un deck, trois idées simples</h2>
+      <p style="margin:0; font-size:16px; color:#5c574c; max-width:520px; text-wrap:pretty;">Des panneaux librement composables, une chronologie fiable, et une recherche qui trouve vraiment.</p>
+    </div>
+    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:18px;">
+      <div style="background:#fff; border:1px solid #e9e4da; border-radius:16px; padding:26px; display:flex; flex-direction:column; gap:12px;">
+        <svg width="34" height="34" viewBox="0 0 56 56" aria-hidden="true">
+          <rect x="2" y="2" width="20" height="52" rx="6" fill="#e9e4da"></rect>
+          <rect x="26" y="2" width="28" height="24" rx="6" fill="#e9e4da"></rect>
+          <rect x="26" y="30" width="28" height="24" rx="6" fill="#f5a623"></rect>
+        </svg>
+        <div style="font-size:19px; font-weight:600; color:#1c1a16;">Composez vos panneaux</div>
+        <p style="margin:0; font-size:15px; line-height:1.55; color:#5c574c;">Flux RSS, sites en direct, médias reconnus : disposez-les côte à côte, redimensionnez, réorganisez — à la souris ou au clavier.</p>
+      </div>
+      <div style="background:#fff; border:1px solid #e9e4da; border-radius:16px; padding:26px; display:flex; flex-direction:column; gap:12px;">
+        <svg width="34" height="34" viewBox="0 0 56 56" aria-hidden="true">
+          <rect x="2" y="6" width="52" height="10" rx="5" fill="#f5a623"></rect>
+          <rect x="2" y="23" width="40" height="10" rx="5" fill="#e9e4da"></rect>
+          <rect x="2" y="40" width="46" height="10" rx="5" fill="#e9e4da"></rect>
+        </svg>
+        <div style="font-size:19px; font-weight:600; color:#1c1a16;">Une chronologie fiable</div>
+        <p style="margin:0; font-size:15px; line-height:1.55; color:#5c574c;">Plusieurs sources fusionnées en un seul fil, trié par date de publication. Les nouveautés arrivent en haut, sans jamais bousculer votre lecture.</p>
+      </div>
+      <div style="background:#fff; border:1px solid #e9e4da; border-radius:16px; padding:26px; display:flex; flex-direction:column; gap:12px;">
+        <svg width="34" height="34" viewBox="0 0 56 56" aria-hidden="true">
+          <rect x="4" y="4" width="34" height="34" rx="17" fill="none" stroke="#e9e4da" stroke-width="8"></rect>
+          <rect x="38" y="38" width="16" height="10" rx="5" fill="#f5a623" transform="rotate(45 46 43)"></rect>
+        </svg>
+        <div style="font-size:19px; font-weight:600; color:#1c1a16;">Retrouvez tout, hors ligne</div>
+        <p style="margin:0; font-size:15px; line-height:1.55; color:#5c574c;">Recherche instantanée dans tout ce que vous suivez, enrichie par une recherche sémantique locale. <span style="font-family:'IBM Plex Mono',monospace; font-size:13px; color:#807a6e;">Cmd+K</span>, tapez, trouvé.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="local" style="background:#211f1b; color:#f0ece3;">
+    <div style="max-width:1100px; margin:0 auto; padding:clamp(48px, 7vw, 80px) clamp(20px, 5vw, 56px); box-sizing:border-box; display:flex; flex-wrap:wrap; gap:clamp(32px, 5vw, 64px); align-items:center; justify-content:center;">
+      <div style="display:flex; flex-direction:column; gap:16px; flex:1 1 380px; min-width:280px;">
+        <div style="font-family:'IBM Plex Mono',monospace; font-size:13px; letter-spacing:0.16em; color:#f5a623;">VIE PRIVÉE</div>
+        <h2 style="margin:0; font-size:clamp(26px, 4vw, 36px); font-weight:700; letter-spacing:-0.02em; text-wrap:pretty;">Ce que vous lisez ne regarde que vous</h2>
+        <p style="margin:0; font-size:16px; line-height:1.6; color:#b8b1a2; text-wrap:pretty;">Tout est stocké localement sur votre machine. Pas de compte, pas de cloud, pas de collecte. Fonctionne même hors ligne grâce au cache intégré.</p>
+      </div>
+      <div style="display:grid; grid-template-columns:repeat(2, minmax(130px, 1fr)); gap:12px; flex:1 1 320px; min-width:280px;">
+        <div style="background:#2b2822; border-radius:12px; padding:20px; display:flex; flex-direction:column; gap:4px;">
+          <div style="font-size:24px; font-weight:700; color:#f5a623;">0</div>
+          <div style="font-size:14px; color:#b8b1a2;">compte requis</div>
+        </div>
+        <div style="background:#2b2822; border-radius:12px; padding:20px; display:flex; flex-direction:column; gap:4px;">
+          <div style="font-size:24px; font-weight:700; color:#f5a623;">0</div>
+          <div style="font-size:14px; color:#b8b1a2;">donnée envoyée</div>
+        </div>
+        <div style="background:#2b2822; border-radius:12px; padding:20px; display:flex; flex-direction:column; gap:4px;">
+          <div style="font-size:24px; font-weight:700; color:#f0ece3;">100%</div>
+          <div style="font-size:14px; color:#b8b1a2;">local, hors ligne inclus</div>
+        </div>
+        <div style="background:#2b2822; border-radius:12px; padding:20px; display:flex; flex-direction:column; gap:4px;">
+          <div style="font-size:24px; font-weight:700; color:#f0ece3;">MIT</div>
+          <div style="font-size:14px; color:#b8b1a2;">open source</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="telecharger" style="padding:clamp(56px, 8vw, 96px) clamp(20px, 5vw, 56px); display:flex; flex-direction:column; align-items:center; gap:20px; text-align:center;">
+    <svg width="52" height="52" viewBox="0 0 56 56" aria-hidden="true">
+      <rect x="2" y="2" width="20" height="52" rx="5" fill="#2a2823"></rect>
+      <rect x="26" y="2" width="28" height="24" rx="5" fill="#2a2823"></rect>
+      <rect x="26" y="30" width="28" height="24" rx="5" fill="#f5a623"></rect>
+    </svg>
+    <h2 style="margin:0; font-size:clamp(28px, 4.5vw, 40px); font-weight:700; letter-spacing:-0.02em; color:#1c1a16;">Montez votre deck</h2>
+    <p style="margin:0; font-size:16px; color:#5c574c; max-width:440px; text-wrap:pretty;">Gratuit et open source. Disponible pour macOS, Windows arrive bientôt.</p>
+    <div style="display:flex; flex-wrap:wrap; gap:14px; justify-content:center;">
+      <a href="https://github.com/The-Vibe-Company/VibeDeck/releases" class="btn-amber">Télécharger pour macOS</a>
+      <a href="https://github.com/The-Vibe-Company/VibeDeck" class="btn-ghost">GitHub</a>
+    </div>
+  </section>
+
+  <footer style="border-top:1px solid #e9e4da; padding:24px clamp(20px, 5vw, 56px); display:flex; flex-wrap:wrap; gap:12px; justify-content:space-between; align-items:center;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <svg width="18" height="18" viewBox="0 0 56 56" aria-hidden="true">
+        <rect x="2" y="2" width="20" height="52" rx="5" fill="#2a2823"></rect>
+        <rect x="26" y="2" width="28" height="24" rx="5" fill="#2a2823"></rect>
+        <rect x="26" y="30" width="28" height="24" rx="5" fill="#f5a623"></rect>
+      </svg>
+      <div style="font-size:14px; color:#807a6e;">VibeDeck — The Vibe Company · 2026</div>
+    </div>
+    <div style="font-family:'IBM Plex Mono',monospace; font-size:12px; color:#a09a8c;">Licence MIT</div>
+  </footer>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var C = {
+    text: 'oklch(92.81% 0.0112 89.7)', read: 'oklch(72.62% 0.0123 84.6)',
+    muted: 'oklch(76.77% 0.0164 86.4)', dim: 'oklch(65.86% 0.0131 79.8)',
+    amber: 'oklch(73.05% 0.135 74.8)', amberL: 'oklch(81.74% 0.1316 79.7)',
+    wash: 'oklch(26.3% 0.0243 85.9)', line: 'oklch(34.45% 0.0106 91.6)',
+  };
+
+  var state = {
+    filter: 'all',
+    showPill: false,
+    spinning: false,
+    refreshed: false,
+    arrived: false,
+    articles: [
+      { id: 1, t: '4 min', s: 'La Gazette', st: 'new', title: 'Panne géante chez un hébergeur européen : des milliers de sites touchés' },
+      { id: 2, t: '11 min', s: 'TechFil', st: 'new', title: "L'IA générative entre officiellement au programme des écoles de journalisme" },
+      { id: 3, t: '18 min', s: 'Courrier Éco', st: 'new', title: 'Budget 2027 : les points clés de la copie présentée ce matin' },
+      { id: 4, t: '32 min', s: 'TechFil', st: 'seen', title: 'Cyberattaque : une collectivité paralysée pendant 48 heures' },
+      { id: 5, t: '09:42', s: 'Courrier Éco', st: 'seen', title: "Le marché du reconditionné dépasse le neuf sur l'entrée de gamme" },
+      { id: 6, t: '09:15', s: 'La Gazette', st: 'seen', title: "Transports : la carte interactive des chantiers de l'été" },
+      { id: 7, t: '08:57', s: 'Courrier Éco', st: 'opened', title: 'Streaming : vers une redevance sur les catalogues étrangers ?' },
+      { id: 8, t: '08:31', s: 'La Gazette', st: 'seen', title: "Espace : le lanceur réutilisable européen réussit son vol d'essai" },
+    ],
+  };
+
+  var el = {
+    chips: document.getElementById('vd-chips'),
+    rows: document.getElementById('vd-rows'),
+    count: document.getElementById('vd-count'),
+    freshness: document.getElementById('vd-freshness'),
+    pill: document.getElementById('vd-pill'),
+    refresh: document.getElementById('vd-refresh'),
+    refreshIcon: document.getElementById('vd-refresh-icon'),
+  };
+
+  function chipDefs() {
+    var unseen = state.articles.filter(function (a) { return a.st === 'new'; }).length;
+    return [
+      { label: 'Toutes', key: 'all', count: state.articles.length },
+      { label: 'Non vus', key: 'unseen', count: unseen, dashed: true },
+      { label: 'La Gazette', key: 'La Gazette', dot: true },
+      { label: 'TechFil', key: 'TechFil', dot: true },
+      { label: 'Courrier Éco', key: 'Courrier Éco', dot: true },
+    ];
+  }
+
+  function visibleArticles() {
+    return state.articles.filter(function (a) {
+      return state.filter === 'all' ? true : state.filter === 'unseen' ? a.st === 'new' : a.s === state.filter;
+    });
+  }
+
+  function renderChips() {
+    el.chips.textContent = '';
+    chipDefs().forEach(function (c) {
+      var active = state.filter === c.key;
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.style.cssText =
+        'display:inline-flex; height:22px; align-items:center; gap:5px; padding:0 8px;' +
+        'border:1px ' + (c.dashed ? 'dashed ' : 'solid ') + (active ? C.amber : C.line) + ';' +
+        'border-radius:12px; background:' + (active ? C.wash : 'transparent') + ';' +
+        'color:' + (active ? C.amberL : C.muted) + '; cursor:pointer; white-space:nowrap; flex:0 0 auto;' +
+        'font:' + (active ? '600 ' : '') + "9.5px/1 'IBM Plex Mono', monospace;";
+      if (c.dot) {
+        var dot = document.createElement('span');
+        dot.style.cssText = 'display:inline-block; width:5px; height:5px; border-radius:50%; background:' + C.dim + '; flex:0 0 5px;';
+        btn.appendChild(dot);
+      }
+      btn.appendChild(document.createTextNode(c.label));
+      if (c.count != null) {
+        var count = document.createElement('span');
+        count.style.color = C.dim;
+        count.textContent = ' · ' + c.count;
+        btn.appendChild(count);
+      }
+      btn.addEventListener('click', function () { state.filter = c.key; render(); });
+      el.chips.appendChild(btn);
+    });
+  }
+
+  function renderRows() {
+    el.rows.textContent = '';
+    var visible = visibleArticles();
+    visible.forEach(function (a) {
+      var isNew = a.st === 'new';
+      var row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'demo-row';
+
+      var time = document.createElement('time');
+      time.style.cssText = "padding-top:2px; color:" + C.dim + "; font-family:'IBM Plex Mono',monospace; font-size:9.5px; line-height:1.4; text-align:right; white-space:nowrap;";
+      time.textContent = a.t;
+
+      var body = document.createElement('span');
+      body.style.cssText = 'display:block; min-width:0;';
+
+      var meta = document.createElement('span');
+      meta.style.cssText = "display:flex; align-items:baseline; gap:7px; margin-bottom:3px; overflow:hidden; color:" + C.dim + "; font-family:'IBM Plex Mono',monospace; font-size:8.5px; letter-spacing:0.09em; text-transform:uppercase; white-space:nowrap;";
+      var source = document.createElement('span');
+      source.textContent = a.s;
+      var stateEm = document.createElement('em');
+      if (isNew) {
+        stateEm.style.cssText = 'color:' + C.amber + '; font-style:normal; flex:0 0 auto;';
+        stateEm.textContent = 'Nouveau';
+      } else {
+        stateEm.style.cssText = 'color:' + C.dim + '; font-style:normal; flex:0 0 auto; letter-spacing:0; text-transform:none;';
+        stateEm.textContent = '✓ Vu';
+      }
+      meta.appendChild(source);
+      meta.appendChild(stateEm);
+
+      var title = document.createElement('strong');
+      title.style.cssText = 'display:block; font-size:13.5px; line-height:1.35; font-weight:' + (isNew ? 650 : 550) + '; color:' + (isNew ? C.text : C.read) + ';';
+      title.textContent = a.title;
+
+      body.appendChild(meta);
+      body.appendChild(title);
+      row.appendChild(time);
+      row.appendChild(body);
+      row.addEventListener('click', function () {
+        state.articles = state.articles.map(function (x) {
+          return x.id === a.id ? Object.assign({}, x, { st: 'opened' }) : x;
+        });
+        render();
+      });
+      el.rows.appendChild(row);
+    });
+    if (visible.length === 0) {
+      var empty = document.createElement('div');
+      empty.style.cssText = 'display:flex; min-height:120px; align-items:center; justify-content:center; color:' + C.muted + '; font-size:11px;';
+      empty.textContent = 'Tout est lu. La veille continue en arrière-plan.';
+      el.rows.appendChild(empty);
+    }
+  }
+
+  function render() {
+    renderChips();
+    renderRows();
+    el.count.textContent = state.articles.length;
+    el.freshness.textContent = state.spinning
+      ? 'actualisation…'
+      : (state.refreshed ? "3/3 à jour · à l'instant" : '3/3 à jour · il y a 1 min');
+    el.refreshIcon.style.animation = state.spinning ? 'vd-spin 0.8s linear infinite' : 'none';
+    el.pill.style.display = state.showPill ? 'inline-flex' : 'none';
+  }
+
+  el.refresh.addEventListener('click', function () {
+    if (state.spinning) return;
+    state.spinning = true;
+    render();
+    setTimeout(function () {
+      state.spinning = false;
+      state.refreshed = true;
+      if (!state.arrived) state.showPill = true;
+      render();
+    }, 900);
+  });
+
+  el.pill.addEventListener('click', function () {
+    state.showPill = false;
+    state.arrived = true;
+    state.articles = [
+      { id: 101, t: '0 min', s: 'TechFil', st: 'new', title: "Sobriété numérique : l'étude qui bouscule les idées reçues" },
+      { id: 102, t: '0 min', s: 'La Gazette', st: 'new', title: 'Élections locales : le calendrier officiel publié au JO' },
+    ].concat(state.articles);
+    render();
+    el.rows.scrollTop = 0;
+  });
+
+  setTimeout(function () {
+    if (!state.arrived) { state.showPill = true; render(); }
+  }, 5000);
+
+  render();
+})();
+</script>
+</body>
+</html>
