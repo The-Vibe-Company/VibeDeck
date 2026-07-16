@@ -50,14 +50,17 @@ export function estimateFeedRowHeight(
   const read = item.seenAt !== null || item.openedAt !== null;
   const titleWeight = read ? 480 : 680;
   const titleFont = `${titleWeight} ${titleSize}px "Libre Franklin Variable"`;
-  // Chrome horizontal de la rangée 2a : liseré 2px, paddings 0.7em/1em,
-  // gouttière d'heure 68px×échelle, icône ~20px×échelle, coche éventuelle,
-  // et les trois gaps de 0.8em.
+  // Chrome horizontal de la rangée 7a (boîte de réception) : pastille
+  // non-lu, icône, gaps flex, coche éventuelle, et la largeur approchée
+  // de l'heure — celle-ci ne cadre plus une colonne fixe (l'heure flotte
+  // via margin-left:auto), l'estimation reste volontairement large :
+  // measureElement corrige après le rendu réel de chaque rangée.
   const chromeWidth =
-    2 +
-    (9.8 + 68 + 20 + 14) * textScale +
-    3 * 0.8 * titleSize +
-    (read ? 14 * textScale : 0);
+    0.5 * titleSize +
+    20 * textScale +
+    (read ? 4 : 3) * 0.8 * titleSize +
+    (read ? 14 * textScale : 0) +
+    46 * textScale;
   // La colonne du titre plafonne à 56ch (≈ 0.6em par caractère en Libre
   // Franklin). L'estimation n'a pas besoin d'être exacte : le virtualiseur
   // mesure ensuite chaque rangée rendue (measureElement).

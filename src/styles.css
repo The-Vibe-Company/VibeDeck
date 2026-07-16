@@ -1041,40 +1041,28 @@ button:disabled {
   background: var(--panel);
 }
 
-/* ---- Rangée d'article (design « 2a — mesure calibrée ») ----
-   Gouttière d'heure à gauche, icône du média, puis le titre : jamais
-   tronqué, plafonné à 56ch. La rangée porte la fonte du titre
-   (14px × échelle) : gouttière, espacements et mesure sont exprimés en
-   em/ch et suivent donc A± ensemble. Le groupe se centre dans le panel,
-   le surplus devient des marges symétriques. */
+/* ---- Rangée d'article (design « 7a — boîte de réception ») ----
+   Le pattern client mail : pastille non-lu, icône du média, puis le
+   titre plafonné à 56ch, jamais tronqué. L'heure seule ferme la ligne à
+   droite, reliée par le vide (margin-left:auto) — aucun point de
+   bascule, la même rangée fonctionne à 260px comme à 2000px. La rangée
+   porte la fonte du titre (14px × échelle) : gouttière, espacements et
+   mesure sont exprimés en em/ch et suivent donc A± ensemble. */
 
 .article-row {
   position: relative;
-  display: grid;
+  display: flex;
+  align-items: flex-start;
   width: 100%;
-  grid-template-columns:
-    calc(68px * var(--feed-text-scale))
-    max-content
-    minmax(0, 56ch)
-    max-content;
-  justify-content: center;
-  align-items: start;
   gap: 0.8em;
   padding: 0.65em 1em 0.65em 0.7em;
   border-bottom: 1px solid var(--line-soft);
-  border-left: 2px solid transparent;
   background: transparent;
   color: var(--text);
   cursor: pointer;
   font-size: calc(14px * var(--feed-text-scale));
   text-align: left;
 }
-
-/* L'ambre reste un signal : liseré uniquement pour le non-vu. */
-.article-row:not(.article-row--seen):not(.article-row--opened) {
-  border-left-color: var(--amber);
-}
-
 
 .article-row:hover,
 .article-row--focused {
@@ -1094,11 +1082,12 @@ button:disabled {
   color: var(--text-read);
 }
 
-/* Gouttière : l'heure s'aligne à droite contre l'icône ; la largeur fixe
-   (68px × échelle) absorbe les vrais formats (« 08/07 09:05 ») pour que le
-   fer à gauche des titres reste constant d'une rangée à l'autre. */
+/* L'heure ferme la ligne à droite ; margin-left:auto absorbe tout
+   l'espace libre entre le titre et elle — c'est ce vide, pas une
+   colonne, qui varie avec la largeur du panel (« zéro breakpoint »). */
 .article-row > time {
-  overflow: hidden;
+  margin-left: auto;
+  flex: 0 0 auto;
   color: var(--muted-dim);
   font-family: var(--mono);
   font-size: calc(10px * var(--feed-text-scale));
@@ -1106,9 +1095,7 @@ button:disabled {
   line-height: 2;
   font-variant-numeric: tabular-nums;
   text-align: right;
-  text-overflow: ellipsis;
   white-space: nowrap;
-  grid-area: 1 / 1;
 }
 
 .article-row--seen > time,
@@ -1116,8 +1103,23 @@ button:disabled {
   color: var(--muted-dim);
 }
 
+/* Pastille non-lu : seul signal ambre de la rangée, avant l'icône. */
+.article-unread-dot {
+  width: 0.5em;
+  height: 0.5em;
+  margin-top: 0.5em;
+  border-radius: 50%;
+  background: transparent;
+  flex: 0 0 auto;
+}
+
+.article-row:not(.article-row--seen):not(.article-row--opened) .article-unread-dot {
+  background: var(--amber);
+}
+
 /* Les conteneurs intermédiaires s'effacent : leurs enfants deviennent des
-   cellules de la grille de la rangée, dans des colonnes explicites. */
+   éléments flex directs de la rangée, dans l'ordre du DOM (titre puis
+   méta, réordonnés dans le JSX pour suivre visuellement le titre). */
 .article-copy,
 .article-meta {
   display: contents;
@@ -1150,15 +1152,19 @@ button:disabled {
 
 .article-copy > strong {
   display: block;
-  /* Mesure calibrée : ~90 caractères par ligne devenaient illisibles ; la
-     colonne minmax(0, 56ch) de la rangée plafonne la ligne et, résolue dans
-     la fonte du titre, suit automatiquement A±. */
+  /* Mesure calibrée : ~90 caractères par ligne devenaient illisibles ;
+     max-width la plafonne, résolue dans la fonte du titre elle suit
+     automatiquement A±. min-width:0 autorise le rétrécissement flex en
+     dessous du contenu, condition du retour à la ligne. Le titre ne
+     grandit pas au-delà de son contenu (flex-grow:0 par défaut) : c'est
+     le vide avant l'heure qui absorbe le reste, jamais le titre. */
+  min-width: 0;
+  max-width: 56ch;
   overflow-wrap: break-word;
   font-size: calc(14px * var(--feed-text-scale));
   font-weight: 680;
   line-height: 1.42;
   text-wrap: pretty;
-  grid-area: 1 / 3;
 }
 
 .article-row--seen .article-copy > strong,
@@ -1168,7 +1174,7 @@ button:disabled {
 
 .article-provider {
   display: block;
-  grid-area: 1 / 2;
+  flex: 0 0 auto;
 }
 
 .article-provider .provider-mark {
@@ -1188,7 +1194,7 @@ button:disabled {
 }
 
 .article-meta > em {
-  grid-area: 1 / 4;
+  flex: 0 0 auto;
   /* 9px × 2.2 ≈ la hauteur de la première ligne du titre : la coche
      s'aligne optiquement sur le fer du titre. */
   line-height: 2.2;

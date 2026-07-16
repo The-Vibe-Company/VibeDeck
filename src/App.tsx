@@ -3587,12 +3587,7 @@ function FeedPanelView({
           void onOpen(item, `article-${panel.id}-${item.id}`);
         }}
       >
-        <time
-          dateTime={item.publishedAt ?? item.updatedAt ?? item.firstSeenAt}
-          title={item.publishedAt || item.updatedAt ? undefined : "Heure indisponible"}
-        >
-          {formatItemTime(item)}
-        </time>
+        <span className="article-unread-dot" aria-hidden="true" />
         <span className="article-provider">
           <ProviderMark
             providerId={source?.connectorId ?? "custom"}
@@ -3601,6 +3596,7 @@ function FeedPanelView({
           />
         </span>
         <span className="article-copy">
+          <strong>{item.title}</strong>
           <span className="article-meta">
             <span className="article-source">
               <span className="article-source__full">{source?.name ?? "Source"}</span>
@@ -3613,8 +3609,13 @@ function FeedPanelView({
               <em className="is-opened">✓<span className="article-state-label"> Ouvert</span></em>
             )}
           </span>
-          <strong>{item.title}</strong>
         </span>
+        <time
+          dateTime={item.publishedAt ?? item.updatedAt ?? item.firstSeenAt}
+          title={item.publishedAt || item.updatedAt ? undefined : "Heure indisponible"}
+        >
+          {formatItemTime(item)}
+        </time>
       </button>
     );
   };

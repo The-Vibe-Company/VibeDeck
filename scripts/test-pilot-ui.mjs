@@ -598,10 +598,15 @@ try {
   const firstTitleMeasure = () => page.locator(".article-copy > strong").first()
     .evaluate((title) => {
       const row = title.closest(".article-row");
+      const time = row.querySelector("time");
+      const rowRect = row.getBoundingClientRect();
+      const timeRect = time.getBoundingClientRect();
       return {
         width: Number.parseFloat(getComputedStyle(title).width),
         wrapStyle: getComputedStyle(title).getPropertyValue("text-wrap-style"),
-        rowJustify: getComputedStyle(row).justifyContent,
+        // 7a : l'heure ferme la ligne à droite (margin-left:auto), reliée
+        // au titre par le vide — pas de colonne fixe, pas de centrage.
+        timeToRowRightEdge: rowRect.right - timeRect.right,
       };
     });
   assert.equal(await defaultTextScale(), "1");
@@ -617,10 +622,9 @@ try {
     Number.isFinite(baselineMeasure.width) && baselineMeasure.width > 0,
     "Le titre doit avoir une mesure calibrée (56ch résolu en px).",
   );
-  assert.equal(
-    baselineMeasure.rowJustify,
-    "center",
-    "Le groupe heure·icône·titre doit se centrer dans le panel.",
+  assert.ok(
+    baselineMeasure.timeToRowRightEdge < 20,
+    "L'heure doit fermer la ligne contre le bord droit de la rangée (padding uniquement).",
   );
   const growTextButton = page.getByRole("button", { name: "Agrandir le texte des fils" });
   await growTextButton.click();
@@ -2032,10 +2036,12 @@ try {
   );
   await page.keyboard.press("Escape");
   await adaptiveMenu.waitFor({ state: "detached" });
-  assert.equal(
-    await overflowTrigger.evaluate((trigger) => document.activeElement === trigger),
-    true,
-    "Échap doit fermer le menu et restituer le focus à son déclencheur.",
+  // Même restitution que Tab/Maj+Tab : le focus part dans un
+  // requestAnimationFrame, attendre le focus réel plutôt que l'instantané.
+  await waitForDomFocus(
+    page,
+    overflowTrigger,
+    "Échap doit fermer le menu et restituer le focus à son déclencheur",
   );
   await overflowTrigger.click();
   await adaptiveMenu.waitFor({ state: "visible" });
