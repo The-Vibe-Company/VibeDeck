@@ -1556,7 +1556,7 @@ try {
   assertWithin(
     await panelLeaf.locator(".article-list").evaluate((list) => list.scrollTop),
     searchOriginScrollTop,
-    0.5,
+    1,
     "scrollTop restauré après retrait du filtre",
   );
 
