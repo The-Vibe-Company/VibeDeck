@@ -1369,6 +1369,38 @@ test("allows a curated catalog connector and its same-site redirect through a pr
   }
 });
 
+test("defaults every catalog publication to one minute while accepting an explicit override", async () => {
+  const engine = createFeedEngine({
+    fetchImpl: async () => response(RSS_FIXTURE),
+  });
+  try {
+    const state = await engine.createPanel({
+      kind: "feed",
+      name: "Catalogue rapide",
+      defaultRefreshIntervalSeconds: 300,
+    });
+    const panelId = state.panels.find(({ kind }) => kind === "feed").id;
+
+    let result = await engine.addCatalogSource(panelId, "le-monde");
+    assert.equal(
+      result.state.sources.find(({ connectorId }) => connectorId === "le-monde")
+        .refreshIntervalSeconds,
+      60,
+    );
+
+    result = await engine.addCatalogSource(panelId, "bbc", {
+      refreshIntervalSeconds: 120,
+    });
+    assert.equal(
+      result.state.sources.find(({ connectorId }) => connectorId === "bbc")
+        .refreshIntervalSeconds,
+      120,
+    );
+  } finally {
+    engine.close();
+  }
+});
+
 test("allows exactly the registry HTTPS roots through a proxy", async () => {
   const curatedEndpoints = [...CURATED_PROXY_ROOTS];
   const fetchCalls = [];

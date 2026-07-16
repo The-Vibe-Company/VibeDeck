@@ -2000,7 +2000,8 @@ export class FeedEngine {
     return this.#addSource(panelId, {
       url: publication.homepageUrl,
       connectorKind: publication.connectorKind,
-      refreshIntervalSeconds: options?.refreshIntervalSeconds,
+      refreshIntervalSeconds:
+        options?.refreshIntervalSeconds ?? publication.refreshIntervalSeconds,
     });
   }
 

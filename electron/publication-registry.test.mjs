@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   CURATED_PROXY_ROOTS,
+  DEFAULT_PUBLICATION_REFRESH_INTERVAL_SECONDS,
   PUBLICATIONS,
   SOURCE_CATALOG,
   definePublication,
@@ -31,6 +32,11 @@ test("freezes an exact 20/10 publication snapshot with consecutive ranks", () =>
     assert.equal(Object.isFrozen(publication), true);
     assert.equal(Object.isFrozen(publication.reader), true);
     assert.equal(Object.isFrozen(publication.hostnames), true);
+    assert.equal(
+      publication.refreshIntervalSeconds,
+      DEFAULT_PUBLICATION_REFRESH_INTERVAL_SECONDS,
+      publication.id,
+    );
     assert.notDeepEqual(publication.reader.blockedPhrases, []);
     if (!publication.reader.requireDeclaredFreeAccess) {
       assert.notDeepEqual(publication.reader.premiumSelectors, [], publication.id);
@@ -71,6 +77,7 @@ test("projects only bounded public metadata across the Electron boundary", () =>
     assert.equal(Object.isFrozen(entry.capabilities), true);
     for (const key of privateCatalogKeys) assert.equal(Object.hasOwn(entry, key), false);
     assert.match(entry.iconPath, /^\.\/provider-icons\/[a-z0-9-]+\.png$/);
+    assert.equal(entry.refreshIntervalSeconds, 60, entry.id);
   }
 
   const projection = publicSourceCatalog();
@@ -103,12 +110,14 @@ test("definePublication rejects unsafe or incomplete additions", () => {
     hostnames: ["publication.test"],
     feedUrl: "https://publication.test/rss.xml",
     connectorKind: "rss",
-    refreshIntervalSeconds: 300,
   };
-  assert.equal(Object.isFrozen(definePublication(valid)), true);
+  const publication = definePublication(valid);
+  assert.equal(Object.isFrozen(publication), true);
+  assert.equal(publication.refreshIntervalSeconds, 60);
   assert.throws(() => definePublication({ ...valid, feedUrl: "http://publication.test/rss.xml" }), /HTTPS/);
   assert.throws(() => definePublication({ ...valid, feedUrl: "https://user:secret@publication.test/rss.xml" }), /HTTPS/);
   assert.throws(() => definePublication({ ...valid, hostnames: ["publication.test/path"] }), /Domaines/);
   assert.throws(() => definePublication({ ...valid, category: "autre" }), /Catégorie/);
   assert.throws(() => definePublication({ ...valid, iconPath: "https://publication.test/icon.png" }), /icône/);
+  assert.throws(() => definePublication({ ...valid, refreshIntervalSeconds: 10 }), /Intervalle/);
 });

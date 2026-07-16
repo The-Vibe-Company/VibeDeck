@@ -79,7 +79,7 @@ Les futurs types de panels doivent étendre le modèle existant sans spécialise
 
 1. Vérifier un flux officiel HTTPS RSS, Atom ou News Sitemap et un article public lisible sans contournement.
 2. Déposer une icône officielle PNG de `96 × 96 px`, limitée à 64 Kio, dans `public/provider-icons/<id>.png`.
-3. Ajouter une définition au registre avec identité, langue/groupe, catégorie éditoriale, rang, page d’accueil, domaines exacts, flux, intervalle et uniquement les exceptions du lecteur commun.
+3. Ajouter une définition au registre avec identité, langue/groupe, catégorie éditoriale, rang, page d’accueil, domaines exacts, flux et uniquement les exceptions du lecteur commun. L’intervalle par défaut de 60 secondes est automatique ; toute exception doit être explicitement justifiée et testée.
 4. Fournir ou adapter le fixture lecteur déterministe ; couvrir le bon domaine, le mauvais domaine, les publicités, le paywall et le blocage.
 5. Exécuter `npm run test:publications`, `npm test`, `npm run build`, puis `npm run test:live` si le réseau est disponible.
 6. Vérifier les droits du flux et de l’icône. Toute nouvelle racine proxy exacte exige une revue sécurité explicite ; ne jamais autoriser un domaine entier ou un motif large.

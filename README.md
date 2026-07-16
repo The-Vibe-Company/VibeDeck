@@ -13,6 +13,7 @@ Application locale de veille pour journalistes. À la création, chaque panel re
 - panels « Fil » pour fusionner plusieurs médias dans une chronologie unique ;
 - pack de démarrage « Veille concurrents » avec Le Monde, Le Figaro et Le Parisien ;
 - catalogue visuel local de 30 publications optimisées — 20 françaises et 10 anglophones — rangées dans des catégories repliables par langue et type éditorial, avec recherche globale, véritable icône et capacités « Fil optimisé » et « Lecture simplifiée prioritaire » ;
+- intervalle initial commun de 1 minute pour toutes les publications optimisées, modifiable ensuite dans les réglages du fil ;
 - premier import traité comme une baseline déjà vue, sans fausse alerte ;
 - baseline interclassée par date éditoriale entre les médias ; les arrivées réellement nouvelles restent au-dessus de cette baseline et sont interclassées globalement par date éditoriale, indépendamment de leur cycle de rafraîchissement ;
 - à la migration du cache v6, les arrivées antérieures sans identifiant de cycle sont regroupées une seule fois par minute UTC de détection ; les nouveaux cycles conservent ensuite un identifiant temporel exact, partagé et strictement croissant, sans prendre priorité sur la chronologie éditoriale ;
