@@ -1,0 +1,33 @@
+src/App.tsx
+  s_7d1959f068f537::t_0e71a04ad48b71 1070,1073-1074,1078-1079,1084-1085
+  s_7d1959f068f537::t_47781b53211ff0 616,1809
+  s_7d1959f068f537::t_4ab8abf2f0ed3a 349,354-356
+  s_7d1959f068f537::t_bea6bc09d66da7 974-983,989,993-994,1021,1035,1053
+  s_7d1959f068f537::t_4eef6b828a7613 995-998
+scripts/test-pilot-ui.mjs
+  s_7d1959f068f537::t_780788f98fa436 1901-1931,1974-1980,1991-1992,1995-1998,2027-2028,2031-2034
+  s_7d1959f068f537::t_9d53320795207f 1981
+electron/web-panel-controller.mjs
+  s_7d1959f068f537::t_3e777ea07648a7 719
+  s_7d1959f068f537::t_d7dc16f25333d1 720-723,728-731,1174
+electron/web-panel-controller.test.mjs
+  s_7d1959f068f537::t_2125679adb83d0 302,312-316,320-325
+  s_7d1959f068f537::t_60b54798118480 846-850,854-862
+  s_7d1959f068f537::t_a19cc47049627e 863
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "00ff475073c8c39e0505859a627f043812ab55c1",
+  "prompts": {},
+  "sessions": {
+    "s_7d1959f068f537": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6c75-f592-7a41-873f-aaf14b9e91a6",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
