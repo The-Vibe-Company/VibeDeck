@@ -1,0 +1,35 @@
+src/App.tsx
+  s_84bccbf8b98abf::t_8612824b5e0d0b 2286,2290,2307-2308,2310
+electron/semantic-search.mjs
+  s_84bccbf8b98abf::t_1c345a6c871d0b 24-25,145-167,447,465
+  s_84bccbf8b98abf::t_8612824b5e0d0b 114-117,119-120,122-123,125,127
+  s_84bccbf8b98abf::t_73d25dab66e167 121
+README.md
+  s_84bccbf8b98abf::t_8612824b5e0d0b 33
+scripts/test-pilot-ui.mjs
+  s_84bccbf8b98abf::t_b84bc8c3bb96b0 1588
+  s_84bccbf8b98abf::t_7226f9cdf6726b 1654-1656,1659,1678,1691-1693,1695,1707
+  s_84bccbf8b98abf::t_e236f4aabbaab2 27-28,236-240,1521-1523,1527-1528,1530-1531,1578-1587,1589-1595,1647-1649,1652-1653,1657-1658,1663-1664,1669-1670,1674-1675,1677,1679,1682,1689-1690,1694,1696,1699-1700,1704,1706,1708,1711
+electron/semantic-search.test.mjs
+  s_84bccbf8b98abf::t_73d25dab66e167 111,119
+  s_84bccbf8b98abf::t_1c345a6c871d0b 2,11-12,72,76,79-106
+  s_84bccbf8b98abf::t_8612824b5e0d0b 70-71,73-75,77-78,107-110,112-118,120-123
+electron/semantic-search-worker.mjs
+  s_84bccbf8b98abf::t_8612824b5e0d0b 59
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "1f77e7a139588a7adba3866364a024c0a9cd270e",
+  "prompts": {},
+  "sessions": {
+    "s_84bccbf8b98abf": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6b8c-76ad-73d2-befe-bd05103794cd",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
