@@ -1,0 +1,30 @@
+src/styles.css
+  s_fe504c239c5b64::t_6f250f7077fd19 1155-1162,1177
+  s_fe504c239c5b64::t_d727e5dcd74481 1197
+  s_fe504c239c5b64::t_ccf90c93553131 1044-1050,1054-1055
+  s_fe504c239c5b64::t_1a1070ef2b6958 1085-1087,1089-1090,1106-1119,1121-1122
+scripts/test-pilot-ui.mjs
+  s_fe504c239c5b64::t_41d6ae131aaa79 601-603,607-609
+  s_fe504c239c5b64::t_a340c779bb619d 2039-2044
+  s_fe504c239c5b64::t_79d5a1cd202752 625-627
+src/App.tsx
+  s_fe504c239c5b64::t_9e0bfd4a2d362a 3590,3599,3613-3618
+src/feed-row-height.ts
+  s_fe504c239c5b64::t_e2f214feacfeab 53-57,59-63
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "799ff6c010906a6fd0a3920a2d378d06a8c4a1cc",
+  "prompts": {},
+  "sessions": {
+    "s_fe504c239c5b64": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07b14b55-4605-4257-bf28-0e4d413344e3",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
