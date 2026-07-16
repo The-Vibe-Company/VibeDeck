@@ -1,0 +1,46 @@
+electron/semantic-model-storage.mjs
+  s_d87fa750199867::t_258e2916836d7f 115,118-124,129-134,171-176,178-183
+  s_d87fa750199867::t_ab2badf8dfa2b4 1-114,116-117,125-128,135-170,177,184
+electron/semantic-search.mjs
+  s_d87fa750199867::t_5a8c61dcb9a71a 6-8,10-12,210-219,222,224-225,231-232,240-242,261-263,277,291-293,295-297,304-309,320-321,325,345,355-365,380,403,423-444,452,572-573,577,580,583-600,615,624-628,632-645,650
+  s_d87fa750199867::t_258e2916836d7f 220-221,233-234,601-614,616-623
+  s_d87fa750199867::t_ab2badf8dfa2b4 9,342-343,347-354,366-367,369-375
+electron/semantic-search-service.test.mjs
+  s_d87fa750199867::t_5a8c61dcb9a71a 1-3,5-293,337-352,355-360
+  s_d87fa750199867::t_021f435da94bf9 4
+  s_d87fa750199867::t_faa132786b1bb3 353-354
+  s_d87fa750199867::t_4aaedbf90ba9df 361-404
+  s_d87fa750199867::t_258e2916836d7f 294-336
+electron/semantic-model-storage.test.mjs
+  s_d87fa750199867::t_ab2badf8dfa2b4 1-2,4-124,142-223,245
+  s_d87fa750199867::t_5f45a91b29ddbf 3
+  s_d87fa750199867::t_258e2916836d7f 125-141,224-244
+README.md
+  s_7d1959f068f537::t_1ba45def6e8add 99
+electron/main.mjs
+  s_7d1959f068f537::t_a02f97348bba80 35,1534-1540,1542-1544
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "df8ea2283f29be904b65a6d7b5e2305c7a0c54f0",
+  "prompts": {},
+  "sessions": {
+    "s_7d1959f068f537": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6c75-f592-7a41-873f-aaf14b9e91a6",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    },
+    "s_d87fa750199867": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6c74-31f8-7f33-ac3f-0efadda3b23a",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
