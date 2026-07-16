@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import {
@@ -7,6 +8,8 @@ import {
   SearchSupersededError,
   assertModelDownloadUrl,
   documentHash,
+  hybridCandidateIds,
+  lexicalCandidateIds,
   normalizeSearchQuery,
   normalizeSearchMode,
   quantizeVector,
@@ -61,6 +64,60 @@ test("merges lexical and semantic candidates with stable reciprocal ranks", () =
   assert.deepEqual(
     reciprocalRankFusion([["exact", "semantic"], ["semantic", "other"]]),
     ["semantic", "exact", "other"],
+  );
+});
+
+test("weights lexical relevance at 60 percent and semantic relevance at 40 percent", () => {
+  assert.deepEqual(
+    hybridCandidateIds(["keyword", "shared"], ["semantic", "shared"]),
+    ["shared", "keyword", "semantic"],
+  );
+  assert.deepEqual(
+    hybridCandidateIds(["keyword"], ["semantic"]),
+    ["keyword", "semantic"],
+  );
+});
+
+test("ranks lexical candidates with title weight before summary and stable id ties", () => {
+  const database = new DatabaseSync(":memory:");
+  database.exec(`
+    CREATE TABLE documents (item_id TEXT PRIMARY KEY, source_id TEXT NOT NULL);
+    CREATE VIRTUAL TABLE documents_fts USING fts5(
+      item_id UNINDEXED, title, summary, tokenize = 'unicode61 remove_diacritics 2'
+    );
+  `);
+  const insertDocument = database.prepare("INSERT INTO documents VALUES (?, ?)");
+  const insertFts = database.prepare("INSERT INTO documents_fts VALUES (?, ?, ?)");
+  for (const document of [
+    { id: "title-a", source: "source-a", title: "priorité", summary: "" },
+    { id: "title-z", source: "source-a", title: "priorité", summary: "" },
+    { id: "summary", source: "source-a", title: "veille", summary: "priorité" },
+    { id: "other-source", source: "source-b", title: "priorité", summary: "" },
+  ]) {
+    insertDocument.run(document.id, document.source);
+    insertFts.run(document.id, document.title, document.summary);
+  }
+
+  assert.deepEqual(
+    lexicalCandidateIds(database, "priorite", ["source-a"]),
+    ["title-a", "title-z", "summary"],
+  );
+  assert.deepEqual(lexicalCandidateIds(database, "priorite", []), []);
+  database.close();
+});
+
+test("breaks equal relevance without recency and validates fusion weights", () => {
+  assert.deepEqual(
+    reciprocalRankFusion([["z-result"], ["a-result"]], { weights: [1, 1] }),
+    ["a-result", "z-result"],
+  );
+  assert.throws(
+    () => reciprocalRankFusion([["article"]], { weights: [] }),
+    /Chaque classement/,
+  );
+  assert.throws(
+    () => reciprocalRankFusion([["article"]], { weights: [0] }),
+    /Poids de fusion invalide/,
   );
 });
 

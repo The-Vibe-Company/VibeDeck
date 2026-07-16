@@ -24,6 +24,8 @@ const topArrivalTitle = "ARRIVÉE EN TÊTE — scroll nul";
 const pillArrivalTitle = "ARRIVÉE PASTILLE — rappel vers le haut";
 const sharedArrivalTitle = "ARRIVÉE PARTAGÉE — tampon indépendant par panel";
 const sharedSecondArrivalTitle = "ARRIVÉE PARTAGÉE — deuxième insertion";
+const recentRelevanceTitle = "Article de référence 01 — titre suffisamment long pour stabiliser la hauteur";
+const oldRelevanceTitle = "Article de référence 90 — titre suffisamment long pour stabiliser la hauteur";
 
 function escapeXml(value) {
   return String(value).replace(/[&<>'"]/g, (character) => ({
@@ -231,7 +233,11 @@ const baselineTime = Date.now() - 60_000;
 let articles = Array.from({ length: initialArticleCount }, (_, index) => ({
   id: `baseline-${String(index).padStart(3, "0")}`,
   title: `Article de référence ${String(index + 1).padStart(2, "0")} — titre suffisamment long pour stabiliser la hauteur`,
-  summary: `Résumé contrôlé de l’article ${index + 1}.`,
+  summary: index === 0
+    ? "Priorité pour la veille éditoriale récente, avec les mots séparés."
+    : index === initialArticleCount - 1
+      ? "Priorité éditoriale exacte dans cet article volontairement ancien."
+      : `Résumé contrôlé de l’article ${index + 1}.`,
   publishedAt: new Date(baselineTime - index * 60_000),
 }));
 const secondaryArticles = [
@@ -1512,23 +1518,17 @@ try {
     true,
     "Cmd/Ctrl + K doit donner le vrai focus DOM au champ de recherche.",
   );
-  await searchInput.fill("article");
-  const chronologicalSearchResults = searchPalette.locator(".search-palette__result");
-  await chronologicalSearchResults.first().waitFor({ state: "visible" });
+  await searchInput.fill("priorité éditoriale");
+  const relevanceSearchResults = searchPalette.locator(".search-palette__result");
+  await relevanceSearchResults.first().waitFor({ state: "visible" });
   await page.waitForFunction(() =>
     document.querySelector("#semantic-search-results")?.getAttribute("data-result-mode") === "hybrid");
   assert.deepEqual(
-    await chronologicalSearchResults.locator(".search-palette__result-copy > b").evaluateAll(
-      (titles) => titles.slice(0, 5).map((title) => title.textContent),
+    await relevanceSearchResults.locator(".search-palette__result-copy > b").evaluateAll(
+      (titles) => titles.map((title) => title.textContent),
     ),
-    [
-      "Article de référence 01 — titre suffisamment long pour stabiliser la hauteur",
-      "Article secondaire interclassé 01",
-      "Article de référence 02 — titre suffisamment long pour stabiliser la hauteur",
-      "Article secondaire interclassé 02",
-      "Article de référence 03 — titre suffisamment long pour stabiliser la hauteur",
-    ],
-    "La recherche doit reprendre la chronologie globale du fil sans regrouper les journaux.",
+    [oldRelevanceTitle, recentRelevanceTitle],
+    "La palette doit afficher l’article ancien le plus pertinent avant l’article récent moins pertinent.",
   );
   await searchInput.fill("référence 42");
   await searchPalette.locator(".search-palette__result").first().waitFor({ state: "visible" });
@@ -1588,6 +1588,24 @@ try {
 
   await page.keyboard.press("ControlOrMeta+K");
   await searchPalette.waitFor({ state: "visible" });
+  await searchPalette.getByLabel("Requête").fill("priorité éditoriale");
+  await page.waitForFunction(() =>
+    document.querySelector("#semantic-search-results")?.getAttribute("data-result-mode") === "hybrid");
+  await page.keyboard.press("Enter");
+  await searchPalette.waitFor({ state: "detached" });
+  await page.locator(".search-filter-summary").waitFor({ state: "visible" });
+  assert.deepEqual(
+    await panelLeaf.locator(".article-copy > strong").evaluateAll(
+      (titles) => titles.map((title) => title.textContent?.trim()),
+    ),
+    [recentRelevanceTitle, oldRelevanceTitle],
+    "Le filtre doit garder le bon ensemble tout en restaurant la chronologie du fil.",
+  );
+  await page.keyboard.press("Escape");
+  await page.locator(".search-filter-summary").waitFor({ state: "detached" });
+
+  await page.keyboard.press("ControlOrMeta+K");
+  await searchPalette.waitFor({ state: "visible" });
   await searchPalette.getByLabel("Requête").fill("référence 42");
   await searchPalette.locator(".search-palette__result").first().hover();
   await searchPalette.getByRole("button", { name: "Filtrer" }).click();
@@ -1626,63 +1644,71 @@ try {
   await page.keyboard.press("ControlOrMeta+K");
   await searchPalette.waitFor({ state: "visible" });
   await searchPalette.getByLabel("Requête").fill("article");
-  const firstChronologicalResult = searchPalette.locator(".search-palette__result").first();
-  const secondChronologicalResult = searchPalette.locator(".search-palette__result").nth(1);
-  await firstChronologicalResult.waitFor({ state: "visible" });
+  const firstRelevantResult = searchPalette.locator(".search-palette__result").first();
+  const secondRelevantResult = searchPalette.locator(".search-palette__result").nth(1);
+  await firstRelevantResult.waitFor({ state: "visible" });
   await page.waitForFunction(() =>
     document.querySelector("#semantic-search-results")?.getAttribute("data-result-mode") === "hybrid");
-  const firstChronologicalResultId = await firstChronologicalResult.getAttribute("id");
-  const secondChronologicalResultId = await secondChronologicalResult.getAttribute("id");
-  assert.ok(firstChronologicalResultId, "Le premier résultat chronologique doit être identifiable.");
-  assert.ok(secondChronologicalResultId, "Le deuxième résultat chronologique doit être identifiable.");
+  const firstRelevantResultId = await firstRelevantResult.getAttribute("id");
+  const secondRelevantResultId = await secondRelevantResult.getAttribute("id");
+  const secondRelevantResultTitle = (await secondRelevantResult
+    .locator(".search-palette__result-copy > b")
+    .textContent())?.trim();
+  assert.ok(firstRelevantResultId, "Le premier résultat pertinent doit être identifiable.");
+  assert.ok(secondRelevantResultId, "Le deuxième résultat pertinent doit être identifiable.");
+  assert.ok(secondRelevantResultTitle, "Le titre du deuxième résultat pertinent doit être lisible.");
   await page.keyboard.press("ArrowDown");
   assert.equal(
     await searchPalette.getByLabel("Requête").getAttribute("aria-activedescendant"),
-    firstChronologicalResultId,
-    "ArrowDown doit sélectionner le premier résultat dans l’ordre chronologique affiché.",
+    firstRelevantResultId,
+    "ArrowDown doit sélectionner le premier résultat dans l’ordre de pertinence affiché.",
   );
   await page.keyboard.press("ArrowDown");
   assert.equal(
     await searchPalette.getByLabel("Requête").getAttribute("aria-activedescendant"),
-    secondChronologicalResultId,
-    "Le deuxième ArrowDown doit suivre l’interclassement chronologique affiché.",
+    secondRelevantResultId,
+    "Le deuxième ArrowDown doit suivre l’ordre de pertinence affiché.",
   );
   await page.keyboard.press("Enter");
   await searchPalette.waitFor({ state: "detached" });
-  const chronologicalReader = page.locator(".link-reader");
-  await chronologicalReader.waitFor({ state: "visible" });
+  const relevanceReader = page.locator(".link-reader");
+  await relevanceReader.waitFor({ state: "visible" });
   assert.equal(
-    (await chronologicalReader.locator(".link-reader__title").textContent())?.trim(),
-    "Article secondaire interclassé 01",
-    "Entrée doit ouvrir le deuxième résultat interclassé de la chronologie affichée.",
+    (await relevanceReader.locator(".link-reader__title").textContent())?.trim(),
+    secondRelevantResultTitle,
+    "Entrée doit ouvrir le deuxième résultat du classement de pertinence affiché.",
   );
   await page.keyboard.press("Escape");
-  await chronologicalReader.waitFor({ state: "detached" });
+  await relevanceReader.waitFor({ state: "detached" });
 
   await page.keyboard.press("ControlOrMeta+K");
   await searchPalette.waitFor({ state: "visible" });
   await searchPalette.getByLabel("Requête").fill("article");
   await page.waitForFunction(() =>
     document.querySelector("#semantic-search-results")?.getAttribute("data-result-mode") === "hybrid");
-  const hoveredChronologicalResult = searchPalette.locator(".search-palette__result").nth(1);
-  const hoveredChronologicalResultId = await hoveredChronologicalResult.getAttribute("id");
-  assert.ok(hoveredChronologicalResultId, "Le résultat interclassé survolé doit être identifiable.");
-  await hoveredChronologicalResult.hover();
+  const hoveredRelevantResult = searchPalette.locator(".search-palette__result").nth(1);
+  const hoveredRelevantResultId = await hoveredRelevantResult.getAttribute("id");
+  const hoveredRelevantResultTitle = (await hoveredRelevantResult
+    .locator(".search-palette__result-copy > b")
+    .textContent())?.trim();
+  assert.ok(hoveredRelevantResultId, "Le résultat pertinent survolé doit être identifiable.");
+  assert.ok(hoveredRelevantResultTitle, "Le titre du résultat pertinent survolé doit être lisible.");
+  await hoveredRelevantResult.hover();
   assert.equal(
     await searchPalette.getByLabel("Requête").getAttribute("aria-activedescendant"),
-    hoveredChronologicalResultId,
-    "Le survol doit sélectionner l’article rendu à cette position chronologique.",
+    hoveredRelevantResultId,
+    "Le survol doit sélectionner l’article rendu à cette position de pertinence.",
   );
   await page.keyboard.press("Enter");
   await searchPalette.waitFor({ state: "detached" });
-  await chronologicalReader.waitFor({ state: "visible" });
+  await relevanceReader.waitFor({ state: "visible" });
   assert.equal(
-    (await chronologicalReader.locator(".link-reader__title").textContent())?.trim(),
-    "Article secondaire interclassé 01",
-    "Entrée après survol doit ouvrir le résultat interclassé sélectionné.",
+    (await relevanceReader.locator(".link-reader__title").textContent())?.trim(),
+    hoveredRelevantResultTitle,
+    "Entrée après survol doit ouvrir le résultat pertinent sélectionné.",
   );
   await page.keyboard.press("Escape");
-  await chronologicalReader.waitFor({ state: "detached" });
+  await relevanceReader.waitFor({ state: "detached" });
   console.log("✓ recherche live: focus direct, source partagée, filtre explicite et navigation clavier");
 
   await panelLeaf.locator(".dashboard-panel").focus();
