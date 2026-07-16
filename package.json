@@ -1,6 +1,6 @@
 {
   "name": "vibedeck",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "private": true,
   "engines": {
     "node": ">=22.18.0"
@@ -19,10 +19,11 @@
     "dev:conductor": "node scripts/run-conductor.mjs",
     "start": "electron .",
     "build": "tsc --noEmit && vite build",
-    "test": "node --test electron/*.test.mjs",
+    "test": "node --test electron/*.test.mjs && node scripts/test-large-feed.mjs",
     "test:publications": "node --test electron/publication-registry.test.mjs electron/article-reader.test.mjs",
     "test:conductor": "node scripts/test-conductor-run.mjs",
     "test:pilot-ui": "npm run build && node scripts/test-pilot-ui.mjs",
+    "test:large-feed": "node scripts/test-large-feed.mjs",
     "test:packaged": "node scripts/test-packaged-app.mjs",
     "test:live": "cross-env NODE_NO_WARNINGS=1 node electron/live-connectors.mjs",
     "verify:release": "node scripts/verify-release-config.mjs",
@@ -38,7 +39,9 @@
     "dist:win:signed": "npm run build && node scripts/build-windows-signed.mjs"
   },
   "dependencies": {
+    "@chenglou/pretext": "0.0.8",
     "@huggingface/transformers": "3.8.1",
+    "@tanstack/react-virtual": "3.14.6",
     "cheerio": "1.2.0",
     "electron-updater": "6.8.9",
     "fast-xml-parser": "5.9.3",

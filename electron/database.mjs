@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 const MAX_PANEL_NAME_LENGTH = 80;
 const MAX_SOURCE_NAME_LENGTH = 120;
 export const MAX_ITEMS_PER_SOURCE = 2_000;
+export const MAX_FEED_PAGE_SIZE = 200;
 export const MAX_HTTP_URL_LENGTH = 4_096;
 const MAX_LAYOUT_DEPTH = 32;
 const MAX_LAYOUT_NODES = 1_023;
@@ -24,12 +25,14 @@ const MAX_CONFIGURATION_PANELS = 64;
 const MAX_CONFIGURATION_SOURCES = 256;
 const MAX_CONFIGURATION_WEB_PANELS = 6;
 const MAX_FEED_CONFIGURATION_CHECKPOINT_SOURCES = 4_096;
+export const MAX_FEED_PAGE_OFFSET =
+  MAX_FEED_CONFIGURATION_CHECKPOINT_SOURCES * MAX_ITEMS_PER_SOURCE;
 const MIN_SPLIT_RATIO = 0.1;
 const MAX_SPLIT_RATIO = 0.9;
 const MIN_REFRESH_INTERVAL_SECONDS = 30;
 const MAX_REFRESH_INTERVAL_SECONDS = 3_600;
 const DEFAULT_REFRESH_INTERVAL_SECONDS = 60;
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 const CONFIGURATION_FORMAT = "vibedeck-dashboard";
 const CONFIGURATION_VERSION = 1;
 
@@ -599,6 +602,7 @@ function toSource(row) {
     baselineCompletedAt: row.baseline_completed_at ?? null,
     consecutiveFailures: row.consecutive_failures ?? 0,
     nextRetryAt: row.next_retry_at ?? null,
+    arrivalRevision: Number(row.arrival_revision ?? 0),
     itemCount: row.item_count ?? 0,
   };
 }
@@ -702,6 +706,7 @@ export class LocalFeedDatabase {
           baseline_completed_at TEXT,
           consecutive_failures INTEGER NOT NULL DEFAULT 0,
           next_retry_at TEXT,
+          arrival_revision INTEGER NOT NULL DEFAULT 0,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
@@ -722,6 +727,7 @@ export class LocalFeedDatabase {
           image_url TEXT,
           published_at TEXT,
           updated_at TEXT,
+          chronology_at TEXT,
           first_seen_at TEXT NOT NULL,
           arrival_batch_at TEXT,
           last_seen_at TEXT NOT NULL,
@@ -750,6 +756,8 @@ export class LocalFeedDatabase {
           id INTEGER PRIMARY KEY CHECK (id = 1),
           layout_json TEXT,
           revision INTEGER NOT NULL DEFAULT 0,
+          content_revision INTEGER NOT NULL DEFAULT 0,
+          arrival_revision INTEGER NOT NULL DEFAULT 0,
           updated_at TEXT NOT NULL
         );
 
@@ -844,6 +852,11 @@ export class LocalFeedDatabase {
       if (!sourceColumns.has("next_retry_at")) {
         this.database.exec("ALTER TABLE sources ADD COLUMN next_retry_at TEXT;");
       }
+      if (!sourceColumns.has("arrival_revision")) {
+        this.database.exec(
+          "ALTER TABLE sources ADD COLUMN arrival_revision INTEGER NOT NULL DEFAULT 0;",
+        );
+      }
 
       const itemColumns = this.#columnNames("items");
       if (!itemColumns.has("is_baseline")) {
@@ -860,6 +873,22 @@ export class LocalFeedDatabase {
       if (!itemColumns.has("arrival_batch_at")) {
         this.database.exec("ALTER TABLE items ADD COLUMN arrival_batch_at TEXT;");
       }
+      if (!itemColumns.has("chronology_at")) {
+        this.database.exec("ALTER TABLE items ADD COLUMN chronology_at TEXT;");
+      }
+      this.database.exec(`
+        UPDATE items
+        SET chronology_at = COALESCE(published_at, updated_at, first_seen_at)
+        WHERE chronology_at IS NULL
+      `);
+      this.database.exec(`
+        CREATE INDEX IF NOT EXISTS items_feed_order
+        ON items(is_baseline ASC, chronology_at DESC, first_seen_at DESC, id ASC, source_id)
+      `);
+      this.database.exec(`
+        CREATE INDEX IF NOT EXISTS items_source_visibility
+        ON items(source_id, seen_at, is_baseline, chronology_at DESC, first_seen_at DESC, id ASC)
+      `);
 
       if (
         previousVersion < 4 ||
@@ -952,6 +981,17 @@ export class LocalFeedDatabase {
       }
 
       const dashboard = this.database.prepare("SELECT 1 FROM dashboard_state WHERE id = 1").get();
+      const dashboardColumns = this.#columnNames("dashboard_state");
+      if (!dashboardColumns.has("content_revision")) {
+        this.database.exec(
+          "ALTER TABLE dashboard_state ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0;",
+        );
+      }
+      if (!dashboardColumns.has("arrival_revision")) {
+        this.database.exec(
+          "ALTER TABLE dashboard_state ADD COLUMN arrival_revision INTEGER NOT NULL DEFAULT 0;",
+        );
+      }
       if (!dashboard) {
         const panelIds = this.#listPanelIds();
         const layout = buildInitialLayout(panelIds);
@@ -986,6 +1026,35 @@ export class LocalFeedDatabase {
       layout: row.layout_json ? JSON.parse(row.layout_json) : null,
       revision: row.revision,
     };
+  }
+
+  #contentRevision() {
+    const row = this.database
+      .prepare("SELECT content_revision FROM dashboard_state WHERE id = 1")
+      .get();
+    if (!row) throw new Error("État du dashboard introuvable.");
+    return Number(row.content_revision);
+  }
+
+  #incrementContentRevision() {
+    this.database
+      .prepare("UPDATE dashboard_state SET content_revision = content_revision + 1 WHERE id = 1")
+      .run();
+    return this.#contentRevision();
+  }
+
+  #arrivalRevision() {
+    const row = this.database
+      .prepare("SELECT arrival_revision FROM dashboard_state WHERE id = 1")
+      .get();
+    if (!row) throw new Error("État du dashboard introuvable.");
+    return Number(row.arrival_revision);
+  }
+
+  #incrementArrivalRevision() {
+    this.database
+      .prepare("UPDATE dashboard_state SET arrival_revision = arrival_revision + 1 WHERE id = 1")
+      .run();
   }
 
   #writeDashboardState(layout, revision, now) {
@@ -1513,6 +1582,7 @@ export class LocalFeedDatabase {
         this.#listPanelIds(),
       );
       this.#writeDashboardState(nextLayout, dashboard.revision + 1, now);
+      this.#incrementContentRevision();
       this.database.exec("COMMIT;");
     } catch (error) {
       this.database.exec("ROLLBACK;");
@@ -1687,6 +1757,7 @@ export class LocalFeedDatabase {
       });
 
       this.#writeDashboardState(normalized.layout, dashboard.revision + 1, normalizedNow);
+      this.#incrementContentRevision();
       this.#appendPilotEvent(
         "configuration_imported",
         { count: normalized.panels.length },
@@ -1845,6 +1916,12 @@ export class LocalFeedDatabase {
       `)
       .get(sourceId);
     return row ? toSource(row) : null;
+  }
+
+  getItem(itemId) {
+    const normalizedItemId = cleanIdentifier(itemId, "Article");
+    const row = this.database.prepare("SELECT * FROM items WHERE id = ?").get(normalizedItemId);
+    return row ? toItem(row) : null;
   }
 
   findSourceByFeedUrl(feedUrl) {
@@ -2082,6 +2159,7 @@ export class LocalFeedDatabase {
           sourceId,
         );
       }
+      this.#incrementContentRevision();
       this.database.exec("COMMIT;");
     } catch (error) {
       this.database.exec("ROLLBACK;");
@@ -2092,23 +2170,39 @@ export class LocalFeedDatabase {
   attachSource(panelId, sourceId) {
     if (!this.hasPanel(panelId, "feed")) throw new Error("Panel de flux introuvable.");
     if (!this.getSource(sourceId)) throw new Error("Source introuvable.");
-    const position = this.database
-      .prepare(
-        "SELECT COALESCE(MAX(position), -1) + 1 AS next_position FROM panel_sources WHERE panel_id = ?",
-      )
-      .get(panelId).next_position;
-    this.database
-      .prepare(
-        "INSERT OR IGNORE INTO panel_sources (panel_id, source_id, position) VALUES (?, ?, ?)",
-      )
-      .run(panelId, sourceId, position);
+    this.database.exec("BEGIN IMMEDIATE;");
+    try {
+      const position = this.database
+        .prepare(
+          "SELECT COALESCE(MAX(position), -1) + 1 AS next_position FROM panel_sources WHERE panel_id = ?",
+        )
+        .get(panelId).next_position;
+      const result = this.database
+        .prepare(
+          "INSERT OR IGNORE INTO panel_sources (panel_id, source_id, position) VALUES (?, ?, ?)",
+        )
+        .run(panelId, sourceId, position);
+      if (result.changes > 0) this.#incrementContentRevision();
+      this.database.exec("COMMIT;");
+    } catch (error) {
+      this.database.exec("ROLLBACK;");
+      throw error;
+    }
   }
 
   detachSource(panelId, sourceId) {
     if (!this.hasPanel(panelId, "feed")) throw new Error("Panel de flux introuvable.");
-    this.database
-      .prepare("DELETE FROM panel_sources WHERE panel_id = ? AND source_id = ?")
-      .run(panelId, sourceId);
+    this.database.exec("BEGIN IMMEDIATE;");
+    try {
+      const result = this.database
+        .prepare("DELETE FROM panel_sources WHERE panel_id = ? AND source_id = ?")
+        .run(panelId, sourceId);
+      if (result.changes > 0) this.#incrementContentRevision();
+      this.database.exec("COMMIT;");
+    } catch (error) {
+      this.database.exec("ROLLBACK;");
+      throw error;
+    }
   }
 
   listPanelSourceIds(panelId) {
@@ -2196,28 +2290,52 @@ export class LocalFeedDatabase {
     const statement = this.database.prepare(`
       INSERT INTO items (
         id, source_id, canonical_url, title, summary, image_url,
-        published_at, updated_at, first_seen_at, arrival_batch_at,
+        published_at, updated_at, chronology_at, first_seen_at, arrival_batch_at,
         last_seen_at, is_baseline, seen_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(source_id, canonical_url) DO UPDATE SET
         title = excluded.title,
         summary = COALESCE(excluded.summary, items.summary),
         image_url = COALESCE(excluded.image_url, items.image_url),
         published_at = COALESCE(excluded.published_at, items.published_at),
         updated_at = COALESCE(excluded.updated_at, items.updated_at),
+        chronology_at = COALESCE(
+          excluded.published_at,
+          items.published_at,
+          excluded.updated_at,
+          items.updated_at,
+          items.first_seen_at
+        ),
         last_seen_at = excluded.last_seen_at
     `);
-    const itemExists = this.database.prepare(
-      "SELECT 1 FROM items WHERE source_id = ? AND canonical_url = ?",
-    );
+    const findItem = this.database.prepare(`
+      SELECT title, summary, image_url, published_at, updated_at
+      FROM items WHERE source_id = ? AND canonical_url = ?
+    `);
 
     this.database.exec("BEGIN IMMEDIATE;");
     try {
       let insertedCount = 0;
+      let updatedCount = 0;
+      const insertedItemIds = [];
       for (const item of items) {
         const canonicalUrl = cleanHttpUrl(item.canonicalUrl);
         const imageUrl = item.imageUrl == null ? null : cleanHttpUrl(item.imageUrl);
-        if (!itemExists.get(sourceId, canonicalUrl)) insertedCount += 1;
+        const existingItem = findItem.get(sourceId, canonicalUrl);
+        if (!existingItem) {
+          insertedCount += 1;
+          insertedItemIds.push(item.id);
+        } else if (
+          existingItem.title !== item.title ||
+          (item.summary != null && existingItem.summary !== item.summary) ||
+          (imageUrl != null && existingItem.image_url !== imageUrl) ||
+          (item.publishedAt != null && existingItem.published_at !== item.publishedAt) ||
+          (item.updatedAt != null && existingItem.updated_at !== item.updatedAt)
+        ) {
+          updatedCount += 1;
+        }
+        const firstSeenAt = item.firstSeenAt ?? normalizedSeenAt;
+        const chronologyAt = item.publishedAt ?? item.updatedAt ?? firstSeenAt;
         statement.run(
           item.id,
           sourceId,
@@ -2227,7 +2345,8 @@ export class LocalFeedDatabase {
           nullable(imageUrl),
           nullable(item.publishedAt),
           nullable(item.updatedAt),
-          item.firstSeenAt ?? normalizedSeenAt,
+          chronologyAt,
+          firstSeenAt,
           normalizedArrivalBatchAt,
           normalizedSeenAt,
           isInitialImport ? 1 : 0,
@@ -2267,8 +2386,15 @@ export class LocalFeedDatabase {
           )
         `)
         .run(sourceId, sourceId, MAX_ITEMS_PER_SOURCE);
+      if (insertedCount > 0 || updatedCount > 0) this.#incrementContentRevision();
+      if (insertedCount > 0 && !isInitialImport) {
+        this.#incrementArrivalRevision();
+        this.database.prepare(`
+          UPDATE sources SET arrival_revision = arrival_revision + 1 WHERE id = ?
+        `).run(sourceId);
+      }
       this.database.exec("COMMIT;");
-      return { insertedCount, isInitialImport };
+      return { insertedCount, updatedCount, insertedItemIds, isInitialImport };
     } catch (error) {
       this.database.exec("ROLLBACK;");
       throw error;
@@ -2290,6 +2416,7 @@ export class LocalFeedDatabase {
       for (const itemId of ids) changed += Number(statement.run(normalizedSeenAt, itemId).changes);
       if (changed > 0) {
         this.#appendPilotEvent("items_seen", { count: changed }, normalizedSeenAt);
+        this.#incrementContentRevision();
       }
       this.database.exec("COMMIT;");
       return changed;
@@ -2313,6 +2440,7 @@ export class LocalFeedDatabase {
         `)
         .run(normalizedOpenedAt, normalizedOpenedAt, normalizedItemId);
       if (result.changes === 0) throw new Error("Article introuvable.");
+      this.#incrementContentRevision();
       this.#appendPilotEvent(
         "item_opened",
         {},
@@ -2469,7 +2597,132 @@ export class LocalFeedDatabase {
       .run(fetchedAt, expiresAt, endpoint);
   }
 
-  getState(now = new Date().toISOString()) {
+  getFeedPage(request) {
+    if (!request || typeof request !== "object" || Array.isArray(request)) {
+      throw new TypeError("Page de fil invalide.");
+    }
+    const panelId = cleanIdentifier(request.panelId, "Panel");
+    if (!this.hasPanel(panelId, "feed")) throw new Error("Panel de flux introuvable.");
+    const sourceFilter = request.sourceFilter === "all"
+      ? "all"
+      : cleanIdentifier(request.sourceFilter, "Source");
+    if (
+      sourceFilter !== "all" &&
+      !this.database
+        .prepare("SELECT 1 FROM panel_sources WHERE panel_id = ? AND source_id = ?")
+        .get(panelId, sourceFilter)
+    ) {
+      throw new Error("Cette source n’appartient pas au fil.");
+    }
+    const visibilityFilter = request.visibilityFilter ?? "all";
+    if (visibilityFilter !== "all" && visibilityFilter !== "unseen") {
+      throw new TypeError("Filtre de visibilité invalide.");
+    }
+    const offset = request.offset ?? 0;
+    const limit = request.limit ?? MAX_FEED_PAGE_SIZE;
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > MAX_FEED_PAGE_OFFSET) {
+      throw new RangeError("Décalage de page invalide.");
+    }
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_FEED_PAGE_SIZE) {
+      throw new RangeError(`Une page contient au maximum ${MAX_FEED_PAGE_SIZE} articles.`);
+    }
+    const anchorItemId = request.anchorItemId == null
+      ? null
+      : cleanIdentifier(request.anchorItemId, "Article d’ancrage");
+    const focusedItemId = request.focusedItemId == null
+      ? null
+      : cleanIdentifier(request.focusedItemId, "Article focalisé");
+    const where = ["panel_sources.panel_id = ?"];
+    const parameters = [panelId];
+    if (sourceFilter !== "all") {
+      where.push("items.source_id = ?");
+      parameters.push(sourceFilter);
+    }
+    if (visibilityFilter === "unseen") {
+      if (focusedItemId) {
+        where.push("(items.seen_at IS NULL OR items.id = ?)");
+        parameters.push(focusedItemId);
+      } else {
+        where.push("items.seen_at IS NULL");
+      }
+    }
+    const filteredSql = `
+      SELECT items.*
+      FROM items
+      JOIN panel_sources ON panel_sources.source_id = items.source_id
+      WHERE ${where.join(" AND ")}
+    `;
+    const orderBySql = `
+      items.is_baseline ASC,
+      items.chronology_at DESC,
+      items.first_seen_at DESC, items.id ASC
+    `;
+    const rankedSql = `
+      SELECT filtered.*,
+        ROW_NUMBER() OVER (
+          ORDER BY filtered.is_baseline ASC,
+            filtered.chronology_at DESC,
+            filtered.first_seen_at DESC, filtered.id ASC
+        ) - 1 AS feed_index
+      FROM (${filteredSql}) AS filtered
+    `;
+
+    this.database.exec("BEGIN;");
+    try {
+      const revision = this.#contentRevision();
+      const queryTotalCount = Number(
+        this.database.prepare(`SELECT COUNT(*) AS count FROM (${filteredSql})`).get(...parameters).count,
+      );
+      const panelTotalCount = Number(this.database.prepare(`
+        SELECT COUNT(*) AS count
+        FROM items
+        JOIN panel_sources ON panel_sources.source_id = items.source_id
+        WHERE panel_sources.panel_id = ?
+      `).get(panelId).count);
+      const panelUnseenCount = Number(this.database.prepare(`
+        SELECT COUNT(*) AS count
+        FROM items
+        JOIN panel_sources ON panel_sources.source_id = items.source_id
+        WHERE panel_sources.panel_id = ? AND items.seen_at IS NULL
+      `).get(panelId).count);
+      const rowsWithBoundary = this.database.prepare(`
+        SELECT items.*
+        FROM items
+        JOIN panel_sources ON panel_sources.source_id = items.source_id
+        WHERE ${where.join(" AND ")}
+        ORDER BY ${orderBySql}
+        LIMIT ? OFFSET ?
+      `).all(
+        ...parameters,
+        limit + (offset > 0 ? 1 : 0),
+        Math.max(0, offset - 1),
+      );
+      const previousRow = offset > 0 ? rowsWithBoundary.shift() : null;
+      const pageRows = rowsWithBoundary;
+      const anchorRow = anchorItemId
+        ? this.database.prepare(`
+            SELECT feed_index FROM (${rankedSql})
+            WHERE id = ?
+          `).get(...parameters, anchorItemId)
+        : null;
+      this.database.exec("COMMIT;");
+      return {
+        revision,
+        offset,
+        queryTotalCount,
+        panelTotalCount,
+        panelUnseenCount,
+        anchorIndex: anchorRow ? Number(anchorRow.feed_index) : null,
+        previousItemDate: previousRow?.chronology_at ?? null,
+        items: pageRows.map(toItem),
+      };
+    } catch (error) {
+      this.database.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
+  getState(now = new Date().toISOString(), { includeItems = true } = {}) {
     const panels = this.database
       .prepare(`
         SELECT panels.id, panels.name, panels.kind, panels.web_url,
@@ -2500,7 +2753,7 @@ export class LocalFeedDatabase {
             },
       );
 
-    const items = this.database
+    const items = includeItems ? this.database
       .prepare(`
         SELECT ranked.* FROM (
           SELECT items.*,
@@ -2524,13 +2777,15 @@ export class LocalFeedDatabase {
           ranked.id ASC
       `)
       .all()
-      .map(toItem);
+      .map(toItem) : [];
 
     return {
       dashboard: this.getDashboardState(),
       panels,
       sources: this.listSources({ attachedOnly: true }),
       items,
+      contentRevision: this.#contentRevision(),
+      arrivalRevision: this.#arrivalRevision(),
       refreshedAt: now,
     };
   }

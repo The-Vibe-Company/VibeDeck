@@ -24,6 +24,8 @@ const topArrivalTitle = "ARRIVÉE EN TÊTE — scroll nul";
 const pillArrivalTitle = "ARRIVÉE PASTILLE — rappel vers le haut";
 const sharedArrivalTitle = "ARRIVÉE PARTAGÉE — tampon indépendant par panel";
 const sharedSecondArrivalTitle = "ARRIVÉE PARTAGÉE — deuxième insertion";
+const recentRelevanceTitle = "Article de référence 01 — titre suffisamment long pour stabiliser la hauteur";
+const oldRelevanceTitle = "Article de référence 90 — titre suffisamment long pour stabiliser la hauteur";
 
 function escapeXml(value) {
   return String(value).replace(/[&<>'"]/g, (character) => ({
@@ -76,6 +78,17 @@ async function waitForLocalCondition(predicate, label, timeoutMs = 5_000) {
     if (Date.now() >= deadline) throw new Error(`Délai dépassé : ${label}.`);
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
+}
+
+async function clickPanelAction(page, panelLeaf, label) {
+  const direct = panelLeaf.getByLabel(label, { exact: true });
+  if (await direct.isVisible()) {
+    await direct.click();
+    return;
+  }
+  await panelLeaf.getByLabel("Plus d’actions", { exact: true }).click();
+  const menu = page.getByRole("menu", { name: "Actions secondaires du panel" });
+  await menu.getByRole("menuitem", { name: label, exact: true }).click();
 }
 
 async function nativeWebViewSnapshots(electronApp, expectedUrl) {
@@ -231,7 +244,11 @@ const baselineTime = Date.now() - 60_000;
 let articles = Array.from({ length: initialArticleCount }, (_, index) => ({
   id: `baseline-${String(index).padStart(3, "0")}`,
   title: `Article de référence ${String(index + 1).padStart(2, "0")} — titre suffisamment long pour stabiliser la hauteur`,
-  summary: `Résumé contrôlé de l’article ${index + 1}.`,
+  summary: index === 0
+    ? "Priorité pour la veille éditoriale récente, avec les mots séparés."
+    : index === initialArticleCount - 1
+      ? "Priorité éditoriale exacte dans cet article volontairement ancien."
+      : `Résumé contrôlé de l’article ${index + 1}.`,
   publishedAt: new Date(baselineTime - index * 60_000),
 }));
 const secondaryArticles = [
@@ -943,7 +960,7 @@ try {
   const customFeedLeaf = page.locator(
     `.split-layout__leaf[data-panel-id="${customFeedPanelId}"]`,
   );
-  await customFeedLeaf.getByLabel("Configurer les sources").click();
+  await clickPanelAction(page, customFeedLeaf, "Configurer les sources");
   let customFeedDialog = page.getByRole("dialog", { name: "Configuration du fil" });
   await customFeedDialog.waitFor({ state: "visible" });
   const attachedSource = customFeedDialog.locator(".current-source-list > button");
@@ -977,7 +994,7 @@ try {
     "L’édition par le sélecteur partagé doit retirer la source après enregistrement.",
   );
 
-  await customFeedLeaf.getByLabel("Configurer les sources").click();
+  await clickPanelAction(page, customFeedLeaf, "Configurer les sources");
   customFeedDialog = page.getByRole("dialog", { name: "Configuration du fil" });
   await customFeedDialog.waitFor({ state: "visible" });
   probeDelayMs = 5_000;
@@ -1019,6 +1036,13 @@ try {
   await page.keyboard.press("ControlOrMeta+N");
   const webDraftLeaf = page.locator('.split-layout__leaf[data-panel-id^="draft:"]');
   await webDraftLeaf.waitFor({ state: "visible" });
+  assertWithin(
+    await webDraftLeaf.locator(".panel-header").evaluate((header) =>
+      header.getBoundingClientRect().height),
+    28,
+    0.01,
+    "hauteur de l’en-tête du Nouveau panel",
+  );
   await webDraftLeaf.getByRole("button", { name: /Page web/ }).click();
   const webNameInput = webDraftLeaf.getByLabel("Nom du panel web");
   await waitForDomFocus(
@@ -1053,6 +1077,69 @@ try {
   assert.ok(previewWebPanelId, "La preview doit être confirmée depuis son URL main-owned.");
   const previewWebLeaf = page.locator(
     `.split-layout__leaf[data-panel-id="${previewWebPanelId}"]`,
+  );
+  const webHeaderMetrics = await previewWebLeaf.locator(".dashboard-panel").evaluate((panel) => {
+    const header = panel.querySelector(".panel-header");
+    const toolbar = panel.querySelector(".web-toolbar");
+    if (!(header instanceof HTMLElement) || !(toolbar instanceof HTMLElement)) {
+      throw new Error("En-tête web compact introuvable.");
+    }
+    return {
+      height: header.getBoundingClientRect().height,
+      toolbarInsideHeader: header.contains(toolbar),
+    };
+  });
+  assertWithin(webHeaderMetrics.height, 28, 0.01, "hauteur de l’en-tête web compact");
+  assert.equal(
+    webHeaderMetrics.toolbarInsideHeader,
+    true,
+    "Le panel web doit fusionner son identité et sa navigation dans la même barre.",
+  );
+  const webOverflowTrigger = previewWebLeaf.getByLabel("Plus d’actions", { exact: true });
+  await webOverflowTrigger.waitFor({ state: "visible" });
+  const webSoundButton = previewWebLeaf.getByLabel("Activer le son", { exact: true });
+  assert.equal(
+    await webSoundButton.isVisible(),
+    true,
+    "Le son doit rester directement accessible dans un panel web compact.",
+  );
+  assert.equal(
+    await previewWebLeaf.getByLabel("Agrandir", { exact: true }).isVisible(),
+    true,
+    "Le plein écran doit rester directement accessible dans un panel web compact.",
+  );
+  await webSoundButton.click();
+  const webMuteButton = previewWebLeaf.getByLabel("Couper le son", { exact: true });
+  await webMuteButton.waitFor({ state: "visible" });
+  await webMuteButton.click();
+  await webSoundButton.waitFor({ state: "visible" });
+  await webOverflowTrigger.click();
+  const webActionMenu = page.getByRole("menu", { name: "Actions secondaires du panel" });
+  await waitForNativeWebView(
+    electronApp,
+    previewUrl,
+    false,
+    "ouvrir le menu web compact doit masquer la vue native placée au-dessus du renderer",
+  );
+  for (const label of ["Accueil", "Ouvrir dans le navigateur"]) {
+    assert.equal(
+      await webActionMenu.getByRole("menuitem", { name: label, exact: true }).isVisible(),
+      true,
+      `L’action web compacte « ${label} » doit rester disponible.`,
+    );
+  }
+  assert.equal(
+    await webActionMenu.getByRole("menuitem", { name: /son/, exact: false }).count(),
+    0,
+    "Le son visible ne doit pas être dupliqué dans le menu secondaire.",
+  );
+  await page.keyboard.press("Escape");
+  await webActionMenu.waitFor({ state: "detached" });
+  await waitForNativeWebView(
+    electronApp,
+    previewUrl,
+    true,
+    "fermer le menu web compact doit restaurer la vue native",
   );
   await waitForNativeWebView(
     electronApp,
@@ -1327,11 +1414,19 @@ try {
   await readerSourceRow.focus();
   const readerDecisionStartedAt = performance.now();
   await page.keyboard.press("Enter");
-  await page.locator(".link-reader").waitFor({ state: "visible" });
+  const compactReader = page.locator(".link-reader");
+  await compactReader.waitFor({ state: "visible" });
   await page
-    .locator(".link-reader__toolbar .web-address")
+    .locator(".link-reader .reader-status")
     .filter({ hasText: "Page originale · lecture simplifiée indisponible" })
     .waitFor({ state: "visible" });
+  assertWithin(
+    await compactReader.locator(".panel-header").evaluate((header) =>
+      header.getBoundingClientRect().height),
+    28,
+    0.01,
+    "hauteur de l’en-tête du lecteur",
+  );
   assert.ok(
     performance.now() - readerDecisionStartedAt < 1_000,
     "La décision du lecteur doit rester sous une seconde.",
@@ -1397,9 +1492,6 @@ try {
     5,
     "Réutiliser un connecteur existant dans un autre panel ne doit pas le retélécharger.",
   );
-  const narrowWindow = await electronApp.browserWindow(page);
-  await narrowWindow.evaluate((window) => window.setSize(900, 820));
-  await narrowWindow.dispose();
   const panelLeaf = page.locator(`.split-layout__leaf[data-panel-id="${panelId}"]`);
   const narrowLeaf = page.locator(`.split-layout__leaf[data-panel-id="${narrowPanelId}"]`);
   await page.waitForFunction(
@@ -1409,6 +1501,69 @@ try {
       ).length === count,
     { targetPanelId: narrowPanelId, count: initialArticleCount + 4 },
   );
+  const narrowWindow = await electronApp.browserWindow(page);
+  await narrowWindow.evaluate((window) => window.setSize(1_600, 820));
+  await page.waitForFunction(
+    (targetPanelId) => {
+      const panel = document.querySelector(
+        `.split-layout__leaf[data-panel-id="${targetPanelId}"] .dashboard-panel`,
+      );
+      return panel instanceof HTMLElement && panel.getBoundingClientRect().width > 760;
+    },
+    panelId,
+  );
+  const secondaryAction = panelLeaf.getByLabel("Réduire le texte de ce fil", { exact: true });
+  await secondaryAction.focus();
+  await narrowWindow.evaluate((window) => window.setSize(1_000, 820));
+  await page.waitForFunction(
+    (targetPanelId) => {
+      const panel = document.querySelector(
+        `.split-layout__leaf[data-panel-id="${targetPanelId}"] .dashboard-panel`,
+      );
+      return panel instanceof HTMLElement && panel.getBoundingClientRect().width <= 760;
+    },
+    panelId,
+  );
+  await page.evaluate(() => new Promise(
+    (resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)),
+  ));
+  assert.equal(
+    await panelLeaf.getByLabel("Plus d’actions", { exact: true }).evaluate(
+      (trigger) => document.activeElement === trigger,
+    ),
+    true,
+    "Masquer un contrôle secondaire focalisé doit transférer le vrai focus vers Plus d’actions.",
+  );
+  await page.keyboard.press("Enter");
+  const thresholdMenu = page.getByRole("menu", { name: "Actions secondaires du panel" });
+  await thresholdMenu.waitFor({ state: "visible" });
+  await narrowWindow.evaluate((window) => window.setSize(1_600, 820));
+  await thresholdMenu.waitFor({ state: "detached" });
+  assert.equal(
+    await panelLeaf.locator(".dashboard-panel").evaluate((panel) => {
+      const active = document.activeElement;
+      return active instanceof HTMLElement &&
+        panel.contains(active) &&
+        Boolean(active.closest(".panel-action--secondary")) &&
+        active.getClientRects().length > 0;
+    }),
+    true,
+    "Repasser au mode large doit fermer le menu et focaliser une action directe visible.",
+  );
+  await narrowWindow.evaluate((window) => window.setSize(900, 820));
+  await page.waitForFunction(
+    (targetPanelId) => {
+      const panel = document.querySelector(
+        `.split-layout__leaf[data-panel-id="${targetPanelId}"] .dashboard-panel`,
+      );
+      const overflowTrigger = panel?.querySelector('[aria-label="Plus d’actions"]');
+      return panel instanceof HTMLElement &&
+        panel.getBoundingClientRect().width < 520 &&
+        document.activeElement === overflowTrigger;
+    },
+    panelId,
+  );
+  await narrowWindow.dispose();
   await page.waitForFunction(
     (targetPanelId) => {
       const panel = document.querySelector(
@@ -1418,16 +1573,53 @@ try {
     },
     panelId,
   );
-  await panelLeaf.locator(".feed-toolbar__freshness-compact").waitFor({ state: "visible" });
+  const compactHeaderMetrics = await panelLeaf.locator(".dashboard-panel").evaluate((panel) => {
+    const header = panel.querySelector(".panel-header");
+    const toolbar = panel.querySelector(".feed-toolbar");
+    if (!(header instanceof HTMLElement) || !(toolbar instanceof HTMLElement)) {
+      throw new Error("En-tête compact introuvable.");
+    }
+    return {
+      height: header.getBoundingClientRect().height,
+      toolbarInsideHeader: header.contains(toolbar),
+      toolbarHeight: toolbar.getBoundingClientRect().height,
+    };
+  });
+  assertWithin(compactHeaderMetrics.height, 28, 0.01, "hauteur de l’en-tête du Fil étroit");
+  assertWithin(compactHeaderMetrics.toolbarHeight, 27, 0.01, "hauteur intégrée des filtres");
+  assert.equal(
+    compactHeaderMetrics.toolbarInsideHeader,
+    true,
+    "Le Fil étroit doit intégrer ses filtres dans la barre de 28 px.",
+  );
+  await page.screenshot({ path: path.join(projectRoot, ".context", "compact-panel-headers.png") });
   assert.equal(
     await panelLeaf.locator(".feed-toolbar__freshness-full").isHidden(),
     true,
-    "Le libellé long doit céder la place au résumé compact dans un panel étroit.",
+    "Le libellé long doit disparaître dans un panel étroit.",
+  );
+  const compactFreshness = panelLeaf.locator(".feed-toolbar__freshness");
+  assert.equal(
+    await compactFreshness.evaluate((freshness) => getComputedStyle(freshness).position),
+    "absolute",
+    "Sous 520 px, la fraîcheur doit rester accessible tout en étant masquée visuellement.",
+  );
+  const compactRefreshButton = panelLeaf.getByLabel("Actualiser ce panel", { exact: true });
+  assert.equal(
+    await compactRefreshButton.getAttribute("aria-describedby"),
+    await compactFreshness.getAttribute("id"),
+    "L’indicateur compact doit décrire le bouton d’actualisation avec le statut complet.",
+  );
+  assert.match(
+    (await compactFreshness.getAttribute("aria-label")) ?? "",
+    /sources à jour/,
+    "Le statut compact doit conserver la fraîcheur détaillée pour les technologies d’assistance.",
   );
   assert.equal(
-    await panelLeaf.locator(".feed-toolbar__freshness").isVisible(),
-    true,
-    "La fraîcheur doit rester visible dans un dashboard splitté.",
+    await compactRefreshButton.evaluate((button) =>
+      getComputedStyle(button, "::after").display),
+    "block",
+    "L’état de fraîcheur doit rester visible sur le bouton d’actualisation.",
   );
   const compactRefreshCountdown = panelLeaf.locator(".feed-toolbar__freshness-compact");
   const refreshCountdownBefore = await compactRefreshCountdown.textContent();
@@ -1454,6 +1646,27 @@ try {
   assert.ok(
     splitWidths.every((width) => width + SUBPIXEL_EPSILON >= MIN_PANEL_WIDTH),
     `Chaque panel doit conserver au moins 256 px utiles après redimensionnement : ${splitWidths.join(", ")}`,
+  );
+  const compactHeaderBounds = await page.locator(".split-layout__leaf").evaluateAll((leaves) =>
+    leaves.map((leaf) => {
+      const header = leaf.querySelector(".panel-header");
+      const close = leaf.querySelector('[aria-label="Fermer le panel"]');
+      const overflow = leaf.querySelector('[aria-label="Plus d’actions"]');
+      if (!(header instanceof HTMLElement) || !(close instanceof HTMLElement)) return null;
+      const headerRect = header.getBoundingClientRect();
+      const closeRect = close.getBoundingClientRect();
+      return {
+        width: headerRect.width,
+        overflow: header.scrollWidth - header.clientWidth,
+        closeInside: closeRect.right <= headerRect.right + 0.5,
+        adaptiveMenuVisible: overflow instanceof HTMLElement && overflow.getClientRects().length > 0,
+      };
+    }),
+  );
+  assert.ok(
+    compactHeaderBounds.every((bounds) =>
+      bounds && bounds.overflow <= 1 && bounds.closeInside && bounds.adaptiveMenuVisible),
+    `Les commandes fixes doivent rester dans chaque en-tête minimal : ${JSON.stringify(compactHeaderBounds)}`,
   );
   const compactReadState = narrowLeaf.locator(".article-meta em").first();
   await compactReadState.waitFor({ state: "visible" });
@@ -1501,23 +1714,17 @@ try {
     true,
     "Cmd/Ctrl + K doit donner le vrai focus DOM au champ de recherche.",
   );
-  await searchInput.fill("article");
-  const chronologicalSearchResults = searchPalette.locator(".search-palette__result");
-  await chronologicalSearchResults.first().waitFor({ state: "visible" });
+  await searchInput.fill("priorité éditoriale");
+  const relevanceSearchResults = searchPalette.locator(".search-palette__result");
+  await relevanceSearchResults.first().waitFor({ state: "visible" });
   await page.waitForFunction(() =>
     document.querySelector("#semantic-search-results")?.getAttribute("data-result-mode") === "hybrid");
   assert.deepEqual(
-    await chronologicalSearchResults.locator(".search-palette__result-copy > b").evaluateAll(
-      (titles) => titles.slice(0, 5).map((title) => title.textContent),
+    await relevanceSearchResults.locator(".search-palette__result-copy > b").evaluateAll(
+      (titles) => titles.map((title) => title.textContent),
     ),
-    [
-      "Article de référence 01 — titre suffisamment long pour stabiliser la hauteur",
-      "Article secondaire interclassé 01",
-      "Article de référence 02 — titre suffisamment long pour stabiliser la hauteur",
-      "Article secondaire interclassé 02",
-      "Article de référence 03 — titre suffisamment long pour stabiliser la hauteur",
-    ],
-    "La recherche doit reprendre la chronologie globale du fil sans regrouper les journaux.",
+    [oldRelevanceTitle, recentRelevanceTitle],
+    "La palette doit afficher l’article ancien le plus pertinent avant l’article récent moins pertinent.",
   );
   await searchInput.fill("référence 42");
   await searchPalette.locator(".search-palette__result").first().waitFor({ state: "visible" });
@@ -1577,6 +1784,24 @@ try {
 
   await page.keyboard.press("ControlOrMeta+K");
   await searchPalette.waitFor({ state: "visible" });
+  await searchPalette.getByLabel("Requête").fill("priorité éditoriale");
+  await page.waitForFunction(() =>
+    document.querySelector("#semantic-search-results")?.getAttribute("data-result-mode") === "hybrid");
+  await page.keyboard.press("Enter");
+  await searchPalette.waitFor({ state: "detached" });
+  await page.locator(".search-filter-summary").waitFor({ state: "visible" });
+  assert.deepEqual(
+    await panelLeaf.locator(".article-copy > strong").evaluateAll(
+      (titles) => titles.map((title) => title.textContent?.trim()),
+    ),
+    [recentRelevanceTitle, oldRelevanceTitle],
+    "Le filtre doit garder le bon ensemble tout en restaurant la chronologie du fil.",
+  );
+  await page.keyboard.press("Escape");
+  await page.locator(".search-filter-summary").waitFor({ state: "detached" });
+
+  await page.keyboard.press("ControlOrMeta+K");
+  await searchPalette.waitFor({ state: "visible" });
   await searchPalette.getByLabel("Requête").fill("référence 42");
   await searchPalette.locator(".search-palette__result").first().hover();
   await searchPalette.getByRole("button", { name: "Filtrer" }).click();
@@ -1615,63 +1840,71 @@ try {
   await page.keyboard.press("ControlOrMeta+K");
   await searchPalette.waitFor({ state: "visible" });
   await searchPalette.getByLabel("Requête").fill("article");
-  const firstChronologicalResult = searchPalette.locator(".search-palette__result").first();
-  const secondChronologicalResult = searchPalette.locator(".search-palette__result").nth(1);
-  await firstChronologicalResult.waitFor({ state: "visible" });
+  const firstRelevantResult = searchPalette.locator(".search-palette__result").first();
+  const secondRelevantResult = searchPalette.locator(".search-palette__result").nth(1);
+  await firstRelevantResult.waitFor({ state: "visible" });
   await page.waitForFunction(() =>
     document.querySelector("#semantic-search-results")?.getAttribute("data-result-mode") === "hybrid");
-  const firstChronologicalResultId = await firstChronologicalResult.getAttribute("id");
-  const secondChronologicalResultId = await secondChronologicalResult.getAttribute("id");
-  assert.ok(firstChronologicalResultId, "Le premier résultat chronologique doit être identifiable.");
-  assert.ok(secondChronologicalResultId, "Le deuxième résultat chronologique doit être identifiable.");
+  const firstRelevantResultId = await firstRelevantResult.getAttribute("id");
+  const secondRelevantResultId = await secondRelevantResult.getAttribute("id");
+  const secondRelevantResultTitle = (await secondRelevantResult
+    .locator(".search-palette__result-copy > b")
+    .textContent())?.trim();
+  assert.ok(firstRelevantResultId, "Le premier résultat pertinent doit être identifiable.");
+  assert.ok(secondRelevantResultId, "Le deuxième résultat pertinent doit être identifiable.");
+  assert.ok(secondRelevantResultTitle, "Le titre du deuxième résultat pertinent doit être lisible.");
   await page.keyboard.press("ArrowDown");
   assert.equal(
     await searchPalette.getByLabel("Requête").getAttribute("aria-activedescendant"),
-    firstChronologicalResultId,
-    "ArrowDown doit sélectionner le premier résultat dans l’ordre chronologique affiché.",
+    firstRelevantResultId,
+    "ArrowDown doit sélectionner le premier résultat dans l’ordre de pertinence affiché.",
   );
   await page.keyboard.press("ArrowDown");
   assert.equal(
     await searchPalette.getByLabel("Requête").getAttribute("aria-activedescendant"),
-    secondChronologicalResultId,
-    "Le deuxième ArrowDown doit suivre l’interclassement chronologique affiché.",
+    secondRelevantResultId,
+    "Le deuxième ArrowDown doit suivre l’ordre de pertinence affiché.",
   );
   await page.keyboard.press("Enter");
   await searchPalette.waitFor({ state: "detached" });
-  const chronologicalReader = page.locator(".link-reader");
-  await chronologicalReader.waitFor({ state: "visible" });
+  const relevanceReader = page.locator(".link-reader");
+  await relevanceReader.waitFor({ state: "visible" });
   assert.equal(
-    (await chronologicalReader.locator(".link-reader__title").textContent())?.trim(),
-    "Article secondaire interclassé 01",
-    "Entrée doit ouvrir le deuxième résultat interclassé de la chronologie affichée.",
+    (await relevanceReader.locator(".link-reader__title").textContent())?.trim(),
+    secondRelevantResultTitle,
+    "Entrée doit ouvrir le deuxième résultat du classement de pertinence affiché.",
   );
   await page.keyboard.press("Escape");
-  await chronologicalReader.waitFor({ state: "detached" });
+  await relevanceReader.waitFor({ state: "detached" });
 
   await page.keyboard.press("ControlOrMeta+K");
   await searchPalette.waitFor({ state: "visible" });
   await searchPalette.getByLabel("Requête").fill("article");
   await page.waitForFunction(() =>
     document.querySelector("#semantic-search-results")?.getAttribute("data-result-mode") === "hybrid");
-  const hoveredChronologicalResult = searchPalette.locator(".search-palette__result").nth(1);
-  const hoveredChronologicalResultId = await hoveredChronologicalResult.getAttribute("id");
-  assert.ok(hoveredChronologicalResultId, "Le résultat interclassé survolé doit être identifiable.");
-  await hoveredChronologicalResult.hover();
+  const hoveredRelevantResult = searchPalette.locator(".search-palette__result").nth(1);
+  const hoveredRelevantResultId = await hoveredRelevantResult.getAttribute("id");
+  const hoveredRelevantResultTitle = (await hoveredRelevantResult
+    .locator(".search-palette__result-copy > b")
+    .textContent())?.trim();
+  assert.ok(hoveredRelevantResultId, "Le résultat pertinent survolé doit être identifiable.");
+  assert.ok(hoveredRelevantResultTitle, "Le titre du résultat pertinent survolé doit être lisible.");
+  await hoveredRelevantResult.hover();
   assert.equal(
     await searchPalette.getByLabel("Requête").getAttribute("aria-activedescendant"),
-    hoveredChronologicalResultId,
-    "Le survol doit sélectionner l’article rendu à cette position chronologique.",
+    hoveredRelevantResultId,
+    "Le survol doit sélectionner l’article rendu à cette position de pertinence.",
   );
   await page.keyboard.press("Enter");
   await searchPalette.waitFor({ state: "detached" });
-  await chronologicalReader.waitFor({ state: "visible" });
+  await relevanceReader.waitFor({ state: "visible" });
   assert.equal(
-    (await chronologicalReader.locator(".link-reader__title").textContent())?.trim(),
-    "Article secondaire interclassé 01",
-    "Entrée après survol doit ouvrir le résultat interclassé sélectionné.",
+    (await relevanceReader.locator(".link-reader__title").textContent())?.trim(),
+    hoveredRelevantResultTitle,
+    "Entrée après survol doit ouvrir le résultat pertinent sélectionné.",
   );
   await page.keyboard.press("Escape");
-  await chronologicalReader.waitFor({ state: "detached" });
+  await relevanceReader.waitFor({ state: "detached" });
   console.log("✓ recherche live: focus direct, source partagée, filtre explicite et navigation clavier");
 
   await panelLeaf.locator(".dashboard-panel").focus();
@@ -1767,8 +2000,57 @@ try {
   );
 
   const primaryTitle = panelLeaf.locator(".panel-title");
-  const primarySplitAction = panelLeaf.getByLabel("Diviser côte à côte");
-  await primarySplitAction.focus();
+  const overflowTrigger = panelLeaf.getByLabel("Plus d’actions", { exact: true });
+  await overflowTrigger.focus();
+  await page.keyboard.press("Enter");
+  const adaptiveMenu = page.getByRole("menu", { name: "Actions secondaires du panel" });
+  await adaptiveMenu.waitFor({ state: "visible" });
+  await page.screenshot({ path: path.join(projectRoot, ".context", "compact-panel-menu.png") });
+  const firstMenuItem = adaptiveMenu.getByRole("menuitem").first();
+  assert.equal(
+    await firstMenuItem.evaluate((item) => document.activeElement === item),
+    true,
+    "Le menu adaptatif doit focaliser sa première action à l’ouverture.",
+  );
+  await page.keyboard.press("End");
+  assert.equal(
+    await adaptiveMenu.getByRole("menuitem").last().evaluate((item) => document.activeElement === item),
+    true,
+    "Fin doit atteindre la dernière action du menu.",
+  );
+  await page.keyboard.press("Escape");
+  await adaptiveMenu.waitFor({ state: "detached" });
+  assert.equal(
+    await overflowTrigger.evaluate((trigger) => document.activeElement === trigger),
+    true,
+    "Échap doit fermer le menu et restituer le focus à son déclencheur.",
+  );
+  await overflowTrigger.click();
+  await adaptiveMenu.waitFor({ state: "visible" });
+  await page.keyboard.press("Tab");
+  await adaptiveMenu.waitFor({ state: "detached" });
+  // Le focus de sortie part dans un requestAnimationFrame : fenêtre cachée,
+  // la frame peut retarder — attendre le focus réel plutôt que l'instantané.
+  await waitForDomFocus(
+    page,
+    panelLeaf.getByLabel("Agrandir", { exact: true }),
+    "Tab doit fermer le menu portalisé et poursuivre sur le contrôle visible suivant",
+  );
+  await overflowTrigger.click();
+  await adaptiveMenu.waitFor({ state: "visible" });
+  await page.keyboard.press("Shift+Tab");
+  await adaptiveMenu.waitFor({ state: "detached" });
+  await waitForDomFocus(
+    page,
+    panelLeaf.getByLabel("Rechercher dans ce fil", { exact: true }),
+    "Maj + Tab doit fermer le menu portalisé et revenir au contrôle visible précédent",
+  );
+  await overflowTrigger.click();
+  await adaptiveMenu.waitFor({ state: "visible" });
+  await page.locator(".global-bar").click({ position: { x: 2, y: 2 } });
+  await adaptiveMenu.waitFor({ state: "detached" });
+  await overflowTrigger.click();
+  await adaptiveMenu.getByRole("menuitem", { name: "Diviser côte à côte", exact: true }).focus();
   await page.keyboard.press("Alt+ArrowRight");
   await page.waitForFunction(
     (targetPanelId) =>
@@ -1778,7 +2060,7 @@ try {
   assert.equal(
     await primaryTitle.evaluate((title) => document.activeElement === title),
     true,
-    "Une action masquée dans le panel étroit doit rendre le focus au titre durable.",
+    "Déplacer depuis le menu adaptatif doit fermer le menu et rendre le focus au titre durable.",
   );
   await page.keyboard.press("Alt+ArrowLeft");
   await page.waitForFunction(
@@ -1928,7 +2210,7 @@ try {
     assert.ok(after.scrollTop > before.scrollTop, `Le panel ${before.panelId} doit compenser ses arrivées simultanées.`);
   }
 
-  await narrowLeaf.getByLabel("Configurer les sources").click();
+  await clickPanelAction(page, narrowLeaf, "Configurer les sources");
   const feedConfigDialog = page.getByRole("dialog", { name: "Configuration du fil" });
   const configFeedName = feedConfigDialog.getByLabel("Nom du fil");
   assert.equal(
@@ -1969,13 +2251,9 @@ try {
   await temporaryLeaf.waitFor({ state: "detached" });
   await sharedSiblingRow.waitFor({ state: "visible" });
 
-  const sharedItemId = await page.evaluate(async (title) => {
-    const state = await window.vibedeck.getState();
-    const item = state.items.find((candidate) => candidate.title === title);
-    if (!item) throw new Error("L’arrivée partagée est introuvable.");
-    await window.vibedeck.markItemOpened(item.id);
-    return item.id;
-  }, sharedArrivalTitle);
+  const sharedItemId = await sharedRows.first().getAttribute("data-feed-item-id");
+  if (!sharedItemId) throw new Error("L’arrivée partagée est introuvable.");
+  await page.evaluate((itemId) => window.vibedeck.markItemOpened(itemId), sharedItemId);
   assert.ok(sharedItemId, "L’arrivée partagée doit posséder un identifiant.");
   await sharedSiblingRow.waitFor({ state: "visible" });
   assert.match(
@@ -2143,6 +2421,119 @@ try {
   );
   await globalBar.hover();
 
+  // Charge renderer : quatre fils partagent la source principale et doivent
+  // rester bornés en DOM une fois la source passée au-dessus du seuil virtuel.
+  const loadPanelIds = await page.evaluate(async ({ firstPanelId, secondPanelId, feedUrl }) => {
+    const createAttachedPanel = async (targetPanelId, name) => {
+      const before = await window.vibedeck.getState();
+      const knownIds = new Set(before.panels.map(({ id }) => id));
+      const next = await window.vibedeck.createPanel(
+        { kind: "feed", name, defaultRefreshIntervalSeconds: 1_800 },
+        { targetPanelId, side: "bottom" },
+      );
+      const panel = next.panels.find(({ id }) => !knownIds.has(id));
+      if (!panel || panel.kind !== "feed") throw new Error(`Création impossible : ${name}`);
+      await window.vibedeck.addSource(panel.id, {
+        url: feedUrl,
+        connectorKind: "rss",
+        refreshIntervalSeconds: 1_800,
+      });
+      return panel.id;
+    };
+    const thirdPanelId = await createAttachedPanel(firstPanelId, "Charge virtuelle 3");
+    const fourthPanelId = await createAttachedPanel(secondPanelId, "Charge virtuelle 4");
+    return [firstPanelId, secondPanelId, thirdPanelId, fourthPanelId];
+  }, {
+    firstPanelId: panelId,
+    secondPanelId: narrowPanelId,
+    feedUrl: `${origin}/feed-redirect.xml`,
+  });
+  articles = Array.from({ length: 1_200 }, (_, index) => ({
+    id: `virtual-load-${String(index).padStart(4, "0")}`,
+    title: `Charge virtuelle ${String(index + 1).padStart(4, "0")} — titre variable multilingue`,
+    summary: index % 4 === 0
+      ? `Résumé de charge ${index} avec unmottrèslongsansespacepourtesterlescoupures.`
+      : `Résumé de charge contrôlé ${index}.`,
+    publishedAt: new Date(Date.now() - index * 1_000),
+  }));
+  await page.evaluate((id) => window.vibedeck.refreshSource(id), sourceId);
+  await page.waitForFunction((panelIds) => panelIds.every((targetPanelId) => {
+    const leaf = document.querySelector(`.split-layout__leaf[data-panel-id="${targetPanelId}"]`);
+    return leaf?.querySelector(".article-virtual-space") !== null;
+  }), loadPanelIds);
+  await page.waitForFunction((panelIds) => panelIds.every((targetPanelId) => {
+    const list = document.querySelector(
+      `.split-layout__leaf[data-panel-id="${targetPanelId}"] .article-list`,
+    );
+    if (!(list instanceof HTMLElement)) return false;
+    const indexes = [...document.querySelectorAll(
+      `.split-layout__leaf[data-panel-id="${targetPanelId}"] .article-row[data-feed-index]`,
+    )].map((row) => Number(row.getAttribute("data-feed-index")));
+    const reached = indexes.some((index) => index >= 1_100);
+    if (!reached) list.scrollTop = list.scrollHeight;
+    return reached;
+  }), loadPanelIds, { polling: "raf", timeout: 30_000 });
+  const virtualizationMetrics = await page.evaluate((panelIds) => {
+    const perPanel = panelIds.map((targetPanelId) => document.querySelectorAll(
+      `.split-layout__leaf[data-panel-id="${targetPanelId}"] .article-row`,
+    ).length);
+    return { perPanel, total: perPanel.reduce((sum, count) => sum + count, 0) };
+  }, loadPanelIds);
+  assert.ok(
+    virtualizationMetrics.perPanel.every((count) => count < 100),
+    `Chaque fil doit rester sous 100 lignes DOM : ${virtualizationMetrics.perPanel.join(", ")}`,
+  );
+  assert.ok(
+    virtualizationMetrics.total < 400,
+    `Les quatre fils doivent rester sous 400 lignes DOM : ${virtualizationMetrics.total}`,
+  );
+
+  const loadKeyboardMetrics = await page.evaluate((targetPanelId) => {
+    const rows = [...document.querySelectorAll(
+      `.split-layout__leaf[data-panel-id="${targetPanelId}"] .article-row[data-feed-index]`,
+    )];
+    const target = rows.at(-2);
+    if (!(target instanceof HTMLElement)) throw new Error("Ligne profonde introuvable.");
+    target.focus();
+    const durations = [];
+    for (let index = 0; index < 80; index += 1) {
+      const key = index % 2 === 0 ? "ArrowDown" : "ArrowUp";
+      const startedAt = performance.now();
+      document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", {
+        key,
+        bubbles: true,
+        repeat: index > 0,
+      }));
+      durations.push(performance.now() - startedAt);
+    }
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowDown" }));
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowUp" }));
+    durations.sort((first, second) => first - second);
+    return {
+      p95: durations[Math.floor(durations.length * 0.95)],
+      max: durations.at(-1),
+      activeId: document.activeElement?.id ?? null,
+    };
+  }, loadPanelIds[0]);
+  assert.ok(loadKeyboardMetrics.activeId, "Le saut profond doit conserver un vrai focus DOM.");
+  assert.ok(
+    loadKeyboardMetrics.p95 < 16,
+    `Le p95 clavier synchrone doit rester sous 16 ms (${loadKeyboardMetrics.p95.toFixed(2)} ms).`,
+  );
+  assert.ok(
+    loadKeyboardMetrics.max < 50,
+    `Aucune flèche ne doit créer une tâche synchrone de 50 ms (${loadKeyboardMetrics.max.toFixed(2)} ms).`,
+  );
+  await page.keyboard.press("Enter");
+  await page.locator(".link-reader").waitFor({ state: "visible" });
+  await page.keyboard.press("Escape");
+  await page.locator(".link-reader").waitFor({ state: "detached" });
+  assert.equal(
+    await page.evaluate(() => document.activeElement?.classList.contains("article-row") ?? false),
+    true,
+    "Entrée puis Échap près de la fin doit rendre le vrai focus au fil virtuel.",
+  );
+
   console.log(`✓ baseline: ${baselineArticleCount} articles interclassés, roving tabindex actif`);
   console.log("✓ échelle de texte: défaut global 14px, override par fil (clavier, en-tête, pastille), plafond annoncé, menu sans rôles zoom");
   console.log(`✓ viewport initial: scrollTop ${beforeArrival.scrollTop.toFixed(1)}px`);
@@ -2150,7 +2541,7 @@ try {
   console.log("✓ arrivée en tête: scrollTop reste à zéro");
   console.log("✓ layout unique: titre jamais tronqué, mesure 56ch qui suit A±, source réduite à son icône");
   console.log("✓ pastille « nouveaux »: compte hors viewport, clic ramène en haut, jamais de barrière d'insertion");
-  console.log("✓ date ancienne explicite et fraîcheur compacte dans un fil étroit");
+  console.log("✓ en-têtes 28 px, menu adaptatif et fraîcheur signalée dans un fil étroit");
   console.log("✓ lecteur natif: Échap rend le focus au fil et les flèches reprennent immédiatement");
   console.log("✓ contrôles protégés, double-flèche entre panels et Alt+flèche pour les réordonner");
   console.log("✓ arrivées partagées: insertion automatique et viewport restent indépendants par panel");
@@ -2158,6 +2549,10 @@ try {
   console.log("✓ panne manuelle explicite: toast honnête, diagnostic daté et cache conservé");
   console.log("✓ glisser-déposer: texte externe ignoré, MIME interne conservé");
   console.log("✓ survol immobile: la ligne passe « vue » après le délai, un survol bref l’annule");
+  console.log(
+    `✓ virtualisation: ${virtualizationMetrics.perPanel.join("/")} lignes DOM par panel, ` +
+    `p95 clavier ${loadKeyboardMetrics.p95.toFixed(2)} ms près de la ligne 1 200`,
+  );
 } finally {
   if (electronApp) await electronApp.close().catch(() => undefined);
   await closeServer(server).catch(() => undefined);

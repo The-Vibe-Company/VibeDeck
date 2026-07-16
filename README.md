@@ -30,7 +30,7 @@ Application locale de veille pour journalistes. À la création, chaque panel re
 - reconnaissance directe des 30 publications optimisées ;
 - découverte automatique du RSS déclaré par les autres sites ;
 - enrichissement des dates du Parisien avec son News Sitemap ;
-- recherche locale hybride dans tous les fils, avec résultats FTS5 immédiats puis enrichissement E5 hors ligne, filtre explicite et navigation complète au clavier ;
+- recherche locale hybride dans tous les fils, avec résultats FTS5 immédiats puis classement par pertinence combinant keywords et enrichissement E5 hors ligne, filtre explicite et navigation complète au clavier ;
 - filtres par source, recherche et état de lecture, composables sans réordonner la chronologie ;
 - lecteur web intégré au clic sur un article, avec option d’ouverture externe ;
 - lecture simplifiée publique et éphémère pour les articles éligibles des 30 publications, avec repli immédiat vers la page originale pour les abonnements, formats non structurés, blocages et sources personnalisées ;

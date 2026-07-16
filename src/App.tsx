@@ -6,6 +6,7 @@ import {
   ChevronDown,
   Columns2,
   Download,
+  Ellipsis,
   ExternalLink,
   Globe2,
   Home,
@@ -32,11 +33,14 @@ import {
   type SetStateAction,
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
+import { createPortal } from "react-dom";
 import SplitLayout, {
   MIN_PANEL_HEIGHT,
   MIN_PANEL_WIDTH,
@@ -54,11 +58,14 @@ import {
 import {
   compareFeedItems,
   feedItemIdsBeforeAnchor,
+  feedDaySeparator,
   formatCheckedAt,
   formatItemTime,
   formatNextRefresh,
   withDaySeparators,
 } from "./feed-presentation";
+import { useFeedPageStore } from "./feed-pages";
+import { estimateFeedRowHeight, resetFeedRowHeightCache } from "./feed-row-height";
 import { saveFeedPanelConfiguration } from "./feed-settings";
 import { createLatestAsyncOperation } from "./latest-async-operation";
 import ProviderMark from "./ProviderMark";
@@ -97,6 +104,9 @@ const FEED_TEXT_SCALE_OVERRIDES_STORAGE_KEY = "vibedeck.feedTextScale.overrides"
 const FEED_TEXT_SCALE_MIN = 0.8;
 const FEED_TEXT_SCALE_MAX = 1.6;
 const FEED_TEXT_SCALE_STEP = 0.1;
+const PANEL_OVERFLOW_BREAKPOINT = 760;
+const PANEL_ACTION_MENU_EVENT = "vibedeck:panel-action-menu-change";
+
 const MIN_HORIZONTAL_SPLIT_WIDTH = MIN_PANEL_WIDTH * 2 + SPLIT_DIVIDER_SIZE;
 const MIN_VERTICAL_SPLIT_HEIGHT = MIN_PANEL_HEIGHT * 2 + SPLIT_DIVIDER_SIZE;
 const PANEL_FOCUSABLE_SELECTOR =
@@ -165,6 +175,7 @@ type WebPreviewDraft = {
 type AutomaticInsertionMetrics = {
   scrollTop: number;
   anchorItemId: string | null;
+  anchorIndex: number | null;
   anchorViewportTop: number | null;
 };
 
@@ -394,6 +405,9 @@ export default function App() {
   const [linkPreview, setLinkPreview] = useState<LinkPreview | null>(null);
   const [modal, setModal] = useState<ModalState | null>(null);
   const [interactionActive, setInteractionActive] = useState(false);
+  const [openPanelActionMenuIds, setOpenPanelActionMenuIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [fatalError, setFatalError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [updateState, setUpdateState] = useState<UpdateState | null>(null);
@@ -420,7 +434,28 @@ export default function App() {
     Boolean(modal) ||
     semanticSearchOpen ||
     updateInstallConfirmationOpen ||
-    interactionActive;
+    interactionActive ||
+    openPanelActionMenuIds.size > 0;
+
+  useEffect(() => {
+    const handlePanelActionMenuChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ id?: string; open?: boolean }>).detail;
+      if (!detail?.id || typeof detail.open !== "boolean") return;
+      const menuId = detail.id;
+      const menuOpen = detail.open;
+      setOpenPanelActionMenuIds((current) => {
+        const next = new Set(current);
+        if (menuOpen) next.add(menuId);
+        else next.delete(menuId);
+        if (next.size === current.size && [...next].every((id) => current.has(id))) {
+          return current;
+        }
+        return next;
+      });
+    };
+    window.addEventListener(PANEL_ACTION_MENU_EVENT, handlePanelActionMenuChange);
+    return () => window.removeEventListener(PANEL_ACTION_MENU_EVENT, handlePanelActionMenuChange);
+  }, []);
 
   useEffect(() => {
     if (updateInstallConfirmationOpen && !readyUpdateVersion) {
@@ -437,6 +472,10 @@ export default function App() {
   const draftsRef = useRef<Record<string, DraftPanel>>({});
   const webPreviewDraftsRef = useRef<Record<string, WebPreviewDraft>>({});
   const revisionRef = useRef(0);
+  const contentRevisionRef = useRef(0);
+  const arrivalRevisionRef = useRef(0);
+  const sourceArrivalRevisionsRef = useRef(new Map<string, number>());
+  const panelSourceKeysRef = useRef(new Map<string, string>());
   const hydratedRef = useRef(false);
   const serverLayoutMutationRef = useRef(false);
 
@@ -480,6 +519,9 @@ export default function App() {
   const semanticSearchRestoreRef = useRef<SemanticSearchRestoreState | null>(null);
   const activeSemanticSearchRef = useRef<ActiveSemanticSearch | null>(null);
   const semanticSearchNativeOriginRef = useRef(false);
+  const pendingSeenItemIdsRef = useRef(new Set<string>());
+  const pressedFeedArrowKeysRef = useRef(new Set<string>());
+  const seenFlushChainRef = useRef<Promise<void>>(Promise.resolve());
 
   layoutRef.current = layout;
   linkPreviewRef.current = linkPreview;
@@ -625,11 +667,28 @@ export default function App() {
     replaceFeedUi = false,
   ) => {
     const automaticInsertionMetrics = new Map<string, AutomaticInsertionMetrics>();
+    const panelsWithArrivals = new Set(
+      nextState.panels
+        .filter((panel): panel is FeedPanel => panel.kind === "feed")
+        .filter((panel) => panel.sourceIds.some((sourceId) => {
+          const source = nextState.sources.find(({ id }) => id === sourceId);
+          return Boolean(
+            source && source.arrivalRevision >
+              (sourceArrivalRevisionsRef.current.get(sourceId) ?? 0),
+          );
+        }))
+        .map(({ id }) => id),
+    );
     for (const panel of nextState.panels) {
       if (panel.kind !== "feed") continue;
       const existing = feedUiRef.current[panel.id];
-      const hasIncomingItem = existing && panelItems(panel, nextState).some(
-        (item) => !item.isBaseline && !existing.visibleItemIds.has(item.id),
+      const sourceKey = [...panel.sourceIds].sort().join("\u0000");
+      const sourcesUnchanged = panelSourceKeysRef.current.get(panel.id) === sourceKey;
+      const panelArrivalAdvanced = panelsWithArrivals.has(panel.id);
+      const hasIncomingItem = existing && (
+        (panelArrivalAdvanced && sourcesUnchanged) || panelItems(panel, nextState).some(
+          (item) => !item.isBaseline && !existing.visibleItemIds.has(item.id),
+        )
       );
       if (!hasIncomingItem) continue;
       const list = document.querySelector<HTMLElement>(
@@ -646,6 +705,11 @@ export default function App() {
         automaticInsertionMetrics.set(panel.id, {
           scrollTop: list.scrollTop,
           anchorItemId,
+          anchorIndex: anchorRow?.dataset.feedIndex !== undefined
+            ? Number(anchorRow.dataset.feedIndex)
+            : anchorRow
+              ? [...list.querySelectorAll<HTMLElement>(".article-row")].indexOf(anchorRow)
+              : null,
           anchorViewportTop: anchorRow
             ? anchorRow.getBoundingClientRect().top - listTop
             : null,
@@ -697,12 +761,17 @@ export default function App() {
           }
           visibleItemIds.add(item.id);
         }
+        if (panelsWithArrivals.has(panel.id) && automaticInsertionIds.size === 0) {
+          automaticInsertionIds.add(`arrival-probe:${nextState.arrivalRevision}`);
+        }
         const hasAutomaticInsertions = automaticInsertionIds.size > 0;
         let pendingArrivalIds = existing.pendingArrivalIds;
         if (pendingArrivalIds.size > 0) {
           // Purge par appartenance au panel : une source détachée ne doit pas
           // laisser la pastille compter des articles qui ne sont plus au fil.
-          const kept = [...pendingArrivalIds].filter((id) => panelItemIds.has(id));
+          const kept = [...pendingArrivalIds].filter(
+            (id) => id.startsWith("arrival-count:") || panelItemIds.has(id),
+          );
           if (kept.length !== pendingArrivalIds.size) pendingArrivalIds = new Set(kept);
         }
         next[panel.id] = {
@@ -720,6 +789,22 @@ export default function App() {
       return next;
     });
     setFatalError(null);
+    contentRevisionRef.current = Math.max(
+      contentRevisionRef.current,
+      nextState.contentRevision,
+    );
+    arrivalRevisionRef.current = Math.max(
+      arrivalRevisionRef.current,
+      nextState.arrivalRevision,
+    );
+    sourceArrivalRevisionsRef.current = new Map(
+      nextState.sources.map((source) => [source.id, source.arrivalRevision]),
+    );
+    panelSourceKeysRef.current = new Map(
+      nextState.panels
+        .filter((panel): panel is FeedPanel => panel.kind === "feed")
+        .map((panel) => [panel.id, [...panel.sourceIds].sort().join("\u0000")]),
+    );
     const previousRevision = revisionRef.current;
     revisionRef.current = nextState.dashboard.revision;
 
@@ -1318,18 +1403,53 @@ export default function App() {
       return next;
     });
     setLinkPreview({ itemId: item.id, title: item.title });
+    patchSemanticResultItems([item.id], { seenAt: new Date().toISOString(), openedAt: new Date().toISOString() });
     void window.vibedeck
       .markItemOpened(item.id)
       .then((nextState) => applyServerState(nextState))
       .catch((error) => showToast(cleanError(error)));
   }
 
+  function flushPendingSeenItems() {
+    if (pendingSeenItemIdsRef.current.size === 0) return;
+    const itemIds = [...pendingSeenItemIdsRef.current];
+    pendingSeenItemIdsRef.current.clear();
+    const chunks = Array.from(
+      { length: Math.ceil(itemIds.length / 500) },
+      (_, index) => itemIds.slice(index * 500, (index + 1) * 500),
+    );
+    const job = seenFlushChainRef.current.then(async () => {
+      for (const chunk of chunks) {
+        applyServerState(await window.vibedeck.markItemsSeen(chunk));
+      }
+    }).catch((error) => showToast(cleanError(error))).finally(() => {
+      if (
+        pendingSeenItemIdsRef.current.size > 0 &&
+        pressedFeedArrowKeysRef.current.size === 0
+      ) {
+        flushPendingSeenItems();
+      }
+    });
+    seenFlushChainRef.current = job;
+  }
+
   function markItemsSeen(itemIds: string[]) {
-    if (itemIds.length === 0) return;
-    void window.vibedeck
-      .markItemsSeen(itemIds)
-      .then((nextState) => applyServerState(nextState))
-      .catch((error) => showToast(cleanError(error)));
+    patchSemanticResultItems(itemIds, { seenAt: new Date().toISOString() });
+    for (const itemId of itemIds) pendingSeenItemIdsRef.current.add(itemId);
+    if (pressedFeedArrowKeysRef.current.size === 0) flushPendingSeenItems();
+  }
+
+  function patchSemanticResultItems(
+    itemIds: string[],
+    patch: Pick<FeedItem, "seenAt"> | Pick<FeedItem, "seenAt" | "openedAt">,
+  ) {
+    if (semanticResultItemsRef.current.length === 0) return;
+    const ids = new Set(itemIds);
+    const update = (item: FeedItem) => ids.has(item.id)
+      ? { ...item, ...patch, isNew: false }
+      : item;
+    semanticResultItemsRef.current = semanticResultItemsRef.current.map(update);
+    setState((current) => current ? { ...current, items: current.items.map(update) } : current);
   }
 
   function patchFeedUi(panelId: string, patch: Partial<FeedPanelUi>) {
@@ -1634,13 +1754,15 @@ export default function App() {
       const panel = panelById.get(keyboardPanelId);
       if (!panel || panel.kind !== "feed") return;
       const ui = feedUi[panel.id] ?? initialFeedUi(panel, state);
-      const items = panelItems(panel, state, {
-        sourceFilter: ui.sourceFilter,
-        visibleItemIds: ui.visibleItemIds,
-        visibilityFilter: ui.visibilityFilter,
-        focusedItemId: ui.focusedItemId,
-        searchItemIds: ui.searchItemIds,
-      });
+      const leaf = document.querySelector<HTMLElement>(
+        `.split-layout__leaf[data-panel-id="${CSS.escape(panel.id)}"]`,
+      );
+      const activeRow = event.target instanceof HTMLElement
+        ? event.target.closest<HTMLElement>(".article-row")
+        : null;
+      const selectedRow = activeRow ?? (ui.focusedItemId
+        ? document.getElementById(`article-${panel.id}-${ui.focusedItemId}`)
+        : null);
 
       if (event.key.toLowerCase() === "r") {
         event.preventDefault();
@@ -1656,52 +1778,59 @@ export default function App() {
       }
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
-        const focusedIndex = items.findIndex(({ id }) => id === ui.focusedItemId);
-        const activeArticleId =
-          event.target instanceof HTMLElement
-            ? event.target.closest<HTMLElement>(".article-row")?.id ?? null
-            : null;
-        const activeArticleIndex = activeArticleId
-          ? items.findIndex(({ id }) => activeArticleId === `article-${panel.id}-${id}`)
-          : -1;
-        const currentIndex = focusedIndex >= 0
-          ? focusedIndex
-          : activeArticleIndex;
+        pressedFeedArrowKeysRef.current.add(event.key);
         const direction = event.key === "ArrowDown" ? 1 : -1;
-        const nextIndex = Math.max(
-          0,
-          Math.min(items.length - 1, currentIndex < 0 ? 0 : currentIndex + direction),
-        );
-        const item = items[nextIndex];
-        if (item) {
-          patchFeedUi(panel.id, { focusedItemId: item.id });
-          const article = document.getElementById(`article-${panel.id}-${item.id}`);
-          if (article) {
-            article.focus({ preventScroll: true });
-            const list = article.closest<HTMLElement>(".article-list");
-            if (list) smoothScrollIntoView(list, article);
-            else article.scrollIntoView({ block: "nearest" });
+        let article = selectedRow instanceof HTMLElement ? selectedRow : null;
+        const virtualIndex = article?.dataset.feedIndex;
+        if (virtualIndex !== undefined) {
+          const nextIndex = Math.max(0, Number(virtualIndex) + direction);
+          article = leaf?.querySelector<HTMLElement>(
+            `.article-row[data-feed-index="${nextIndex}"]`,
+          ) ?? article;
+        } else if (article) {
+          let sibling = direction > 0 ? article.nextElementSibling : article.previousElementSibling;
+          while (sibling && !sibling.classList.contains("article-row")) {
+            sibling = direction > 0 ? sibling.nextElementSibling : sibling.previousElementSibling;
           }
+          if (sibling instanceof HTMLElement) article = sibling;
+        } else {
+          article = leaf?.querySelector<HTMLElement>(".article-row") ?? null;
+        }
+        const itemId = article?.dataset.feedItemId;
+        if (article && itemId) {
+          patchFeedUi(panel.id, { focusedItemId: itemId });
+          article.focus({ preventScroll: true });
+          const list = article.closest<HTMLElement>(".article-list");
+          if (list) smoothScrollIntoView(list, article);
+          else article.scrollIntoView({ block: "nearest" });
         }
         return;
       }
-      if (event.key === "Enter" && ui.focusedItemId) {
-        const item = items.find(({ id }) => id === ui.focusedItemId);
-        if (item) {
-          event.preventDefault();
-          if (ui.visibilityFilter === "unseen") {
-            patchFeedUi(panel.id, { focusedItemId: null });
-          }
-          void openItem(item, {
-            panelId: panel.id,
-            rowId: `article-${panel.id}-${item.id}`,
-          });
-        }
+      if (event.key === "Enter" && selectedRow instanceof HTMLElement) {
+        event.preventDefault();
+        selectedRow.click();
       }
     }
 
+    function handleKeyUp(event: KeyboardEvent) {
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+      pressedFeedArrowKeysRef.current.delete(event.key);
+      if (pressedFeedArrowKeysRef.current.size === 0) flushPendingSeenItems();
+    }
+
+    function handleWindowBlur() {
+      pressedFeedArrowKeysRef.current.clear();
+      flushPendingSeenItems();
+    }
+
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    window.addEventListener("blur", handleWindowBlur);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+      window.removeEventListener("blur", handleWindowBlur);
+    };
   });
 
   if (fatalError) {
@@ -2150,14 +2279,6 @@ function semanticSearchScopesEqual(
     (first.kind === "all" || (second.kind === "panel" && first.panelId === second.panelId));
 }
 
-function orderSemanticSearchResult(result: SemanticSearchResult | null) {
-  if (!result) return null;
-  return {
-    ...result,
-    items: [...result.items].sort(compareFeedItems),
-  };
-}
-
 function SearchPalette({
   status,
   scope,
@@ -2201,12 +2322,11 @@ function SearchPalette({
       ? { key: searchDraftKey(initialQuery, scope), result: initialResult }
       : null,
   );
-  const resultsRef = useRef<SemanticSearchResult | null>(null);
+  const resultsRef = useRef<SemanticSearchResult | null>(initialResult);
   const resultsKeyRef = useRef(initialResult ? searchDraftKey(initialQuery, scope) : null);
   const skipInitialSearchRef = useRef(Boolean(initialResult && initialQuery.trim().length >= 2));
   const [query, setQuery] = useState(initialQuery);
-  const [results, setResults] = useState<SemanticSearchResult | null>(() =>
-    orderSemanticSearchResult(initialResult));
+  const [results, setResults] = useState<SemanticSearchResult | null>(initialResult);
   const [activeItemId, setActiveItemId] = useState<string | null>(null);
   const [lexicalPending, setLexicalPending] = useState(false);
   const [hybridPending, setHybridPending] = useState(false);
@@ -2222,13 +2342,11 @@ function SearchPalette({
 
   function acceptResult(key: string, result: SemanticSearchResult) {
     if (draftKeyRef.current !== key) return;
-    const orderedResult = orderSemanticSearchResult(result);
-    if (!orderedResult) return;
     resultsKeyRef.current = key;
-    resultsRef.current = orderedResult;
-    setResults(orderedResult);
+    resultsRef.current = result;
+    setResults(result);
     setActiveItemId((current) =>
-      current && orderedResult.items.some(({ id }) => id === current) ? current : null,
+      current && result.items.some(({ id }) => id === current) ? current : null,
     );
   }
 
@@ -2590,7 +2708,6 @@ interface PanelFrameProps {
   panelId: string;
   kind: "FIL" | "PAGE WEB" | "NOUVEAU";
   name: string;
-  count?: string;
   focused: boolean;
   maximized?: boolean;
   actionsDisabled?: boolean;
@@ -2602,16 +2719,298 @@ interface PanelFrameProps {
   onMaximize?: () => void;
   onClose: () => void;
   closeDisabled?: boolean;
+  headerContext?: React.ReactNode;
   primaryActions?: React.ReactNode;
+  secondaryActions?: PanelMenuAction[];
   style?: React.CSSProperties;
   children: React.ReactNode;
+}
+
+interface PanelMenuAction {
+  id: string;
+  label: string;
+  icon: React.ReactNode;
+  onSelect: (event?: MouseEvent<HTMLButtonElement>) => void;
+  disabled?: boolean;
+  ariaDisabled?: boolean;
+  active?: boolean;
+  danger?: boolean;
+  shortcut?: string;
+  group?: "panel" | "view";
+}
+
+function AdaptiveActionMenu({ actions }: { actions: PanelMenuAction[] }) {
+  const menuId = useId();
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const compactRef = useRef<boolean | null>(null);
+  const lastSecondaryFocusRef = useRef<HTMLElement | null>(null);
+  const openRef = useRef(open);
+  openRef.current = open;
+
+  useEffect(() => {
+    if (!open) return;
+    const notify = (nextOpen: boolean) => {
+      window.dispatchEvent(new CustomEvent(
+        PANEL_ACTION_MENU_EVENT,
+        { detail: { id: menuId, open: nextOpen } },
+      ));
+    };
+    notify(true);
+    return () => notify(false);
+  }, [menuId, open]);
+
+  const close = useCallback((restoreFocus = false) => {
+    setOpen(false);
+    setPosition(null);
+    if (restoreFocus) {
+      window.requestAnimationFrame(() => triggerRef.current?.focus({ preventScroll: true }));
+    }
+  }, []);
+
+  const closeToAdjacentControl = useCallback((backward: boolean) => {
+    const trigger = triggerRef.current;
+    const panel = trigger?.closest<HTMLElement>(".dashboard-panel");
+    const focusable = panel
+      ? [...panel.querySelectorAll<HTMLElement>(PANEL_FOCUSABLE_SELECTOR)].filter((candidate) => {
+          if (candidate.getClientRects().length === 0) return false;
+          const style = window.getComputedStyle(candidate);
+          return style.display !== "none" && style.visibility !== "hidden";
+        })
+      : [];
+    const triggerIndex = trigger ? focusable.indexOf(trigger) : -1;
+    const target = triggerIndex >= 0
+      ? focusable[triggerIndex + (backward ? -1 : 1)] ?? trigger
+      : trigger;
+    setOpen(false);
+    setPosition(null);
+    window.requestAnimationFrame(() => target?.focus({ preventScroll: true }));
+  }, []);
+
+  useLayoutEffect(() => {
+    const trigger = triggerRef.current;
+    const panel = trigger?.closest<HTMLElement>(".dashboard-panel");
+    if (!trigger || !panel) return;
+    const rememberFocus = (event: FocusEvent) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      lastSecondaryFocusRef.current = panel.contains(target) &&
+        target.closest(".panel-action--secondary")
+        ? target
+        : null;
+    };
+    const clearRememberedFocus = (event: PointerEvent) => {
+      const target = event.target;
+      if (
+        target instanceof Node &&
+        !lastSecondaryFocusRef.current?.contains(target)
+      ) {
+        lastSecondaryFocusRef.current = null;
+      }
+    };
+    document.addEventListener("focusin", rememberFocus, true);
+    document.addEventListener("pointerdown", clearRememberedFocus, true);
+    const observer = new ResizeObserver(([entry]) => {
+      const compact = (entry?.contentRect.width ?? panel.getBoundingClientRect().width) <=
+        PANEL_OVERFLOW_BREAKPOINT;
+      const wasCompact = compactRef.current;
+      compactRef.current = compact;
+      if (wasCompact === true && !compact && openRef.current) {
+        const directAction = [...panel.querySelectorAll<HTMLElement>(PANEL_FOCUSABLE_SELECTOR)]
+          .find((candidate) =>
+            Boolean(candidate.closest(".panel-action--secondary")) &&
+            candidate.getClientRects().length > 0 &&
+            window.getComputedStyle(candidate).visibility !== "hidden");
+        const fallback = panel.querySelector<HTMLElement>(".panel-title") ?? panel;
+        setOpen(false);
+        setPosition(null);
+        window.requestAnimationFrame(() => (directAction ?? fallback).focus({ preventScroll: true }));
+        return;
+      }
+      if (wasCompact !== false || !compact) return;
+      const active = document.activeElement;
+      const secondaryStillFocused =
+        active instanceof HTMLElement &&
+        panel.contains(active) &&
+        active.closest(".panel-action--secondary");
+      if (secondaryStillFocused || (
+        active === document.body && lastSecondaryFocusRef.current
+      )) {
+        window.requestAnimationFrame(() => trigger.focus({ preventScroll: true }));
+      }
+    });
+    observer.observe(panel);
+    return () => {
+      observer.disconnect();
+      document.removeEventListener("focusin", rememberFocus, true);
+      document.removeEventListener("pointerdown", clearRememberedFocus, true);
+    };
+  }, []);
+
+  const placeMenu = useCallback(() => {
+    const trigger = triggerRef.current;
+    const menu = menuRef.current;
+    if (!trigger || !menu || trigger.getClientRects().length === 0) {
+      setOpen(false);
+      return;
+    }
+    const triggerRect = trigger.getBoundingClientRect();
+    const menuRect = menu.getBoundingClientRect();
+    const edge = 6;
+    const gap = 4;
+    const left = Math.min(
+      window.innerWidth - menuRect.width - edge,
+      Math.max(edge, triggerRect.right - menuRect.width),
+    );
+    const below = triggerRect.bottom + gap;
+    const top = below + menuRect.height <= window.innerHeight - edge
+      ? below
+      : Math.max(edge, triggerRect.top - menuRect.height - gap);
+    setPosition({ left, top });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    placeMenu();
+    const reposition = () => placeMenu();
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    return () => {
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+    };
+  }, [open, placeMenu]);
+
+  useEffect(() => {
+    if (!open) return;
+    const dismiss = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (menuRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
+      close();
+    };
+    document.addEventListener("pointerdown", dismiss, true);
+    return () => document.removeEventListener("pointerdown", dismiss, true);
+  }, [close, open]);
+
+  useLayoutEffect(() => {
+    if (!open || !position) return;
+    menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus({
+      preventScroll: true,
+    });
+  }, [open, position]);
+
+  function moveMenuFocus(direction: 1 | -1 | "first" | "last") {
+    const items = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [])]
+      .filter((item) => !item.disabled);
+    if (items.length === 0) return;
+    if (direction === "first") return items[0]?.focus({ preventScroll: true });
+    if (direction === "last") return items.at(-1)?.focus({ preventScroll: true });
+    const current = document.activeElement instanceof HTMLButtonElement
+      ? items.indexOf(document.activeElement)
+      : -1;
+    const next = current < 0
+      ? direction === 1 ? 0 : items.length - 1
+      : (current + direction + items.length) % items.length;
+    items[next]?.focus({ preventScroll: true });
+  }
+
+  if (actions.length === 0) return null;
+
+  const menu = open
+    ? createPortal(
+        <div
+          ref={menuRef}
+          className="panel-action-menu"
+          role="menu"
+          aria-label="Actions secondaires du panel"
+          style={position ?? { left: 0, top: 0, visibility: "hidden" }}
+          onKeyDown={(event) => {
+            if (event.altKey && ["ArrowLeft", "ArrowRight"].includes(event.key)) {
+              close();
+              return;
+            }
+            if (event.key === "ArrowDown") {
+              event.preventDefault();
+              moveMenuFocus(1);
+            } else if (event.key === "ArrowUp") {
+              event.preventDefault();
+              moveMenuFocus(-1);
+            } else if (event.key === "Home") {
+              event.preventDefault();
+              moveMenuFocus("first");
+            } else if (event.key === "End") {
+              event.preventDefault();
+              moveMenuFocus("last");
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              close(true);
+            } else if (event.key === "Tab") {
+              event.preventDefault();
+              event.stopPropagation();
+              closeToAdjacentControl(event.shiftKey);
+            }
+          }}
+        >
+          {actions.map((action, index) => {
+            const separated = index > 0 && actions[index - 1]?.group !== action.group;
+            return (
+              <button
+                type="button"
+                key={action.id}
+                role="menuitem"
+                className={`${action.active ? " is-active" : ""}${
+                  action.danger ? " is-danger" : ""
+                }${separated ? " is-separated" : ""}`}
+                disabled={action.disabled}
+                aria-disabled={action.ariaDisabled || undefined}
+                onClick={(event) => {
+                  if (action.ariaDisabled) return;
+                  action.onSelect(event);
+                  close(true);
+                }}
+              >
+                <span aria-hidden="true">{action.icon}</span>
+                <strong>{action.label}</strong>
+                {action.shortcut && <kbd>{action.shortcut}</kbd>}
+              </button>
+            );
+          })}
+        </div>,
+        document.body,
+      )
+    : null;
+
+  return (
+    <>
+      <button
+        type="button"
+        ref={triggerRef}
+        className="icon-button panel-overflow-trigger"
+        aria-label="Plus d’actions"
+        title="Plus d’actions"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={(event) => {
+          event.stopPropagation();
+          setPosition(null);
+          setOpen((current) => !current);
+        }}
+      >
+        <Ellipsis size={13} />
+      </button>
+      {menu}
+    </>
+  );
 }
 
 function PanelFrame({
   panelId,
   kind,
   name,
-  count,
   focused,
   maximized,
   actionsDisabled = false,
@@ -2623,7 +3022,9 @@ function PanelFrame({
   onMaximize,
   onClose,
   closeDisabled = false,
+  headerContext,
   primaryActions,
+  secondaryActions = [],
   style,
   children,
 }: PanelFrameProps) {
@@ -2654,6 +3055,30 @@ function PanelFrame({
     if (!active || active === document.body || active === panelElement) return true;
     return active instanceof HTMLElement && active.matches(".dashboard-panel");
   }
+
+  const panelMenuActions: PanelMenuAction[] = [
+    ...secondaryActions,
+    ...(onSplit
+      ? [
+          {
+            id: "split-row",
+            label: "Diviser côte à côte",
+            icon: <Columns2 size={13} />,
+            onSelect: () => onSplit("row"),
+            disabled: actionsDisabled,
+            group: "panel" as const,
+          },
+          {
+            id: "split-column",
+            label: "Diviser horizontalement",
+            icon: <Rows2 size={13} />,
+            onSelect: () => onSplit("column"),
+            disabled: actionsDisabled,
+            group: "panel" as const,
+          },
+        ]
+      : []),
+  ];
 
   return (
     <section
@@ -2713,59 +3138,76 @@ function PanelFrame({
       aria-label={`${kind} — ${name}`}
     >
       <header className="panel-header" {...dragHandle}>
-        <span className="panel-kind">{kind}</span>
-        {renaming ? (
-          <input
-            className="panel-title-input"
-            aria-label={`Renommer le panel ${name}`}
-            value={nameValue}
-            autoFocus
-            onChange={(event) => setNameValue(event.target.value)}
-            onBlur={finishRename}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") finishRename();
-              if (event.key === "Escape") {
-                setNameValue(name);
-                setRenaming(false);
-              }
-            }}
-          />
-        ) : canRename ? (
-          <button
-            type="button"
-            className="panel-title"
-            data-panel-focus-key="panel-title"
-            title={
-              canRename
-                ? "F2 pour renommer · Alt + ←/→ pour déplacer · glisser à la souris"
-                : name
-            }
-            aria-keyshortcuts={onMove ? "Alt+ArrowLeft Alt+ArrowRight" : undefined}
-            onDoubleClick={(event) => {
-              event.stopPropagation();
-              if (canRename) setRenaming(true);
-            }}
-            onKeyDown={(event) => {
-              if (!canRename || !["Enter", " ", "F2"].includes(event.key)) return;
+        <div className="panel-identity">
+          <span className="panel-kind">{kind}</span>
+          {renaming ? (
+            <input
+              className="panel-title-input"
+              aria-label={`Renommer le panel ${name}`}
+              value={nameValue}
+              autoFocus
+              onChange={(event) => setNameValue(event.target.value)}
+              onBlur={finishRename}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") finishRename();
+                if (event.key === "Escape") {
+                  setNameValue(name);
+                  setRenaming(false);
+                }
+              }}
+            />
+          ) : canRename ? (
+            <button
+              type="button"
+              className="panel-title"
+              data-panel-focus-key="panel-title"
+              title="F2 pour renommer · Alt + ←/→ pour déplacer · glisser à la souris"
+              aria-keyshortcuts={onMove ? "Alt+ArrowLeft Alt+ArrowRight" : undefined}
+              onDoubleClick={(event) => {
+                event.stopPropagation();
+                if (canRename) setRenaming(true);
+              }}
+              onKeyDown={(event) => {
+                if (!canRename || !["Enter", " ", "F2"].includes(event.key)) return;
+                event.preventDefault();
+                event.stopPropagation();
+                setRenaming(true);
+              }}
+            >
+              {name}
+            </button>
+          ) : (
+            <span className="panel-title" title={name}>
+              {name}
+            </span>
+          )}
+        </div>
+        {headerContext && (
+          <div
+            className="panel-header__context"
+            onMouseDown={(event) => event.stopPropagation()}
+            onDragStart={(event) => {
               event.preventDefault();
               event.stopPropagation();
-              setRenaming(true);
             }}
           >
-            {name}
-          </button>
-        ) : (
-          <span className="panel-title" title={name}>
-            {name}
-          </span>
+            {headerContext}
+          </div>
         )}
-        {count && <span className="panel-count">{count}</span>}
-        <div className="panel-actions" onMouseDown={(event) => event.stopPropagation()}>
+        <div
+          className="panel-actions"
+          onMouseDown={(event) => event.stopPropagation()}
+          onDragStart={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+        >
           {primaryActions}
           {onSplit && (
             <>
               <IconButton
                 label="Diviser côte à côte"
+                className="panel-action--secondary"
                 disabled={actionsDisabled}
                 onClick={() => onSplit("row")}
               >
@@ -2773,6 +3215,7 @@ function PanelFrame({
               </IconButton>
               <IconButton
                 label="Diviser horizontalement"
+                className="panel-action--secondary"
                 disabled={actionsDisabled}
                 onClick={() => onSplit("column")}
               >
@@ -2780,6 +3223,7 @@ function PanelFrame({
               </IconButton>
             </>
           )}
+          <AdaptiveActionMenu actions={panelMenuActions} />
           {onMaximize && (
             <IconButton
               label={maximized ? "Restaurer" : "Agrandir"}
@@ -2807,6 +3251,8 @@ function PanelFrame({
 function IconButton({
   label,
   onClick,
+  className,
+  ariaDescribedBy,
   disabled,
   ariaDisabled,
   active,
@@ -2815,6 +3261,8 @@ function IconButton({
 }: {
   label: string;
   onClick: () => void;
+  className?: string;
+  ariaDescribedBy?: string;
   disabled?: boolean;
   ariaDisabled?: boolean;
   active?: boolean;
@@ -2824,10 +3272,11 @@ function IconButton({
   return (
     <button
       type="button"
-      className={`icon-button${active ? " icon-button--active" : ""}${
+      className={`icon-button${className ? ` ${className}` : ""}${active ? " icon-button--active" : ""}${
         danger ? " icon-button--danger" : ""
       }`}
       aria-label={label}
+      aria-describedby={ariaDescribedBy}
       title={label}
       disabled={disabled}
       aria-disabled={ariaDisabled || undefined}
@@ -2898,34 +3347,151 @@ function FeedPanelView({
   const sources = panel.sourceIds
     .map((sourceId) => state.sources.find(({ id }) => id === sourceId))
     .filter((source): source is Source => Boolean(source));
+  const sourceById = useMemo(
+    () => new Map(state.sources.map((source) => [source.id, source])),
+    [state.sources],
+  );
+  const catalogById = useMemo(
+    () => new Map(state.sourceCatalog.map((entry) => [entry.id, entry])),
+    [state.sourceCatalog],
+  );
   const activeSourceFilter =
     ui.sourceFilter === "all" || sources.some(({ id }) => id === ui.sourceFilter)
       ? ui.sourceFilter
       : "all";
-  const allItems = panelItems(panel, state);
-  const visibleItems = panelItems(panel, state, {
-    visibleItemIds: ui.visibleItemIds,
-  });
-  const items = panelItems(panel, state, {
+  const searchItems = ui.searchItemIds ? panelItems(panel, state, {
     sourceFilter: activeSourceFilter,
-    visibleItemIds: ui.visibleItemIds,
     visibilityFilter: ui.visibilityFilter,
     focusedItemId: ui.focusedItemId,
     searchItemIds: ui.searchItemIds,
-  });
+  }) : null;
+  const pageStore = useFeedPageStore({
+    panelId: panel.id,
+    sourceFilter: activeSourceFilter,
+    visibilityFilter: ui.visibilityFilter,
+    ...(ui.automaticInsertionMetrics?.anchorItemId
+      ? { anchorItemId: ui.automaticInsertionMetrics.anchorItemId }
+      : {}),
+    ...(ui.visibilityFilter === "unseen" && ui.focusedItemId
+      ? { focusedItemId: ui.focusedItemId }
+      : {}),
+  }, state.contentRevision);
+  const totalItemCount = searchItems?.length ?? pageStore.totalCount;
+  const virtualized = searchItems === null && totalItemCount > 500;
+  const items = searchItems ?? pageStore.loadedItems.slice(0, totalItemCount);
   const tabbableItemId = items.some(({ id }) => id === ui.focusedItemId)
     ? ui.focusedItemId
     : items[0]?.id ?? null;
-  const allCount = allItems.length;
-  const unseenCount = visibleItems.filter(({ seenAt }) => seenAt === null).length;
+  const allCount = searchItems ? panel.sourceIds.reduce((count, sourceId) =>
+    count + (state.sources.find(({ id }) => id === sourceId)?.itemCount ?? 0), 0)
+    : pageStore.panelTotalCount;
+  const unseenCount = searchItems
+    ? state.items.filter(({ sourceId, seenAt }) => panel.sourceIds.includes(sourceId) && seenAt === null).length
+    : pageStore.panelUnseenCount;
   const failedSources = sources.filter(({ status }) => status === "error");
   const refreshing = sources.some(({ status }) => status === "refreshing");
   const automaticInsertionKey = [...ui.automaticInsertionIds].sort().join("\u0000");
+  const automaticInsertionsLoaded = ui.automaticInsertionIds.size === 0 || (
+    pageStore.revision >= state.contentRevision && (
+      ui.automaticInsertionMetrics?.anchorItemId
+        ? pageStore.revisionOf(ui.automaticInsertionMetrics.anchorItemId) >= state.contentRevision
+        : [...ui.automaticInsertionIds].every((itemId) => itemId.startsWith("arrival-probe:")) ||
+          [...ui.automaticInsertionIds].some((itemId) => items.some(({ id }) => id === itemId))
+    )
+  );
+  const [listWidth, setListWidth] = useState(0);
+  const [restoreTopFocus, setRestoreTopFocus] = useState(false);
+  const focusedIndex = ui.focusedItemId
+    ? searchItems
+      ? searchItems.findIndex(({ id }) => id === ui.focusedItemId)
+      : pageStore.indexOf(ui.focusedItemId)
+    : -1;
+  const rowVirtualizer = useVirtualizer({
+    count: virtualized ? totalItemCount : 0,
+    getScrollElement: () => articleListRef.current,
+    getItemKey: (index) => pageStore.itemAt(index)?.id ?? `${panel.id}:pending:${index}`,
+    estimateSize: (index) => {
+      const item = pageStore.itemAt(index);
+      const previous = pageStore.itemAt(index - 1);
+      return estimateFeedRowHeight(
+        item,
+        listWidth || 480,
+        textScale,
+        Boolean(item && feedDaySeparator(item, previous)),
+      );
+    },
+    overscan: 12,
+    rangeExtractor: (range) => {
+      const indexes = defaultRangeExtractor(range);
+      for (const index of [
+        focusedIndex - 1,
+        focusedIndex,
+        focusedIndex + 1,
+        pageStore.anchorIndex,
+      ]) {
+        if (index === null) continue;
+        if (index >= 0 && index < totalItemCount && !indexes.includes(index)) indexes.push(index);
+      }
+      return indexes.sort((first, second) => first - second);
+    },
+    useFlushSync: false,
+  });
+  const virtualRows = rowVirtualizer.getVirtualItems();
+
+  useLayoutEffect(() => {
+    const list = articleListRef.current;
+    if (!list) return;
+    const update = () => setListWidth(list.clientWidth);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(list);
+    return () => observer.disconnect();
+  }, [virtualized]);
+
+  useEffect(() => {
+    if (searchItems) return;
+    if (virtualized) {
+      const list = articleListRef.current;
+      const scrollTop = list?.scrollTop ?? 0;
+      const viewportHeight = list?.clientHeight ?? 0;
+      const viewportRows = virtualRows.filter((row) =>
+        row.end >= scrollTop - viewportHeight &&
+        row.start <= scrollTop + viewportHeight * 2);
+      const first = viewportRows[0]?.index ?? 0;
+      const last = viewportRows.at(-1)?.index ?? first;
+      pageStore.loadRange(first, last);
+    } else if (totalItemCount > 0) {
+      pageStore.loadRange(0, totalItemCount - 1);
+    }
+  }, [pageStore.loadRange, searchItems, state.contentRevision, totalItemCount, virtualized, virtualRows]);
+
+  useLayoutEffect(() => {
+    if (!restoreTopFocus) return;
+    pageStore.loadRange(0, 0);
+    const firstItem = pageStore.itemAt(0);
+    const firstRow = articleListRef.current?.querySelector<HTMLElement>(
+      '.article-row[data-feed-index="0"]',
+    );
+    if (!firstItem || !firstRow) return;
+    firstRow.focus({ preventScroll: true });
+    onUi({ focusedItemId: firstItem.id, pendingArrivalIds: new Set() });
+    setRestoreTopFocus(false);
+  }, [pageStore.itemAt, pageStore.loadRange, restoreTopFocus, virtualRows]);
+
+  useEffect(() => {
+    void document.fonts.ready.then(() => {
+      resetFeedRowHeightCache();
+      rowVirtualizer.measure();
+    });
+  }, [listWidth, rowVirtualizer, textScale]);
 
   useLayoutEffect(() => {
     const list = articleListRef.current;
     const previous = ui.automaticInsertionMetrics;
     if (ui.automaticInsertionIds.size === 0 || ui.searchItemIds) return;
+    // Le signal de révision et la page SQLite voyagent séparément. Attendre la
+    // page révisée empêche de consommer l’arrivée contre l’ancienne fenêtre.
+    if (!automaticInsertionsLoaded) return;
     if (list && previous) {
       if (previous.scrollTop < 4) {
         // Keeping arrivals visible at the top outranks a keyboard glide in
@@ -2952,126 +3518,206 @@ function FeedPanelView({
           ui.automaticInsertionIds,
           previous.anchorItemId,
         );
-        if (arrivedAbove.length > 0) {
+        const anchorShift = previous.anchorIndex !== null && pageStore.anchorIndex !== null
+          ? Math.max(0, pageStore.anchorIndex - previous.anchorIndex)
+          : 0;
+        const arrivedAboveCount = Math.max(arrivedAbove.length, anchorShift);
+        if (arrivedAboveCount > 0) {
+          const pendingArrivalIds = new Set([...ui.pendingArrivalIds, ...arrivedAbove]);
+          for (let index = pendingArrivalIds.size; index < ui.pendingArrivalIds.size + arrivedAboveCount; index += 1) {
+            pendingArrivalIds.add(`arrival-count:${pageStore.revision}:${previous.anchorItemId}:${index}`);
+          }
           onUi({
             automaticInsertionIds: new Set(),
             automaticInsertionMetrics: null,
-            pendingArrivalIds: new Set([...ui.pendingArrivalIds, ...arrivedAbove]),
+            pendingArrivalIds,
           });
           return;
         }
       }
     }
     onUi({ automaticInsertionIds: new Set(), automaticInsertionMetrics: null });
-  }, [automaticInsertionKey, ui.automaticInsertionIds, ui.automaticInsertionMetrics, ui.searchItemIds]);
+  }, [
+    automaticInsertionKey,
+    automaticInsertionsLoaded,
+    ui.automaticInsertionIds,
+    ui.automaticInsertionMetrics,
+    ui.searchItemIds,
+  ]);
 
-  return (
-    <PanelFrame
-      panelId={panel.id}
-      kind="FIL"
-      name={panel.name}
-      count={`${allCount}`}
-      {...frame}
-      style={
-        textScaleOverride !== null
-          ? ({ "--feed-text-scale": String(textScaleOverride) } as React.CSSProperties)
-          : undefined
-      }
-      primaryActions={
-        <>
-          <IconButton
-            label="Réduire le texte de ce fil"
-            ariaDisabled={textScale <= FEED_TEXT_SCALE_MIN}
-            onClick={() => onTextScale(-1)}
-          >
-            <span className="text-scale-glyph" aria-hidden="true">A−</span>
-          </IconButton>
-          {textScaleOverride !== null && (
-            <IconButton
-              label={`Texte de ce fil : ${Math.round(textScaleOverride * 100)} % — revenir à la taille par défaut`}
-              onClick={() => onTextScale(0)}
-            >
-              <span className="text-scale-glyph text-scale-glyph--value" aria-hidden="true">
-                {Math.round(textScaleOverride * 100)}%
-              </span>
-            </IconButton>
-          )}
-          <IconButton
-            label="Agrandir le texte de ce fil"
-            ariaDisabled={textScale >= FEED_TEXT_SCALE_MAX}
-            onClick={() => onTextScale(1)}
-          >
-            <span className="text-scale-glyph" aria-hidden="true">A+</span>
-          </IconButton>
-          <IconButton label="Actualiser ce panel" disabled={refreshing} onClick={() => void onRefresh()}>
-            <RefreshCw className={refreshing ? "is-spinning" : ""} size={13} />
-          </IconButton>
-          <IconButton label="Rechercher dans ce fil" onClick={onSearch}>
-            <Search size={13} />
-          </IconButton>
-          <IconButton label="Configurer les sources" onClick={onConfigure}>
-            <SlidersHorizontal size={13} />
-          </IconButton>
-        </>
-      }
-    >
-      <div className="feed-toolbar" aria-label="Filtrer les sources">
-        <div className="feed-toolbar__filters">
+  const renderArticleButton = (item: FeedItem, index: number | null = null) => {
+    const source = sourceById.get(item.sourceId);
+    const catalogEntry = source?.connectorId ? catalogById.get(source.connectorId) : null;
+    const seen = item.seenAt !== null;
+    const opened = item.openedAt !== null;
+    const focused = ui.focusedItemId === item.id;
+    return (
+      <button
+        key={item.id}
+        type="button"
+        id={`article-${panel.id}-${item.id}`}
+        data-feed-item-id={item.id}
+        data-feed-index={index ?? undefined}
+        tabIndex={item.id === tabbableItemId ? 0 : -1}
+        className={`article-row${seen ? " article-row--seen" : ""}${
+          opened ? " article-row--opened" : ""
+        }${focused ? " article-row--focused" : ""}`}
+        title="Cliquer pour lire l’article sélectionné"
+        onFocus={() => onUi({ focusedItemId: item.id })}
+        onBlur={() => {
+          if (!seen && !opened) onSeen([item.id]);
+        }}
+        onPointerMove={() => {
+          if (ui.focusedItemId !== item.id) onUi({ focusedItemId: item.id });
+          if (seen || opened) return;
+          if (hoverSeenTimerRef.current?.id === item.id) return;
+          clearHoverSeenTimer();
+          const handle = setTimeout(() => {
+            hoverSeenTimerRef.current = null;
+            onSeen([item.id]);
+          }, HOVER_SEEN_DELAY_MS);
+          hoverSeenTimerRef.current = { id: item.id, handle };
+        }}
+        onClick={() => {
+          if (ui.focusedItemId !== item.id) {
+            onUi({ focusedItemId: item.id });
+            return;
+          }
+          if (ui.visibilityFilter === "unseen") onUi({ focusedItemId: null });
+          void onOpen(item, `article-${panel.id}-${item.id}`);
+        }}
+      >
+        <time
+          dateTime={item.publishedAt ?? item.updatedAt ?? item.firstSeenAt}
+          title={item.publishedAt || item.updatedAt ? undefined : "Heure indisponible"}
+        >
+          {formatItemTime(item)}
+        </time>
+        <span className="article-provider">
+          <ProviderMark
+            providerId={source?.connectorId ?? "custom"}
+            iconPath={catalogEntry?.iconPath}
+            size={Math.round(20 * textScale)}
+          />
+        </span>
+        <span className="article-copy">
+          <span className="article-meta">
+            <span className="article-source">
+              <span className="article-source__full">{source?.name ?? "Source"}</span>
+            </span>
+            {!seen && !opened && <em>Nouveau</em>}
+            {seen && !opened && (
+              <em className="is-seen">✓<span className="article-state-label"> Vu</span></em>
+            )}
+            {opened && (
+              <em className="is-opened">✓<span className="article-state-label"> Ouvert</span></em>
+            )}
+          </span>
+          <strong>{item.title}</strong>
+        </span>
+      </button>
+    );
+  };
+
+  const refreshState = refreshing
+    ? "refreshing"
+    : failedSources.length > 0
+      ? "error"
+      : sources.every(sourceIsFresh)
+        ? "healthy"
+        : "stale";
+  const refreshStatusId = `feed-refresh-status-${panel.id}`;
+  const secondaryActions: PanelMenuAction[] = [
+    {
+      id: "text-smaller",
+      label: "Réduire le texte",
+      icon: <span className="text-scale-glyph">A−</span>,
+      onSelect: () => onTextScale(-1),
+      ariaDisabled: textScale <= FEED_TEXT_SCALE_MIN,
+      group: "view",
+    },
+    ...(textScaleOverride !== null
+      ? [{
+          id: "text-reset",
+          label: `Revenir à la taille par défaut (${Math.round(textScaleOverride * 100)} %)`,
+          icon: <span className="text-scale-glyph text-scale-glyph--value">{Math.round(textScaleOverride * 100)}%</span>,
+          onSelect: () => onTextScale(0),
+          group: "view" as const,
+        }]
+      : []),
+    {
+      id: "text-larger",
+      label: "Agrandir le texte",
+      icon: <span className="text-scale-glyph">A+</span>,
+      onSelect: () => onTextScale(1),
+      ariaDisabled: textScale >= FEED_TEXT_SCALE_MAX,
+      group: "view",
+    },
+    {
+      id: "configure-feed",
+      label: "Configurer les sources",
+      icon: <SlidersHorizontal size={13} />,
+      onSelect: onConfigure,
+      group: "view",
+    },
+  ];
+
+  const feedHeader = (
+    <div className="feed-toolbar" aria-label="Filtrer les sources">
+      <div className="feed-toolbar__filters">
+        <button
+          type="button"
+          data-panel-focus-key="feed-filter:all"
+          className={activeSourceFilter === "all" ? "is-active" : ""}
+          aria-pressed={activeSourceFilter === "all"}
+          onClick={() =>
+            onUi({ sourceFilter: "all", focusedItemId: null, pendingArrivalIds: new Set() })
+          }
+        >
+          Toutes <span>· {allCount}</span>
+        </button>
+        <button
+          type="button"
+          data-panel-focus-key="feed-filter:unseen"
+          className={`feed-toolbar__unseen${
+            ui.visibilityFilter === "unseen" ? " is-active" : ""
+          }`}
+          aria-pressed={ui.visibilityFilter === "unseen"}
+          onClick={() =>
+            onUi({
+              visibilityFilter: ui.visibilityFilter === "unseen" ? "all" : "unseen",
+              focusedItemId: null,
+              pendingArrivalIds: new Set(),
+            })
+          }
+        >
+          Non vus <span>· {unseenCount}</span>
+        </button>
+        {sources.map((source, sourceIndex) => (
           <button
             type="button"
-            data-panel-focus-key="feed-filter:all"
-            className={activeSourceFilter === "all" ? "is-active" : ""}
-            aria-pressed={activeSourceFilter === "all"}
-            onClick={() =>
-              onUi({ sourceFilter: "all", focusedItemId: null, pendingArrivalIds: new Set() })
-            }
-          >
-            Toutes <span>· {allCount}</span>
-          </button>
-          <button
-            type="button"
-            data-panel-focus-key="feed-filter:unseen"
-            className={`feed-toolbar__unseen${
-              ui.visibilityFilter === "unseen" ? " is-active" : ""
+            key={source.id}
+            data-panel-focus-key={`feed-filter:source:${source.id}`}
+            className={activeSourceFilter === source.id ? "is-active" : ""}
+            aria-pressed={activeSourceFilter === source.id}
+            aria-label={`${source.name} — source ${sourceIndex + 1} sur ${sources.length} — ${
+              source.status === "error"
+                ? "indisponible"
+                : source.status === "refreshing"
+                  ? "actualisation en cours"
+                  : sourceIsFresh(source)
+                    ? "à jour"
+                    : "en retard"
             }`}
-            aria-pressed={ui.visibilityFilter === "unseen"}
+            title={source.errorMessage ?? source.name}
             onClick={() =>
-              onUi({
-                visibilityFilter: ui.visibilityFilter === "unseen" ? "all" : "unseen",
-                focusedItemId: null,
-                pendingArrivalIds: new Set(),
-              })
+              onUi({ sourceFilter: source.id, focusedItemId: null, pendingArrivalIds: new Set() })
             }
           >
-            Non vus <span>· {unseenCount}</span>
+            <i className={`source-dot source-dot--${source.status}`} />
+            {source.name}
           </button>
-          {sources.map((source, sourceIndex) => (
-            <button
-              type="button"
-              key={source.id}
-              data-panel-focus-key={`feed-filter:source:${source.id}`}
-              className={activeSourceFilter === source.id ? "is-active" : ""}
-              aria-pressed={activeSourceFilter === source.id}
-              aria-label={`${source.name} — source ${sourceIndex + 1} sur ${sources.length} — ${
-                source.status === "error"
-                  ? "indisponible"
-                  : source.status === "refreshing"
-                    ? "actualisation en cours"
-                    : sourceIsFresh(source)
-                      ? "à jour"
-                      : "en retard"
-              }`}
-              title={source.errorMessage ?? source.name}
-              onClick={() =>
-                onUi({ sourceFilter: source.id, focusedItemId: null, pendingArrivalIds: new Set() })
-              }
-            >
-              <i className={`source-dot source-dot--${source.status}`} />
-              {source.name}
-            </button>
-          ))}
-        </div>
-        {sources.length > 0 && <FeedRefreshStatus sources={sources} />}
+        ))}
         {ui.searchItemIds && searchQuery && (
           <button
             type="button"
@@ -3086,6 +3732,74 @@ function FeedPanelView({
           </button>
         )}
       </div>
+      {sources.length > 0 && <FeedRefreshStatus id={refreshStatusId} sources={sources} />}
+    </div>
+  );
+
+  return (
+    <PanelFrame
+      panelId={panel.id}
+      kind="FIL"
+      name={panel.name}
+      {...frame}
+      style={
+        textScaleOverride !== null
+          ? ({ "--feed-text-scale": String(textScaleOverride) } as React.CSSProperties)
+          : undefined
+      }
+      headerContext={feedHeader}
+      secondaryActions={secondaryActions}
+      primaryActions={
+        <>
+          <IconButton
+            label="Réduire le texte de ce fil"
+            className="panel-action--secondary"
+            ariaDisabled={textScale <= FEED_TEXT_SCALE_MIN}
+            onClick={() => onTextScale(-1)}
+          >
+            <span className="text-scale-glyph" aria-hidden="true">A−</span>
+          </IconButton>
+          {textScaleOverride !== null && (
+            <IconButton
+              label={`Texte de ce fil : ${Math.round(textScaleOverride * 100)} % — revenir à la taille par défaut`}
+              className="panel-action--secondary"
+              onClick={() => onTextScale(0)}
+            >
+              <span className="text-scale-glyph text-scale-glyph--value" aria-hidden="true">
+                {Math.round(textScaleOverride * 100)}%
+              </span>
+            </IconButton>
+          )}
+          <IconButton
+            label="Agrandir le texte de ce fil"
+            className="panel-action--secondary"
+            ariaDisabled={textScale >= FEED_TEXT_SCALE_MAX}
+            onClick={() => onTextScale(1)}
+          >
+            <span className="text-scale-glyph" aria-hidden="true">A+</span>
+          </IconButton>
+          <IconButton
+            label="Actualiser ce panel"
+            className={`feed-refresh-action feed-refresh-action--${refreshState}`}
+            ariaDescribedBy={sources.length > 0 ? refreshStatusId : undefined}
+            disabled={refreshing}
+            onClick={() => void onRefresh()}
+          >
+            <RefreshCw className={refreshing ? "is-spinning" : ""} size={13} />
+          </IconButton>
+          <IconButton label="Rechercher dans ce fil" onClick={onSearch}>
+            <Search size={13} />
+          </IconButton>
+          <IconButton
+            label="Configurer les sources"
+            className="panel-action--secondary"
+            onClick={onConfigure}
+          >
+            <SlidersHorizontal size={13} />
+          </IconButton>
+        </>
+      }
+    >
       {failedSources.length > 0 && (
         <div className="panel-notice" role="status" aria-label="Sources indisponibles">
           <i />
@@ -3099,6 +3813,13 @@ function FeedPanelView({
           </span>
         </div>
       )}
+      {pageStore.error && totalItemCount > 0 && !ui.searchItemIds && (
+        <div className="panel-notice" role="alert" aria-label="Page du fil indisponible">
+          <i />
+          <span><strong>Une page du fil n’a pas pu être chargée.</strong><small>Le cache visible reste affiché.</small></span>
+          <button type="button" onClick={pageStore.invalidate}>Réessayer</button>
+        </div>
+      )}
       <div className="feed-body">
         {sources.length === 0 ? (
           <PanelEmpty
@@ -3108,7 +3829,21 @@ function FeedPanelView({
             action="Configurer les sources"
             onAction={onConfigure}
           />
-        ) : items.length === 0 && ui.searchItemIds && searchQuery ? (
+        ) : totalItemCount === 0 && pageStore.loading && !ui.searchItemIds ? (
+          <PanelEmpty
+            icon={<LoaderCircle className="is-spinning" size={20} />}
+            title="Chargement du fil…"
+            body="Les articles locaux sont en cours de préparation."
+          />
+        ) : totalItemCount === 0 && pageStore.error && !ui.searchItemIds ? (
+          <PanelEmpty
+            icon={<Rss size={20} />}
+            title="Fil momentanément indisponible"
+            body="Les articles locaux n’ont pas pu être chargés. Aucun contenu n’a été supprimé."
+            action="Réessayer"
+            onAction={pageStore.invalidate}
+          />
+        ) : totalItemCount === 0 && ui.searchItemIds && searchQuery ? (
           <PanelEmpty
             icon={<Search size={20} />}
             title="Aucun résultat"
@@ -3116,7 +3851,7 @@ function FeedPanelView({
             action="Modifier la recherche"
             onAction={onSearch}
           />
-        ) : items.length === 0 && ui.visibilityFilter === "unseen" ? (
+        ) : totalItemCount === 0 && ui.visibilityFilter === "unseen" ? (
           <PanelEmpty
             icon={<Check size={20} />}
             title="Tout est vu"
@@ -3126,7 +3861,7 @@ function FeedPanelView({
               onUi({ visibilityFilter: "all", focusedItemId: null, pendingArrivalIds: new Set() })
             }
           />
-        ) : items.length === 0 ? (
+        ) : totalItemCount === 0 ? (
           <PanelEmpty
             icon={refreshing ? <LoaderCircle className="is-spinning" size={20} /> : <Rss size={20} />}
             title={refreshing ? "Récupération des actualités…" : "Aucune publication"}
@@ -3139,6 +3874,7 @@ function FeedPanelView({
           <div
             className="article-list"
             ref={articleListRef}
+            role={virtualized ? "list" : undefined}
             onPointerLeave={clearHoverSeenTimer}
             onScroll={(event) => {
               // Revenu en haut : les arrivées comptées sont visibles, la
@@ -3148,92 +3884,43 @@ function FeedPanelView({
               }
             }}
           >
-            {withDaySeparators(items).map((row) => {
-              if (row.kind === "separator") {
-                return (
-                  <div key={row.key} className="article-day-separator" aria-hidden="true">
-                    {row.label}
-                  </div>
-                );
-              }
-              const { item } = row;
-              const source = state.sources.find(({ id }) => id === item.sourceId);
-              const catalogEntry = state.sourceCatalog.find(({ id }) => id === source?.connectorId);
-              const seen = item.seenAt !== null;
-              const opened = item.openedAt !== null;
-              const focused = ui.focusedItemId === item.id;
-              return (
-                <button
-                  type="button"
-                  id={`article-${panel.id}-${item.id}`}
-                  key={item.id}
-                  tabIndex={item.id === tabbableItemId ? 0 : -1}
-                  className={`article-row${seen ? " article-row--seen" : ""}${
-                    opened ? " article-row--opened" : ""
-                  }${
-                    focused ? " article-row--focused" : ""
-                  }`}
-                  title="Cliquer pour lire l’article sélectionné"
-                  onFocus={() => onUi({ focusedItemId: item.id })}
-                  onBlur={() => {
-                    if (!seen && !opened) onSeen([item.id]);
-                  }}
-                  onPointerMove={() => {
-                    if (ui.focusedItemId !== item.id) onUi({ focusedItemId: item.id });
-                    // Déjà « vu » : rien à programmer.
-                    if (seen || opened) return;
-                    // Un minuteur cible déjà cette ligne : laisser le survol immobile
-                    // aboutir sans le réarmer à chaque pixel.
-                    if (hoverSeenTimerRef.current?.id === item.id) return;
-                    clearHoverSeenTimer();
-                    const handle = setTimeout(() => {
-                      hoverSeenTimerRef.current = null;
-                      onSeen([item.id]);
-                    }, HOVER_SEEN_DELAY_MS);
-                    hoverSeenTimerRef.current = { id: item.id, handle };
-                  }}
-                  onClick={() => {
-                    if (ui.focusedItemId !== item.id) {
-                      onUi({ focusedItemId: item.id });
-                      return;
-                    }
-                    if (ui.visibilityFilter === "unseen") {
-                      onUi({ focusedItemId: null });
-                    }
-                    void onOpen(item, `article-${panel.id}-${item.id}`);
-                  }}
-                >
-                  <time
-                    dateTime={item.publishedAt ?? item.updatedAt ?? item.firstSeenAt}
-                    title={item.publishedAt || item.updatedAt ? undefined : "Heure indisponible"}
-                  >
-                    {formatItemTime(item)}
-                  </time>
-                  <span className="article-provider">
-                    <ProviderMark
-                      providerId={source?.connectorId ?? "custom"}
-                      iconPath={catalogEntry?.iconPath}
-                      size={Math.round(20 * textScale)}
-                    />
-                  </span>
-                  <span className="article-copy">
-                    <span className="article-meta">
-                      <span className="article-source">
-                        <span className="article-source__full">{source?.name ?? "Source"}</span>
-                      </span>
-                      {!seen && !opened && <em>Nouveau</em>}
-                      {seen && !opened && (
-                        <em className="is-seen">✓<span className="article-state-label"> Vu</span></em>
+            {virtualized ? (
+              <div
+                className="article-virtual-space"
+                style={{ height: rowVirtualizer.getTotalSize() }}
+              >
+                {virtualRows.map((virtualRow) => {
+                  const item = pageStore.itemAt(virtualRow.index);
+                  const previous = pageStore.itemAt(virtualRow.index - 1);
+                  const dayLabel = item ? feedDaySeparator(item, previous) : null;
+                  return (
+                    <div
+                      key={virtualRow.key}
+                      ref={rowVirtualizer.measureElement}
+                      className="article-virtual-row"
+                      data-index={virtualRow.index}
+                      role="listitem"
+                      aria-setsize={totalItemCount}
+                      aria-posinset={virtualRow.index + 1}
+                      style={{ transform: `translateY(${virtualRow.start}px)` }}
+                    >
+                      {dayLabel && (
+                        <div className="article-day-separator" aria-hidden="true">{dayLabel}</div>
                       )}
-                      {opened && (
-                        <em className="is-opened">✓<span className="article-state-label"> Ouvert</span></em>
-                      )}
-                    </span>
-                    <strong>{item.title}</strong>
-                  </span>
-                </button>
-              );
-            })}
+                      {item
+                        ? renderArticleButton(item, virtualRow.index)
+                        : <div className="article-row-placeholder" aria-hidden="true" />}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              withDaySeparators(items).map((row) => row.kind === "separator" ? (
+                <div key={row.key} className="article-day-separator" aria-hidden="true">
+                  {row.label}
+                </div>
+              ) : renderArticleButton(row.item))
+            )}
           </div>
           {ui.pendingArrivalIds.size > 0 && (
             <button
@@ -3246,6 +3933,13 @@ function FeedPanelView({
               onClick={() => {
                 const list = articleListRef.current;
                 if (!list) return;
+                if (virtualized) {
+                  setRestoreTopFocus(true);
+                  pageStore.loadRange(0, 0);
+                  const virtualSpace = list.querySelector<HTMLElement>(".article-virtual-space");
+                  if (virtualSpace) smoothScrollIntoView(list, virtualSpace);
+                  return;
+                }
                 list.querySelector<HTMLElement>(".article-row")?.focus({ preventScroll: true });
                 const firstChild = list.firstElementChild;
                 if (firstChild instanceof HTMLElement) smoothScrollIntoView(list, firstChild);
@@ -3263,7 +3957,7 @@ function FeedPanelView({
   );
 }
 
-function FeedRefreshStatus({ sources }: { sources: Source[] }) {
+function FeedRefreshStatus({ id, sources }: { id: string; sources: Source[] }) {
   const [now, setNow] = useState(() => new Date());
 
   useEffect(() => {
@@ -3285,6 +3979,7 @@ function FeedRefreshStatus({ sources }: { sources: Source[] }) {
 
   return (
     <span
+      id={id}
       className={`feed-toolbar__freshness${
         freshSourceCount < sources.length ? " is-stale" : ""
       }`}
@@ -3331,83 +4026,115 @@ function WebPanelView({
     }
   }
 
-  return (
-    <PanelFrame panelId={panel.id} kind="PAGE WEB" name={panel.name} {...frame}>
-      <div className="web-toolbar">
-        <IconButton
-          label="Page précédente"
-          disabled={!runtime?.canGoBack}
-          onClick={() => void window.vibedeck.goBackWebPanel(panel.id)}
-        >
-          <ArrowLeft size={12} />
-        </IconButton>
-        <IconButton
-          label="Page suivante"
-          disabled={!runtime?.canGoForward}
-          onClick={() => void window.vibedeck.goForwardWebPanel(panel.id)}
-        >
-          <ArrowRight size={12} />
-        </IconButton>
-        <IconButton label="Accueil" onClick={() => void window.vibedeck.homeWebPanel(panel.id)}>
-          <Home size={12} />
-        </IconButton>
-        <IconButton
-          label={runtime?.loading ? "Arrêter" : "Recharger"}
-          onClick={() =>
-            void (runtime?.loading
-              ? window.vibedeck.stopWebPanel(panel.id)
-              : window.vibedeck.reloadWebPanel(panel.id))
-          }
-        >
-          {runtime?.loading ? <X size={12} /> : <RefreshCw size={12} />}
-        </IconButton>
-        {editingUrl ? (
-          <form className="web-address web-address--editing" onSubmit={submitUrl}>
-            <input
-              aria-label="URL d’accueil de la page web"
-              value={urlValue}
-              autoFocus
-              onChange={(event) => setUrlValue(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  setUrlValue(panel.url);
-                  setEditingUrl(false);
-                }
-              }}
-            />
-            <button type="submit" disabled={saving}>
-              OK
-            </button>
-          </form>
-        ) : (
-          <button
-            type="button"
-            className="web-address"
-            title="Modifier l’URL d’accueil"
-            onClick={() => {
-              setUrlValue(panel.url);
-              setEditingUrl(true);
+  const secondaryActions: PanelMenuAction[] = [
+    {
+      id: "web-home",
+      label: "Accueil",
+      icon: <Home size={13} />,
+      onSelect: () => void window.vibedeck.homeWebPanel(panel.id),
+      group: "view",
+    },
+    {
+      id: "web-external",
+      label: "Ouvrir dans le navigateur",
+      icon: <ExternalLink size={13} />,
+      onSelect: () => void window.vibedeck.openExternalWebPanel(panel.id),
+      group: "view",
+    },
+  ];
+
+  const webHeader = (
+    <div className="web-toolbar">
+      <IconButton
+        label="Page précédente"
+        disabled={!runtime?.canGoBack}
+        onClick={() => void window.vibedeck.goBackWebPanel(panel.id)}
+      >
+        <ArrowLeft size={12} />
+      </IconButton>
+      <IconButton
+        label="Page suivante"
+        disabled={!runtime?.canGoForward}
+        onClick={() => void window.vibedeck.goForwardWebPanel(panel.id)}
+      >
+        <ArrowRight size={12} />
+      </IconButton>
+      <IconButton
+        label="Accueil"
+        className="panel-action--secondary"
+        onClick={() => void window.vibedeck.homeWebPanel(panel.id)}
+      >
+        <Home size={12} />
+      </IconButton>
+      <IconButton
+        label={runtime?.loading ? "Arrêter" : "Recharger"}
+        onClick={() =>
+          void (runtime?.loading
+            ? window.vibedeck.stopWebPanel(panel.id)
+            : window.vibedeck.reloadWebPanel(panel.id))
+        }
+      >
+        {runtime?.loading ? <X size={12} /> : <RefreshCw size={12} />}
+      </IconButton>
+      {editingUrl ? (
+        <form className="web-address web-address--editing" onSubmit={submitUrl}>
+          <input
+            aria-label="URL d’accueil de la page web"
+            value={urlValue}
+            autoFocus
+            onChange={(event) => setUrlValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                setUrlValue(panel.url);
+                setEditingUrl(false);
+              }
             }}
-          >
-            {currentUrl}
+          />
+          <button type="submit" disabled={saving}>
+            OK
           </button>
-        )}
-        <IconButton
-          label={runtime?.muted === false ? "Couper le son" : "Activer le son"}
-          active={runtime?.muted === false}
-          onClick={() =>
-            void window.vibedeck.setWebPanelMuted(panel.id, runtime?.muted === false)
-          }
+        </form>
+      ) : (
+        <button
+          type="button"
+          className="web-address"
+          title="Modifier l’URL d’accueil"
+          onClick={() => {
+            setUrlValue(panel.url);
+            setEditingUrl(true);
+          }}
         >
-          {runtime?.muted === false ? <Volume2 size={12} /> : <VolumeX size={12} />}
-        </IconButton>
-        <IconButton
-          label="Ouvrir dans le navigateur"
-          onClick={() => void window.vibedeck.openExternalWebPanel(panel.id)}
-        >
-          <ExternalLink size={12} />
-        </IconButton>
-      </div>
+          {currentUrl}
+        </button>
+      )}
+      <IconButton
+        label={runtime?.muted === false ? "Couper le son" : "Activer le son"}
+        active={runtime?.muted === false}
+        onClick={() =>
+          void window.vibedeck.setWebPanelMuted(panel.id, runtime?.muted === false)
+        }
+      >
+        {runtime?.muted === false ? <Volume2 size={12} /> : <VolumeX size={12} />}
+      </IconButton>
+      <IconButton
+        label="Ouvrir dans le navigateur"
+        className="panel-action--secondary"
+        onClick={() => void window.vibedeck.openExternalWebPanel(panel.id)}
+      >
+        <ExternalLink size={12} />
+      </IconButton>
+    </div>
+  );
+
+  return (
+    <PanelFrame
+      panelId={panel.id}
+      kind="PAGE WEB"
+      name={panel.name}
+      headerContext={webHeader}
+      secondaryActions={secondaryActions}
+      {...frame}
+    >
       <div className="web-surface-wrap">
         {failed && (
           <PanelEmpty
@@ -3458,33 +4185,45 @@ function LinkPreviewView({
     closeButtonRef.current?.focus({ preventScroll: true });
   }, [preview.itemId]);
 
+  const secondaryActions: PanelMenuAction[] = [
+    ...(readerMode === "simplified"
+      ? [{
+          id: "reader-original",
+          label: "Page originale",
+          icon: <Globe2 size={13} />,
+          onSelect: () => void window.vibedeck.showOriginalArticle(preview.itemId),
+          group: "view" as const,
+        }]
+      : []),
+    {
+      id: "reader-external",
+      label: "Ouvrir à l’extérieur",
+      icon: <ExternalLink size={13} />,
+      onSelect: () => void window.vibedeck.openExternalWebPanel(LINK_READER_ID),
+      disabled: !runtime,
+      group: "view",
+    },
+  ];
+
   return (
     <section className="dashboard-panel link-reader" aria-label={`Lecture — ${preview.title}`}>
       <header className="panel-header">
-        <span className="panel-kind">Lecture</span>
-        <strong className="link-reader__title" title={preview.title}>
-          {preview.title}
-        </strong>
-        <button
-          type="button"
-          ref={closeButtonRef}
-          className="icon-button icon-button--danger"
-          aria-label="Retour au fil"
-          title="Retour au fil"
-          onClick={onClose}
-        >
-          <X size={13} />
-        </button>
-      </header>
-      <div className="panel-content">
-        <div className="web-toolbar link-reader__toolbar">
-          <span className="web-address" aria-live="polite">
+        <div className="panel-identity">
+          <span className="panel-kind">Lecture</span>
+          <strong className="link-reader__title" title={preview.title}>
+            {preview.title}
+          </strong>
+        </div>
+        <div className="panel-header__context">
+          <span className="reader-status" aria-live="polite" title={readerStatus}>
             {readerStatus}
           </span>
+        </div>
+        <div className="panel-actions">
           {readerMode === "simplified" && (
             <button
               type="button"
-              className="quiet-button"
+              className="quiet-button link-reader__original panel-action--secondary"
               onClick={() => void window.vibedeck.showOriginalArticle(preview.itemId)}
             >
               Page originale
@@ -3492,13 +4231,26 @@ function LinkPreviewView({
           )}
           <button
             type="button"
-            className="quiet-button link-reader__external"
+            className="quiet-button link-reader__external panel-action--secondary"
             disabled={!runtime}
             onClick={() => void window.vibedeck.openExternalWebPanel(LINK_READER_ID)}
           >
             <ExternalLink size={12} /> Ouvrir à l’extérieur
           </button>
+          <AdaptiveActionMenu actions={secondaryActions} />
+          <button
+            type="button"
+            ref={closeButtonRef}
+            className="icon-button icon-button--danger"
+            aria-label="Retour au fil"
+            title="Retour au fil"
+            onClick={onClose}
+          >
+            <X size={13} />
+          </button>
         </div>
+      </header>
+      <div className="panel-content">
         <div className="web-surface-wrap">
           {failed && (
             <PanelEmpty
