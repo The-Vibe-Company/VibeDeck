@@ -2239,6 +2239,14 @@ function semanticSearchScopesEqual(
     (first.kind === "all" || (second.kind === "panel" && first.panelId === second.panelId));
 }
 
+function orderSemanticSearchResult(result: SemanticSearchResult | null) {
+  if (!result) return null;
+  return {
+    ...result,
+    items: [...result.items].sort(compareFeedItems),
+  };
+}
+
 function SearchPalette({
   status,
   scope,
@@ -2282,11 +2290,12 @@ function SearchPalette({
       ? { key: searchDraftKey(initialQuery, scope), result: initialResult }
       : null,
   );
-  const resultsRef = useRef<SemanticSearchResult | null>(initialResult);
+  const resultsRef = useRef<SemanticSearchResult | null>(null);
   const resultsKeyRef = useRef(initialResult ? searchDraftKey(initialQuery, scope) : null);
   const skipInitialSearchRef = useRef(Boolean(initialResult && initialQuery.trim().length >= 2));
   const [query, setQuery] = useState(initialQuery);
-  const [results, setResults] = useState<SemanticSearchResult | null>(initialResult);
+  const [results, setResults] = useState<SemanticSearchResult | null>(() =>
+    orderSemanticSearchResult(initialResult));
   const [activeItemId, setActiveItemId] = useState<string | null>(null);
   const [lexicalPending, setLexicalPending] = useState(false);
   const [hybridPending, setHybridPending] = useState(false);
@@ -2302,11 +2311,13 @@ function SearchPalette({
 
   function acceptResult(key: string, result: SemanticSearchResult) {
     if (draftKeyRef.current !== key) return;
+    const orderedResult = orderSemanticSearchResult(result);
+    if (!orderedResult) return;
     resultsKeyRef.current = key;
-    resultsRef.current = result;
-    setResults(result);
+    resultsRef.current = orderedResult;
+    setResults(orderedResult);
     setActiveItemId((current) =>
-      current && result.items.some(({ id }) => id === current) ? current : null,
+      current && orderedResult.items.some(({ id }) => id === current) ? current : null,
     );
   }
 
@@ -2604,6 +2615,7 @@ function SearchPalette({
             className="search-palette__results"
             role="listbox"
             aria-label="Résultats de recherche"
+            data-result-mode={results?.mode}
           >
             {results && results.items.length === 0 ? (
               <div className="search-palette__empty">Aucun article dans cette portée.</div>
