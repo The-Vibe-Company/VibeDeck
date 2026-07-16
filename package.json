@@ -46,6 +46,7 @@
   "devDependencies": {
     "@electron/fuses": "1.8.0",
     "@fontsource-variable/libre-franklin": "5.2.8",
+    "@fontsource-variable/space-grotesk": "5.2.10",
     "@fontsource/ibm-plex-mono": "5.2.7",
     "@types/node": "26.1.1",
     "@types/react": "19.2.17",

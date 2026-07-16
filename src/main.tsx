@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import "@fontsource-variable/libre-franklin/index.css";
+import "@fontsource-variable/space-grotesk/index.css";
 import "@fontsource/ibm-plex-mono/400.css";
 import App from "./App";
 import "./styles.css";

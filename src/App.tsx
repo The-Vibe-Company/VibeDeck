@@ -1794,7 +1794,7 @@ export default function App() {
   if (fatalError) {
     return (
       <main className="fatal-state">
-        <Brand />
+        <Brand vertical />
         <h1>Le dashboard n’a pas pu s’ouvrir.</h1>
         <p>{fatalError}</p>
         <button type="button" className="primary-button" onClick={() => window.location.reload()}>
@@ -1807,7 +1807,7 @@ export default function App() {
   if (!state) {
     return (
       <main className="boot-screen" aria-live="polite">
-        <Brand />
+        <Brand vertical />
         <span>Ouverture de la veille…</span>
       </main>
     );
@@ -2647,16 +2647,18 @@ function SearchPalette({
   );
 }
 
-function Brand() {
+function Brand({ vertical = false }: { vertical?: boolean }) {
   return (
-    <div className="brand" aria-label="VibeDeck">
-      <span className="brand__mark" aria-hidden="true">
-        <i />
-        <i />
-        <i />
+    <div className={vertical ? "brand brand--vertical" : "brand"} aria-label="VibeDeck">
+      <svg className="brand__mark" viewBox="0 0 56 56" aria-hidden="true">
+        <rect x="2" y="2" width="20" height="52" rx="5" />
+        <rect x="26" y="2" width="28" height="24" rx="5" />
+        <rect className="brand__mark-accent" x="26" y="30" width="28" height="24" rx="5" />
+      </svg>
+      <span className="brand__word">
+        <strong>Vibe</strong>Deck
       </span>
-      <strong>VIBE</strong>
-      <span>DECK<span className="brand__cursor">_</span></span>
+      {vertical && <span className="brand__tagline">VEILLE LOCALE</span>}
     </div>
   );
 }
