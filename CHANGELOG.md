@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.8.0](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.7.5...v0.8.0) (2026-07-16)
+
+
+### Features
+
+* **brand:** adopter le logo VibeDeck (symbole deck + wordmark) ([#43](https://github.com/The-Vibe-Company/VibeDeck/issues/43)) ([afaa700](https://github.com/The-Vibe-Company/VibeDeck/commit/afaa700149f827dbe12ea1273bd997365cae0aa8))
+* **site:** site vitrine VibeDeck (design « Site VibeDeck v2 ») ([#46](https://github.com/The-Vibe-Company/VibeDeck/issues/46)) ([abed070](https://github.com/The-Vibe-Company/VibeDeck/commit/abed070ed7e42052db996264ba239462d7aff9c0))
+* **sources:** ajouter 30 publications optimisées ([#45](https://github.com/The-Vibe-Company/VibeDeck/issues/45)) ([b259b1d](https://github.com/The-Vibe-Company/VibeDeck/commit/b259b1dab2dd55068a89305844f2fa0b43579e6c))
+
+
+### Bug Fixes
+
+* **layout:** masquer les vues web sous les modales ([#40](https://github.com/The-Vibe-Company/VibeDeck/issues/40)) ([10631b1](https://github.com/The-Vibe-Company/VibeDeck/commit/10631b17e96aa80839e09ca47697d873dcae9e8e))
+* **recherche:** interclasser les résultats chronologiquement ([#44](https://github.com/The-Vibe-Company/VibeDeck/issues/44)) ([b461cef](https://github.com/The-Vibe-Company/VibeDeck/commit/b461cefbea9ebc0cfe67a9622749c543783d6b0c))
+
 ## [0.7.5](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.7.4...v0.7.5) (2026-07-15)
 
 
