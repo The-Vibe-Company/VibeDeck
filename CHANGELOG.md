@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.0](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.8.1...v0.9.0) (2026-07-16)
+
+
+### Features
+
+* **panels:** compacter les en-têtes ([#50](https://github.com/The-Vibe-Company/VibeDeck/issues/50)) ([3d0d3e6](https://github.com/The-Vibe-Company/VibeDeck/commit/3d0d3e657e563a1b1bb9afce3e512af13449fc55))
+
+
+### Performance Improvements
+
+* **feed:** virtualiser les fils volumineux ([#51](https://github.com/The-Vibe-Company/VibeDeck/issues/51)) ([086c74e](https://github.com/The-Vibe-Company/VibeDeck/commit/086c74e379513e74423fefe8df9a7f467cb1fd21))
+
 ## [0.8.1](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.8.0...v0.8.1) (2026-07-16)
 
 
