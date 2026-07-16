@@ -1,0 +1,31 @@
+electron/feed-engine.test.mjs
+  s_5f0905b70dc3c2::t_49fa3b869c6307 1372-1403
+electron/publication-registry.mjs
+  s_5f0905b70dc3c2::t_31a560dd4d8aea 6,65-66,68-70,99,121,127,139,145,151,162,169,175,181,187,198,204,210,216,223,229,235,241,247,253,259,265,271,277,283,289,295,302,308,314
+electron/publication-registry.test.mjs
+  s_5f0905b70dc3c2::t_49fa3b869c6307 9,35-39,80,114-116,122
+README.md
+  s_5f0905b70dc3c2::t_b50973d54d09f7 16
+CLAUDE.md
+  s_5f0905b70dc3c2::t_31a560dd4d8aea 11
+AGENTS.md
+  s_5f0905b70dc3c2::t_31a560dd4d8aea 82
+electron/feed-engine.mjs
+  s_5f0905b70dc3c2::t_31a560dd4d8aea 2003-2004
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "2413a42d458e315a17ba0b607f3e0ecf421971a8",
+  "prompts": {},
+  "sessions": {
+    "s_5f0905b70dc3c2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6ae4-cf57-72f0-82b8-721a8f63ab63",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
