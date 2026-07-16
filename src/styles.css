@@ -408,7 +408,7 @@ button:disabled {
   height: 100%;
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .link-reader {
@@ -2846,6 +2846,10 @@ button:disabled {
   background: var(--line-soft);
 }
 
+.pilot-tools-scroll {
+  padding: 0;
+}
+
 .pilot-tools-update {
   display: flex;
   align-items: center;
@@ -2958,7 +2962,7 @@ button:disabled {
   font-size: 10.5px;
 }
 
-.pilot-tools-modal > .form-error {
+.pilot-tools-modal .form-error {
   margin: 0 12px 10px;
 }
 
@@ -3194,6 +3198,47 @@ button:disabled {
   }
 
   .restore-pill {
+    min-width: 0;
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+@media (min-width: 641px) and (max-width: 980px) {
+  .global-bar:has(.search-filter-summary, .restore-pill, .update-ready-cta) {
+    gap: 5px;
+  }
+
+  .global-bar:has(.search-filter-summary, .restore-pill, .update-ready-cta)
+    .text-scale-group {
+    display: none;
+  }
+
+  .global-bar:has(.search-filter-summary, .restore-pill, .update-ready-cta)
+    :is(.global-search, .global-tools, .global-add, .update-ready-cta) {
+    width: 29px;
+    min-width: 29px;
+    height: 29px;
+    flex: 0 0 29px;
+    gap: 0;
+    padding: 0;
+  }
+
+  .global-bar:has(.search-filter-summary, .restore-pill, .update-ready-cta)
+    :is(.global-action-label, .update-ready-cta > span) {
+    display: none;
+  }
+
+  .global-bar:has(.search-filter-summary, .restore-pill, .update-ready-cta)
+    .search-filter-summary {
+    max-width: 160px;
+    flex: 1 1 96px;
+  }
+
+  .global-bar:has(.search-filter-summary, .restore-pill, .update-ready-cta)
+    .restore-pill {
     min-width: 0;
     max-width: 160px;
     overflow: hidden;

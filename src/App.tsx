@@ -467,6 +467,7 @@ export default function App() {
   const layoutRef = useRef<LayoutNode | null>(null);
   const pilotToolsUpdateActionRef = useRef<HTMLButtonElement>(null);
   const globalToolsButtonRef = useRef<HTMLButtonElement>(null);
+  const globalTextScaleGroupRef = useRef<HTMLDivElement>(null);
   const linkPreviewRef = useRef<LinkPreview | null>(null);
   const feedUiRef = useRef<Record<string, FeedPanelUi>>({});
   const draftsRef = useRef<Record<string, DraftPanel>>({});
@@ -501,6 +502,23 @@ export default function App() {
       return () => window.cancelAnimationFrame(frame);
     }
   }, [restoreGlobalToolsFocus, updateInstallConfirmationOpen]);
+
+  useEffect(() => {
+    const preserveGlobalFocus = () => {
+      const group = globalTextScaleGroupRef.current;
+      const active = document.activeElement;
+      if (
+        window.innerWidth <= 640 &&
+        group &&
+        active instanceof HTMLElement &&
+        group.contains(active)
+      ) {
+        globalToolsButtonRef.current?.focus({ preventScroll: true });
+      }
+    };
+    window.addEventListener("resize", preserveGlobalFocus);
+    return () => window.removeEventListener("resize", preserveGlobalFocus);
+  }, []);
   const pendingRatioLayoutRef = useRef<LayoutNode | null>(null);
   const saveChainRef = useRef<Promise<void>>(Promise.resolve());
   const toastTimerRef = useRef<number | null>(null);
@@ -1011,12 +1029,15 @@ export default function App() {
       frame = requestAnimationFrame(syncWebPanels);
     });
     const dashboard = document.querySelector(".dashboard-stage");
+    const workspace = document.querySelector(".dashboard-workspace");
     if (dashboard) observer.observe(dashboard);
+    workspace?.addEventListener("scroll", syncWebPanels, { passive: true });
     window.addEventListener("resize", syncWebPanels);
     return () => {
       cancelAnimationFrame(frame);
       window.clearTimeout(settleTimer);
       observer.disconnect();
+      workspace?.removeEventListener("scroll", syncWebPanels);
       window.removeEventListener("resize", syncWebPanels);
     };
   }, [layout, maximizedPanelId, syncWebPanels]);
@@ -2000,7 +2021,12 @@ export default function App() {
         >
           <Search size={13} /> <span className="global-action-label">Rechercher</span>
         </button>
-        <div className="text-scale-group" role="group" aria-label="Taille du texte des fils">
+        <div
+          ref={globalTextScaleGroupRef}
+          className="text-scale-group"
+          role="group"
+          aria-label="Taille du texte des fils"
+        >
           <button
             type="button"
             className="quiet-button text-scale-button"
@@ -5536,6 +5562,7 @@ function PilotToolsModal({
             <X size={16} />
           </button>
         </header>
+        <div className="modal-scroll pilot-tools-scroll">
         <div className={`pilot-tools-update pilot-tools-update--${updateState?.status ?? "unknown"}`}>
           <span>
             <strong>VibeDeck {updateState?.currentVersion ?? ""}</strong>
@@ -5685,6 +5712,7 @@ function PilotToolsModal({
           </button>
         </div>
         {error && <p className="form-error" role="alert">{error}</p>}
+        </div>
         <footer>
           <button type="button" className="quiet-button" onClick={onClose} disabled={Boolean(pending)}>
             Fermer

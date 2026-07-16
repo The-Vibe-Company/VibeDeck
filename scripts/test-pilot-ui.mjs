@@ -535,6 +535,38 @@ try {
     { noOverflow: true, ctaInside: true },
     "Le CTA compact de mise à jour doit rester visible sans débordement à la taille minimale.",
   );
+  await page.locator(".global-tools").click();
+  const compactToolsDialog = page.getByRole("dialog", { name: "Outils du poste" });
+  await compactToolsDialog.waitFor({ state: "visible" });
+  const compactToolsMetrics = await compactToolsDialog.evaluate(async (dialog) => {
+    const scroll = dialog.querySelector(".pilot-tools-scroll");
+    const footer = dialog.querySelector("footer");
+    if (!(scroll instanceof HTMLElement) || !(footer instanceof HTMLElement)) {
+      throw new Error("Structure scrollable des outils introuvable.");
+    }
+    scroll.scrollTop = scroll.scrollHeight;
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const footerBounds = footer.getBoundingClientRect();
+    const lastDangerBounds = scroll.querySelector(".pilot-tools-danger:last-of-type")
+      ?.getBoundingClientRect();
+    const scrollBounds = scroll.getBoundingClientRect();
+    return {
+      scrollable: scroll.scrollHeight > scroll.clientHeight,
+      footerVisible: footerBounds.top >= 0 && footerBounds.bottom <= window.innerHeight,
+      lastActionReachable: Boolean(
+        lastDangerBounds &&
+        lastDangerBounds.top < scrollBounds.bottom &&
+        lastDangerBounds.bottom > scrollBounds.top
+      ),
+    };
+  });
+  assert.deepEqual(
+    compactToolsMetrics,
+    { scrollable: true, footerVisible: true, lastActionReachable: true },
+    "Les outils doivent rester entièrement parcourables à la hauteur minimale.",
+  );
+  await compactToolsDialog.locator("footer").getByRole("button", { name: "Fermer" }).click();
+  await compactToolsDialog.waitFor({ state: "detached" });
   const restoredWindow = await electronApp.browserWindow(page);
   await restoredWindow.evaluate((window) => window.setSize(1280, 820));
   await restoredWindow.dispose();
@@ -1717,12 +1749,25 @@ try {
     "L’état de lecture doit rester explicite dans le panel le plus étroit.",
   );
 
+  await publishUpdateState("up-to-date");
+  await page.locator(".update-ready-cta").waitFor({ state: "detached" });
+  const globalTextScaleReset = page.getByRole("button", {
+    name: "Réinitialiser la taille du texte des fils",
+  });
+  await globalTextScaleReset.focus();
   const compactWindow = await electronApp.browserWindow(page);
   await compactWindow.evaluate(
     (window, size) => window.setSize(size.width, size.height),
     { width: MIN_WINDOW_WIDTH, height: MIN_WINDOW_HEIGHT },
   );
   await compactWindow.dispose();
+  await waitForDomFocus(
+    page,
+    page.locator(".global-tools"),
+    "Le passage en barre compacte doit transférer le focus depuis l’échelle globale",
+  );
+  await publishUpdateState("ready", { availableVersion: "0.4.2" });
+  await page.getByRole("button", { name: "Mise à jour 0.4.2 prête", exact: true }).waitFor();
   await page.evaluate(() => new Promise(
     (resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)),
   ));
@@ -1804,6 +1849,134 @@ try {
   });
   await page.waitForFunction(() =>
     document.querySelector(".split-layout__split--row") !== null,
+  );
+
+  const thirdPanelId = await page.evaluate(async (targetPanelId) => {
+    const before = await window.vibedeck.getState();
+    const existingIds = new Set(before.panels.map(({ id }) => id));
+    const next = await window.vibedeck.createPanel(
+      {
+        kind: "feed",
+        name: "Troisième panel compact",
+        defaultRefreshIntervalSeconds: 1_800,
+      },
+      { targetPanelId, side: "right" },
+    );
+    return next.panels.find(({ id }) => !existingIds.has(id))?.id ?? null;
+  }, narrowPanelId);
+  assert.ok(thirdPanelId, "Le troisième panel compact doit être créé.");
+  await page.waitForFunction(
+    () => document.querySelectorAll(".split-layout__leaf").length === 3,
+  );
+  const compactThreeRowMetrics = await page.locator(".dashboard-workspace").evaluate(
+    async (workspace) => {
+      workspace.scrollLeft = workspace.scrollWidth;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      const workspaceBounds = workspace.getBoundingClientRect();
+      const leaves = [...workspace.querySelectorAll(".split-layout__leaf")];
+      const lastBounds = leaves.at(-1)?.getBoundingClientRect();
+      return {
+        widths: leaves.map((leaf) => leaf.getBoundingClientRect().width),
+        scrollable: workspace.scrollWidth > workspace.clientWidth,
+        lastReachable: Boolean(
+          lastBounds &&
+          lastBounds.left < workspaceBounds.right &&
+          lastBounds.right > workspaceBounds.left
+        ),
+      };
+    },
+  );
+  assert.ok(
+    compactThreeRowMetrics.widths.every(
+      (width) => width + SUBPIXEL_EPSILON >= MIN_PANEL_WIDTH,
+    ) && compactThreeRowMetrics.scrollable && compactThreeRowMetrics.lastReachable,
+    `Trois panels horizontaux doivent rester dimensionnés et atteignables : ${JSON.stringify(compactThreeRowMetrics)}`,
+  );
+
+  await page.evaluate(async () => {
+    const state = await window.vibedeck.getState();
+    const toColumn = (node) => node.type === "panel" ? node : {
+      ...node,
+      direction: "column",
+      ratio: 0.5,
+      children: node.children.map(toColumn),
+    };
+    if (!state.dashboard.layout) throw new Error("Le layout compact doit exister.");
+    await window.vibedeck.saveDashboardLayout(
+      toColumn(state.dashboard.layout),
+      state.dashboard.revision,
+    );
+  });
+  await page.waitForFunction(() =>
+    document.querySelectorAll(".split-layout__split--column").length === 2,
+  );
+  const compactThreeColumnMetrics = await page.locator(".dashboard-workspace").evaluate(
+    async (workspace) => {
+      workspace.scrollTop = workspace.scrollHeight;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      const workspaceBounds = workspace.getBoundingClientRect();
+      const leaves = [...workspace.querySelectorAll(".split-layout__leaf")];
+      const lastBounds = leaves.at(-1)?.getBoundingClientRect();
+      return {
+        heights: leaves.map((leaf) => leaf.getBoundingClientRect().height),
+        scrollable: workspace.scrollHeight > workspace.clientHeight,
+        lastReachable: Boolean(
+          lastBounds &&
+          lastBounds.top < workspaceBounds.bottom &&
+          lastBounds.bottom > workspaceBounds.top
+        ),
+      };
+    },
+  );
+  assert.ok(
+    compactThreeColumnMetrics.heights.every(
+      (height) => height + SUBPIXEL_EPSILON >= MIN_PANEL_HEIGHT,
+    ) && compactThreeColumnMetrics.scrollable && compactThreeColumnMetrics.lastReachable,
+    `Trois panels verticaux doivent rester dimensionnés et atteignables : ${JSON.stringify(compactThreeColumnMetrics)}`,
+  );
+
+  await page.evaluate(async () => {
+    const state = await window.vibedeck.getState();
+    const layout = state.dashboard.layout;
+    if (layout?.type !== "split" || layout.children[1].type !== "split") {
+      throw new Error("Le layout compact imbriqué attendu est introuvable.");
+    }
+    await window.vibedeck.saveDashboardLayout(
+      {
+        ...layout,
+        direction: "row",
+        ratio: 0.5,
+        children: [
+          layout.children[0],
+          { ...layout.children[1], direction: "column", ratio: 0.5 },
+        ],
+      },
+      state.dashboard.revision,
+    );
+  });
+  await page.waitForFunction(() =>
+    document.querySelectorAll(".split-layout__split--row").length === 1 &&
+    document.querySelectorAll(".split-layout__split--column").length === 1,
+  );
+  const compactNestedSpans = await page.locator(".dashboard-workspace").evaluate((workspace) => {
+    workspace.scrollTo(0, 0);
+    return [...workspace.querySelectorAll(".split-layout__leaf")].map((leaf) => {
+      const bounds = leaf.getBoundingClientRect();
+      return { width: bounds.width, height: bounds.height };
+    });
+  });
+  assert.ok(
+    compactNestedSpans.every(({ width, height }) =>
+      width + SUBPIXEL_EPSILON >= MIN_PANEL_WIDTH &&
+      height + SUBPIXEL_EPSILON >= MIN_PANEL_HEIGHT),
+    `Le layout compact imbriqué doit préserver les deux minima : ${JSON.stringify(compactNestedSpans)}`,
+  );
+  await page.evaluate((panelId) => window.vibedeck.deletePanel(panelId), thirdPanelId);
+  await page.waitForFunction(
+    (panelId) =>
+      !document.querySelector(`.split-layout__leaf[data-panel-id="${panelId}"]`) &&
+      document.querySelectorAll(".split-layout__leaf").length === 2,
+    thirdPanelId,
   );
   const compactRestoreWindow = await electronApp.browserWindow(page);
   await compactRestoreWindow.evaluate((window) => window.setSize(900, 820));
@@ -1898,6 +2071,53 @@ try {
     }),
     true,
     "La recherche active doit rester visible sans débordement à 560 × 460.",
+  );
+  await narrowLeaf.getByLabel("Agrandir", { exact: true }).click();
+  await page.waitForFunction(
+    (targetPanelId) =>
+      document.querySelector(".split-layout")?.getAttribute("data-maximized-panel-id") ===
+      targetPanelId,
+    narrowPanelId,
+  );
+  for (const width of [640, 641]) {
+    const boundaryWindow = await electronApp.browserWindow(page);
+    await boundaryWindow.evaluate(
+      (window, size) => window.setSize(size.width, size.height),
+      { width, height: MIN_WINDOW_HEIGHT },
+    );
+    await boundaryWindow.dispose();
+    await page.evaluate(() => new Promise(
+      (resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)),
+    ));
+    const boundaryMetrics = await page.evaluate(() => {
+      const bar = document.querySelector(".global-bar");
+      const requiredControls = [
+        bar?.querySelector(".search-filter-summary"),
+        bar?.querySelector(".restore-pill"),
+        bar?.querySelector(".update-ready-cta"),
+      ];
+      if (!(bar instanceof HTMLElement)) throw new Error("Barre globale introuvable.");
+      return {
+        noOverflow: bar.scrollWidth <= bar.clientWidth,
+        controlsInside: requiredControls.every((control) => {
+          if (!(control instanceof HTMLElement)) return false;
+          const bounds = control.getBoundingClientRect();
+          return bounds.left >= 0 && bounds.right <= window.innerWidth;
+        }),
+        persistentLabelsHidden: [...bar.querySelectorAll(".global-action-label")].every(
+          (label) => label instanceof HTMLElement && label.getClientRects().length === 0,
+        ),
+      };
+    });
+    assert.deepEqual(
+      boundaryMetrics,
+      { noOverflow: true, controlsInside: true, persistentLabelsHidden: true },
+      `La barre contextuelle doit rester compacte et complète à ${width} px.`,
+    );
+  }
+  await page.locator(".restore-pill").click();
+  await page.waitForFunction(
+    () => !document.querySelector(".split-layout")?.hasAttribute("data-maximized-panel-id"),
   );
   const searchRestoreWindow = await electronApp.browserWindow(page);
   await searchRestoreWindow.evaluate((window) => window.setSize(900, 820));
