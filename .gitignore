@@ -23,3 +23,5 @@ site/.vercel/
 *.log
 .DS_Store
 /plans/ship-pr/
+.vercel
+.env*.local
