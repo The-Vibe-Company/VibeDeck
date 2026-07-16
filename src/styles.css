@@ -131,8 +131,8 @@ button:disabled {
   display: flex;
   width: 100%;
   height: 100%;
-  min-width: 860px;
-  min-height: 600px;
+  min-width: 0;
+  min-height: 0;
   flex-direction: column;
   background: var(--bg);
 }
@@ -3159,6 +3159,46 @@ button:disabled {
 
   .global-bar {
     gap: 7px;
+  }
+}
+
+@media (max-width: 640px) {
+  .global-bar {
+    gap: 5px;
+  }
+
+  .global-bar .text-scale-group {
+    display: none;
+  }
+
+  .global-search,
+  .global-tools,
+  .global-add,
+  .update-ready-cta {
+    width: 29px;
+    min-width: 29px;
+    height: 29px;
+    flex: 0 0 29px;
+    gap: 0;
+    padding: 0;
+  }
+
+  .global-action-label,
+  .update-ready-cta > span {
+    display: none;
+  }
+
+  .search-filter-summary {
+    max-width: 160px;
+    flex: 1 1 96px;
+  }
+
+  .restore-pill {
+    min-width: 0;
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
 

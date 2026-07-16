@@ -1990,13 +1990,15 @@ export default function App() {
         )}
         <button
           type="button"
-          className="quiet-button"
+          className="quiet-button global-search"
           disabled={!state.panels.some((panel) => panel.kind === "feed")}
+          aria-label="Rechercher"
+          title="Rechercher"
           onClick={() => {
             openSemanticSearch({ kind: "all" });
           }}
         >
-          <Search size={13} /> Rechercher
+          <Search size={13} /> <span className="global-action-label">Rechercher</span>
         </button>
         <div className="text-scale-group" role="group" aria-label="Taille du texte des fils">
           <button
@@ -2068,10 +2070,11 @@ export default function App() {
           className="quiet-button global-tools"
           aria-label={updateNoticeDeferred
             ? `Outils — mise à jour ${readyUpdateVersion} prête`
-            : undefined}
+            : "Outils"}
+          title="Outils"
           onClick={() => setModal({ kind: "pilot-tools" })}
         >
-          <SlidersHorizontal size={13} /> Outils
+          <SlidersHorizontal size={13} /> <span className="global-action-label">Outils</span>
           {updateNoticeDeferred && <span className="tools-update-signal" aria-hidden="true" />}
         </button>
         {state.panels.length > 0 && Object.keys(drafts).length === 0 && (
@@ -2083,8 +2086,14 @@ export default function App() {
             Vider
           </button>
         )}
-        <button type="button" className="primary-button global-add" onClick={() => beginDraft()}>
-          <Plus size={14} /> Nouveau panel
+        <button
+          type="button"
+          className="primary-button global-add"
+          aria-label="Nouveau panel"
+          title="Nouveau panel"
+          onClick={() => beginDraft()}
+        >
+          <Plus size={14} /> <span className="global-action-label">Nouveau panel</span>
         </button>
       </header>
 

@@ -14,7 +14,10 @@ const showWindow = process.env.VIBEDECK_PILOT_UI_SHOW === "1";
 const initialArticleCount = 90;
 const secondaryArticleCount = 2;
 const baselineArticleCount = initialArticleCount + secondaryArticleCount;
+const MIN_WINDOW_WIDTH = 560;
+const MIN_WINDOW_HEIGHT = 460;
 const MIN_PANEL_WIDTH = 256;
+const MIN_PANEL_HEIGHT = 176;
 const SUBPIXEL_EPSILON = 0.5;
 // Doit rester aligné sur HOVER_SEEN_DELAY_MS dans src/App.tsx.
 const HOVER_SEEN_DELAY_MS = 1000;
@@ -503,12 +506,34 @@ try {
   const nextUpdateCta = page.getByRole("button", { name: "Mise à jour 0.4.1 prête", exact: true });
   await nextUpdateCta.waitFor();
   const updateWidthWindow = await electronApp.browserWindow(page);
-  await updateWidthWindow.evaluate((window) => window.setSize(860, 600));
+  const configuredMinimumSize = await updateWidthWindow.evaluate(
+    (window, size) => {
+      window.setSize(size.width, size.height);
+      return window.getMinimumSize();
+    },
+    { width: MIN_WINDOW_WIDTH, height: MIN_WINDOW_HEIGHT },
+  );
   await updateWidthWindow.dispose();
-  assert.equal(
-    await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
-    true,
-    "Le CTA de mise à jour ne doit pas créer de débordement à la largeur minimale.",
+  assert.deepEqual(
+    configuredMinimumSize,
+    [MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT],
+    "Electron doit imposer exactement la nouvelle taille minimale.",
+  );
+  const compactUpdateBounds = await page.evaluate(() => {
+    const cta = document.querySelector(".update-ready-cta");
+    const bounds = cta?.getBoundingClientRect();
+    return {
+      noOverflow:
+        document.documentElement.scrollWidth <= window.innerWidth &&
+        document.documentElement.scrollHeight <= window.innerHeight,
+      ctaInside:
+        bounds instanceof DOMRect && bounds.left >= 0 && bounds.right <= window.innerWidth,
+    };
+  });
+  assert.deepEqual(
+    compactUpdateBounds,
+    { noOverflow: true, ctaInside: true },
+    "Le CTA compact de mise à jour doit rester visible sans débordement à la taille minimale.",
   );
   const restoredWindow = await electronApp.browserWindow(page);
   await restoredWindow.evaluate((window) => window.setSize(1280, 820));
@@ -1692,6 +1717,98 @@ try {
     "L’état de lecture doit rester explicite dans le panel le plus étroit.",
   );
 
+  const compactWindow = await electronApp.browserWindow(page);
+  await compactWindow.evaluate(
+    (window, size) => window.setSize(size.width, size.height),
+    { width: MIN_WINDOW_WIDTH, height: MIN_WINDOW_HEIGHT },
+  );
+  await compactWindow.dispose();
+  await page.evaluate(() => new Promise(
+    (resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)),
+  ));
+  const compactWindowMetrics = await page.evaluate(() => {
+    const bar = document.querySelector(".global-bar");
+    if (!(bar instanceof HTMLElement)) throw new Error("Barre globale introuvable.");
+    const actionLabels = [...bar.querySelectorAll(".global-action-label")];
+    const textScale = bar.querySelector(".text-scale-group");
+    return {
+      noOverflow:
+        document.documentElement.scrollWidth <= window.innerWidth &&
+        document.documentElement.scrollHeight <= window.innerHeight &&
+        bar.scrollWidth <= bar.clientWidth,
+      compactLabelsHidden: actionLabels.every(
+        (label) => label instanceof HTMLElement && label.getClientRects().length === 0,
+      ),
+      textScaleHidden:
+        textScale instanceof HTMLElement && textScale.getClientRects().length === 0,
+    };
+  });
+  assert.deepEqual(
+    compactWindowMetrics,
+    { noOverflow: true, compactLabelsHidden: true, textScaleHidden: true },
+    "La barre globale doit adopter son rendu compact sans déborder à 560 × 460.",
+  );
+  for (const name of ["Rechercher", "Outils", "Nouveau panel"]) {
+    const action = page.getByRole("button", { name, exact: true });
+    await action.focus();
+    assert.equal(
+      await action.evaluate((button) => {
+        const bounds = button.getBoundingClientRect();
+        return document.activeElement === button &&
+          bounds.left >= 0 &&
+          bounds.right <= window.innerWidth &&
+          bounds.width > 0;
+      }),
+      true,
+      `L’action compacte « ${name} » doit rester visible et focalisable.`,
+    );
+  }
+
+  const compactRowWidths = await page.locator(".split-layout__leaf").evaluateAll((leaves) =>
+    leaves.map((leaf) => leaf.getBoundingClientRect().width),
+  );
+  assert.ok(
+    compactRowWidths.every((width) => width + SUBPIXEL_EPSILON >= MIN_PANEL_WIDTH),
+    `Le split horizontal doit préserver 256 px par panel à 560 × 460 : ${compactRowWidths.join(", ")}`,
+  );
+
+  await page.evaluate(async () => {
+    const state = await window.vibedeck.getState();
+    if (state.dashboard.layout?.type !== "split") {
+      throw new Error("Le layout pilote doit avoir une racine divisée.");
+    }
+    await window.vibedeck.saveDashboardLayout(
+      { ...state.dashboard.layout, direction: "column", ratio: 0.5 },
+      state.dashboard.revision,
+    );
+  });
+  await page.waitForFunction(() =>
+    document.querySelector(".split-layout__split--column") !== null,
+  );
+  const compactColumnHeights = await page.locator(".split-layout__leaf").evaluateAll((leaves) =>
+    leaves.map((leaf) => leaf.getBoundingClientRect().height),
+  );
+  assert.ok(
+    compactColumnHeights.every((height) => height + SUBPIXEL_EPSILON >= MIN_PANEL_HEIGHT),
+    `Le split vertical doit préserver 176 px par panel à 560 × 460 : ${compactColumnHeights.join(", ")}`,
+  );
+  await page.evaluate(async () => {
+    const state = await window.vibedeck.getState();
+    if (state.dashboard.layout?.type !== "split") {
+      throw new Error("Le layout pilote doit avoir une racine divisée.");
+    }
+    await window.vibedeck.saveDashboardLayout(
+      { ...state.dashboard.layout, direction: "row", ratio: 0.5 },
+      state.dashboard.revision,
+    );
+  });
+  await page.waitForFunction(() =>
+    document.querySelector(".split-layout__split--row") !== null,
+  );
+  const compactRestoreWindow = await electronApp.browserWindow(page);
+  await compactRestoreWindow.evaluate((window) => window.setSize(900, 820));
+  await compactRestoreWindow.dispose();
+
   // L'icône reste lisible dans un fil étroit et ne provoque aucun débordement.
   assert.equal(
     await narrowLeaf.locator(".article-provider .provider-mark").first().isVisible(),
@@ -1760,6 +1877,31 @@ try {
   await page.keyboard.press("Enter");
   await searchPalette.waitFor({ state: "detached" });
   await page.locator(".search-filter-summary").waitFor({ state: "visible" });
+  const compactSearchWindow = await electronApp.browserWindow(page);
+  await compactSearchWindow.evaluate(
+    (window, size) => window.setSize(size.width, size.height),
+    { width: MIN_WINDOW_WIDTH, height: MIN_WINDOW_HEIGHT },
+  );
+  await compactSearchWindow.dispose();
+  await page.evaluate(() => new Promise(
+    (resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)),
+  ));
+  assert.equal(
+    await page.locator(".search-filter-summary").evaluate((summary) => {
+      const bounds = summary.getBoundingClientRect();
+      const bar = summary.closest(".global-bar");
+      return bar instanceof HTMLElement &&
+        document.documentElement.scrollWidth <= window.innerWidth &&
+        bar.scrollWidth <= bar.clientWidth &&
+        bounds.left >= 0 &&
+        bounds.right <= window.innerWidth;
+    }),
+    true,
+    "La recherche active doit rester visible sans débordement à 560 × 460.",
+  );
+  const searchRestoreWindow = await electronApp.browserWindow(page);
+  await searchRestoreWindow.evaluate((window) => window.setSize(900, 820));
+  await searchRestoreWindow.dispose();
   assert.equal(
     await page.locator(".feed-toolbar__search-state").count(),
     2,
@@ -1989,12 +2131,33 @@ try {
     { articleId: sharedReaderSourceId, targetPanelId: narrowPanelId },
   );
 
+  const compactMaximizedWindow = await electronApp.browserWindow(page);
+  await compactMaximizedWindow.evaluate(
+    (window, size) => window.setSize(size.width, size.height),
+    { width: MIN_WINDOW_WIDTH, height: MIN_WINDOW_HEIGHT },
+  );
+  await compactMaximizedWindow.dispose();
   await narrowLeaf.getByLabel("Agrandir", { exact: true }).click();
   await page.waitForFunction(
     (targetPanelId) =>
       document.querySelector(".split-layout")?.getAttribute("data-maximized-panel-id") ===
       targetPanelId,
     narrowPanelId,
+  );
+  assert.equal(
+    await page.evaluate(() => {
+      const bar = document.querySelector(".global-bar");
+      const restore = document.querySelector(".restore-pill");
+      if (!(bar instanceof HTMLElement) || !(restore instanceof HTMLElement)) return false;
+      const bounds = restore.getBoundingClientRect();
+      return document.documentElement.scrollWidth <= window.innerWidth &&
+        document.documentElement.scrollHeight <= window.innerHeight &&
+        bar.scrollWidth <= bar.clientWidth &&
+        bounds.left >= 0 &&
+        bounds.right <= window.innerWidth;
+    }),
+    true,
+    "La restauration d’un panel agrandi doit rester visible sans débordement à 560 × 460.",
   );
   await narrowLeaf.locator(".dashboard-panel").focus();
   await page.keyboard.press("ArrowRight");
@@ -2014,6 +2177,9 @@ try {
   await page.waitForFunction(
     () => !document.querySelector(".split-layout")?.hasAttribute("data-maximized-panel-id"),
   );
+  const maximizedRestoreWindow = await electronApp.browserWindow(page);
+  await maximizedRestoreWindow.evaluate((window) => window.setSize(900, 820));
+  await maximizedRestoreWindow.dispose();
 
   const primaryTitle = panelLeaf.locator(".panel-title");
   const overflowTrigger = panelLeaf.getByLabel("Plus d’actions", { exact: true });

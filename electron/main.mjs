@@ -1230,8 +1230,8 @@ function createWindow() {
   const window = new BrowserWindow({
     width: 1280,
     height: 820,
-    minWidth: 860,
-    minHeight: 600,
+    minWidth: 560,
+    minHeight: 460,
     title: "VibeDeck",
     autoHideMenuBar: true,
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
