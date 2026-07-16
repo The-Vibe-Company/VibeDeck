@@ -45,7 +45,13 @@ function publicHtml(connectorId, { premium = false, invalidMetadata = false } = 
   if (connectorId === "le-figaro") {
     return `<!doctype html><html>${metadata}<body><main><article><h1>Titre Figaro</h1><div class="fig-sharebar"><p>${"Partager ".repeat(100)}</p></div>${body}<div data-component="advert-slot"><p>${paragraph}</p></div></article></main></body></html>`;
   }
-  return `<!doctype html><html>${metadata}<body><main><h1>Titre Parisien</h1><article><section class="article-section margin_bottom_article paywall-article-section">${body}</section></article></main></body></html>`;
+  if (connectorId === "le-parisien") {
+    return `<!doctype html><html>${metadata}<body><main><h1>Titre Parisien</h1><article><section class="article-section margin_bottom_article paywall-article-section">${body}</section></article></main></body></html>`;
+  }
+  if (connectorId === "daily-mail") {
+    return `<!doctype html><html>${metadata}<body><h1>Titre Daily Mail</h1><div id="js-article-text">${body}</div></body></html>`;
+  }
+  return `<!doctype html><html>${metadata}<body><main><article><h1>Titre ${connectorId}</h1><div data-component="advert-slot"><p>${paragraph}</p></div>${body}</article></main></body></html>`;
 }
 
 function htmlResponse(html, { status = 200, headers = {} } = {}) {
@@ -106,16 +112,17 @@ test("every proposed catalog connector has an enabled dedicated adapter", () => 
 });
 
 test("adapters only authorize their declared HTTPS publication domains", () => {
-  const monde = adapterForConnector("le-monde");
-  assert.ok(monde);
-  assert.equal(isProfileArticleUrl(monde, "https://www.lemonde.fr/politique/article"), true);
-  assert.equal(isProfileArticleUrl(monde, "http://www.lemonde.fr/article"), false);
-  assert.equal(isProfileArticleUrl(monde, "https://lemonde.fr.attacker.test/article"), false);
+  for (const adapter of ARTICLE_READER_ADAPTERS) {
+    const domain = adapter.domains[0];
+    assert.equal(isProfileArticleUrl(adapter, `https://www.${domain}/article`), true, adapter.connectorId);
+    assert.equal(isProfileArticleUrl(adapter, `http://www.${domain}/article`), false, adapter.connectorId);
+    assert.equal(isProfileArticleUrl(adapter, `https://${domain}.attacker.test/article`), false, adapter.connectorId);
+  }
   assert.equal(adapterForConnector("custom-rss"), null);
 });
 
 test("extracts each publication through its dedicated server-HTML root", () => {
-  for (const connectorId of ["le-monde", "le-figaro", "le-parisien"]) {
+  for (const { id: connectorId } of SOURCE_CATALOG) {
     const result = extractArticleHtml({
       connectorId,
       html: publicHtml(connectorId),

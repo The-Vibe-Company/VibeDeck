@@ -15,6 +15,7 @@ import {
   parseFeedDocument,
   readResponseTextWithLimit,
 } from "./feed-engine.mjs";
+import { CURATED_PROXY_ROOTS, PUBLICATIONS } from "./publication-registry.mjs";
 
 const RSS_FIXTURE = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
@@ -167,20 +168,10 @@ test("exposes an immutable catalogue with only verified capabilities", () => {
   assert.equal(Object.isFrozen(SOURCE_CATALOG), true);
   assert.deepEqual(
     SOURCE_CATALOG.map(({ id, capabilities }) => ({ id, capabilities })),
-    [
-      {
-        id: "le-monde",
-        capabilities: ["optimized-feed", "simplified-reading"],
-      },
-      {
-        id: "le-figaro",
-        capabilities: ["optimized-feed", "simplified-reading"],
-      },
-      {
-        id: "le-parisien",
-        capabilities: ["optimized-feed", "simplified-reading"],
-      },
-    ],
+    PUBLICATIONS.map(({ id }) => ({
+      id,
+      capabilities: ["optimized-feed", "simplified-reading"],
+    })),
   );
   for (const source of SOURCE_CATALOG) {
     assert.equal(Object.isFrozen(source), true);
@@ -600,20 +591,20 @@ function controlledRefreshFetch() {
   };
 }
 
-test("normalise pasted URLs and maps the three launch publications", () => {
+test("normalise pasted URLs and maps optimized publications", () => {
   assert.equal(normalizeInputUrl("example.test/path"), "https://example.test/path");
-  assert.equal(
-    matchKnownPublication("https://www.lemonde.fr/politique/").feedUrl,
-    "https://www.lemonde.fr/rss/en_continu.xml",
-  );
-  assert.equal(
-    matchKnownPublication("https://video.lefigaro.fr/").feedUrl,
-    "https://www.lefigaro.fr/rss/figaro_flash-actu.xml",
-  );
-  assert.equal(
-    matchKnownPublication("https://www.leparisien.fr/faits-divers/").feedUrl,
-    "https://feeds.leparisien.fr/leparisien/rss",
-  );
+  for (const publication of PUBLICATIONS) {
+    assert.equal(matchKnownPublication(publication.homepageUrl)?.id, publication.id);
+    assert.equal(matchKnownPublication(publication.feedUrl)?.id, publication.id);
+    for (const hostname of publication.hostnames) {
+      assert.equal(
+        matchKnownPublication(`https://actualites.${hostname}/article-public`)?.id,
+        publication.id,
+      );
+      assert.equal(matchKnownPublication(`https://${hostname}.evil.test/article`), null);
+      assert.equal(matchKnownPublication(`https://${hostname}/rss/section.xml`), null);
+    }
+  }
   assert.equal(matchKnownPublication("https://example.test"), null);
   assert.equal(matchKnownPublication("https://www.lemonde.fr/rss/economie.xml"), null);
   assert.equal(matchKnownPublication("https://www.lefigaro.fr/sitemap_news.xml"), null);
@@ -1378,13 +1369,40 @@ test("allows a curated catalog connector and its same-site redirect through a pr
   }
 });
 
-test("allows exactly the four hardcoded HTTPS connector roots through a proxy", async () => {
-  const curatedEndpoints = [
-    "https://www.lemonde.fr/rss/en_continu.xml",
-    "https://www.lefigaro.fr/rss/figaro_flash-actu.xml",
-    "https://feeds.leparisien.fr/leparisien/rss",
-    "https://www.leparisien.fr/arc/outboundfeeds/sitemapnews/?outputType=xml&from=0",
-  ];
+test("defaults every catalog publication to one minute while accepting an explicit override", async () => {
+  const engine = createFeedEngine({
+    fetchImpl: async () => response(RSS_FIXTURE),
+  });
+  try {
+    const state = await engine.createPanel({
+      kind: "feed",
+      name: "Catalogue rapide",
+      defaultRefreshIntervalSeconds: 300,
+    });
+    const panelId = state.panels.find(({ kind }) => kind === "feed").id;
+
+    let result = await engine.addCatalogSource(panelId, "le-monde");
+    assert.equal(
+      result.state.sources.find(({ connectorId }) => connectorId === "le-monde")
+        .refreshIntervalSeconds,
+      60,
+    );
+
+    result = await engine.addCatalogSource(panelId, "bbc", {
+      refreshIntervalSeconds: 120,
+    });
+    assert.equal(
+      result.state.sources.find(({ connectorId }) => connectorId === "bbc")
+        .refreshIntervalSeconds,
+      120,
+    );
+  } finally {
+    engine.close();
+  }
+});
+
+test("allows exactly the registry HTTPS roots through a proxy", async () => {
+  const curatedEndpoints = [...CURATED_PROXY_ROOTS];
   const fetchCalls = [];
   const engine = createFeedEngine({
     requireHostResolution: true,

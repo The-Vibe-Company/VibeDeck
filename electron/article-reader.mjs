@@ -2,6 +2,7 @@ import * as cheerio from "cheerio";
 import { Worker } from "node:worker_threads";
 
 import { isNonPublicIpAddress, proxyRouteKind } from "./network-safety.mjs";
+import { PUBLICATIONS } from "./publication-registry.mjs";
 
 export const ARTICLE_READER_LIMITS = Object.freeze({
   maxBytes: 2 * 1024 * 1024,
@@ -38,90 +39,70 @@ const COMMON_REMOVALS = Object.freeze([
   "[role='complementary']",
 ]);
 
-export const ARTICLE_READER_ADAPTERS = Object.freeze([
-  Object.freeze({
-    connectorId: "le-monde",
+const DEFAULT_READER_PROFILE = Object.freeze({
+  rootSelectors: Object.freeze(["main > article", "main article", "article", "main"]),
+  titleSelectors: Object.freeze(["article h1", "main h1", "h1"]),
+  bylineSelectors: Object.freeze([
+    "[rel='author']",
+    "[class*='author']",
+    "[class*='byline']",
+    "[class*='signature']",
+  ]),
+  imageSelectors: Object.freeze([
+    "article figure img",
+    "main figure img",
+    "article img",
+    "main img",
+  ]),
+  removeSelectors: Object.freeze([
+    ...COMMON_REMOVALS,
+    "[data-testid*='advert']",
+    "[data-component*='advert']",
+    "[class*='advert']",
+    "[class*='related']",
+    "[class*='recommendation']",
+    "[class*='share']",
+    "[class*='newsletter']",
+  ]),
+  premiumSelectors: Object.freeze([
+    "[data-testid*='paywall']",
+    "[class*='paywall']",
+    "[class*='premium-content']",
+  ]),
+  premiumPhrases: Object.freeze([
+    "réservé aux abonnés",
+    "abonnez-vous pour lire",
+    "subscribe to continue reading",
+    "subscriber-only",
+  ]),
+  blockedPhrases: Object.freeze([
+    "verify you are human",
+    "access denied",
+    "captcha",
+    "enable javascript and cookies to continue",
+  ]),
+});
+
+export const ARTICLE_READER_ADAPTERS = Object.freeze(PUBLICATIONS.map((publication) => {
+  const profile = publication.reader;
+  return Object.freeze({
+    connectorId: publication.id,
     enabled: true,
-    domains: Object.freeze(["lemonde.fr"]),
-    rootSelectors: Object.freeze(["main > article", "main article"]),
-    titleSelectors: Object.freeze(["h1.article__title", "article h1", "main h1"]),
-    bylineSelectors: Object.freeze([".article__author", "[rel='author']", "[class*='author']"]),
-    imageSelectors: Object.freeze(["article figure img", "article img"]),
+    domains: profile.domains,
+    rootSelectors: Object.freeze(profile.rootSelectors ?? DEFAULT_READER_PROFILE.rootSelectors),
+    titleSelectors: Object.freeze(profile.titleSelectors ?? DEFAULT_READER_PROFILE.titleSelectors),
+    bylineSelectors: Object.freeze(profile.bylineSelectors ?? DEFAULT_READER_PROFILE.bylineSelectors),
+    imageSelectors: Object.freeze(profile.imageSelectors ?? DEFAULT_READER_PROFILE.imageSelectors),
     removeSelectors: Object.freeze([
-      ...COMMON_REMOVALS,
-      "[data-testid*='advert']",
-      "[class*='advertising']",
-      "[class*='related']",
-      "[class*='recommendation']",
-      "[class*='share']",
+      ...DEFAULT_READER_PROFILE.removeSelectors,
+      ...profile.removeSelectors,
     ]),
-    premiumSelectors: Object.freeze([
-      "[data-testid*='paywall']",
-      ".paywall",
-      ".article__paywall",
-    ]),
-    premiumPhrases: Object.freeze(["réservé aux abonnés", "abonnez-vous pour lire"]),
-    blockedPhrases: Object.freeze(["verify you are human", "access denied", "captcha"]),
-  }),
-  Object.freeze({
-    connectorId: "le-figaro",
-    enabled: true,
-    domains: Object.freeze(["lefigaro.fr"]),
-    rootSelectors: Object.freeze(["main > article", "main article"]),
-    titleSelectors: Object.freeze(["main article h1", "main h1"]),
-    bylineSelectors: Object.freeze([
-      "main article [rel='author']",
-      "main article [class*='author']",
-      "main article [class*='fig-profile']",
-    ]),
-    imageSelectors: Object.freeze(["main article figure img", "main article img"]),
-    removeSelectors: Object.freeze([
-      ...COMMON_REMOVALS,
-      ".fig-sharebar",
-      ".fig-sharebar-transversal",
-      ".fig-share-tools",
-      ".fig-ranking-profile-container",
-      "[data-component*='advert']",
-      "[class*='advert']",
-      "[class*='recommendation']",
-      "[class*='related']",
-      "[class*='share']",
-    ]),
-    premiumSelectors: Object.freeze([
-      "[data-testid*='paywall']",
-      ".fig-paywall",
-      "[class*='premium-content']",
-    ]),
-    premiumPhrases: Object.freeze(["réservé aux abonnés", "abonnez-vous pour lire"]),
-    blockedPhrases: Object.freeze(["verify you are human", "access denied", "captcha"]),
-  }),
-  Object.freeze({
-    connectorId: "le-parisien",
-    enabled: true,
-    domains: Object.freeze(["leparisien.fr"]),
-    rootSelectors: Object.freeze([".article-section.margin_bottom_article"]),
-    titleSelectors: Object.freeze(["main h1", "article h1", "h1"]),
-    bylineSelectors: Object.freeze([
-      "[rel='author']",
-      "[class*='author']",
-      "[class*='signature']",
-    ]),
-    imageSelectors: Object.freeze(["article figure img", "main figure img", "article img"]),
-    removeSelectors: Object.freeze([
-      ...COMMON_REMOVALS,
-      "[data-testid*='advert']",
-      "[class*='advert']",
-      "[class*='recommendation']",
-      "[class*='related']",
-      "[class*='share']",
-    ]),
-    // Parisien's paywall-* classes also occur around public content. Only
-    // structured access metadata is authoritative for this adapter.
-    premiumSelectors: Object.freeze([]),
-    premiumPhrases: Object.freeze([]),
-    blockedPhrases: Object.freeze(["verify you are human", "access denied", "captcha"]),
-  }),
-]);
+    premiumSelectors: Object.freeze(profile.premiumSelectors ?? DEFAULT_READER_PROFILE.premiumSelectors),
+    premiumPhrases: Object.freeze(profile.premiumPhrases ?? DEFAULT_READER_PROFILE.premiumPhrases),
+    blockedPhrases: Object.freeze(profile.blockedPhrases ?? DEFAULT_READER_PROFILE.blockedPhrases),
+    requireDeclaredFreeAccess: profile.requireDeclaredFreeAccess,
+  });
+}));
 
 export const ARTICLE_READER_FALLBACK_REASONS = Object.freeze([
   "unsupported-source",
@@ -420,7 +401,7 @@ export function extractArticleHtml({ connectorId, html, url }) {
   }
   const declaredAccess = structuredAccess($);
   if (declaredAccess === "premium") return fallback("paywalled");
-  if (connectorId === "le-parisien" && declaredAccess !== "free") {
+  if (adapter.requireDeclaredFreeAccess && declaredAccess !== "free") {
     return fallback("blocked");
   }
 

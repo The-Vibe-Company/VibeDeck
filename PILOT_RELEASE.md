@@ -6,7 +6,7 @@ Ce document décrit les vérifications nécessaires avant de remettre une versio
 
 - fil local RSS, Atom ou Google News Sitemap ;
 - pages web interactives dans l’application ;
-- lecture simplifiée locale pour les articles publics éligibles du Monde, du Figaro et du Parisien, sans stockage durable du contenu et avec repli vers la page originale ;
+- catalogue de 20 publications françaises et 10 anglophones avec lecture simplifiée locale pour les articles publics éligibles, sans stockage durable du contenu et avec repli vers la page originale ;
 - baseline au premier import, puis états distincts `nouveau`, `vu` et `ouvert` ;
 - arrivées mises en attente pour ne jamais déplacer un journaliste en cours de lecture ;
 - état de fraîcheur et erreurs explicites par source ;
@@ -20,13 +20,14 @@ Ce document décrit les vérifications nécessaires avant de remettre une versio
 ```bash
 npm ci
 npm test
+npm run test:publications
 npm run build
 npm run test:pilot-ui
 npm run test:live
 npm run verify:release
 ```
 
-Le test live doit être exécuté depuis le réseau cible. Il doit confirmer que Le Monde, Le Figaro et Le Parisien retournent chacun des éléments exploitables, sans panne silencieuse. La recette du lecteur prend au plus cinq candidats par publication et rapporte uniquement le nombre de succès, de replis et la décision la plus lente ; les sorties ne doivent jamais contenir de titre, URL, contenu ou cookie. Chaque décision doit rester sous une seconde. Les articles réservés, lives, vidéos, galeries et tout contenu insuffisamment structuré doivent rester sur la page originale.
+Le test live doit être exécuté depuis le réseau cible. Il doit confirmer que les 30 publications du registre retournent chacune des éléments exploitables, sans panne silencieuse. La recette du lecteur prend au plus cinq candidats par publication et rapporte uniquement le nombre de succès, de replis et la décision la plus lente ; les sorties ne doivent jamais contenir de titre, URL, contenu ou cookie. La lecture simplifiée est privilégiée, mais une publication peut revenir intégralement à la page originale lorsque ses articles courants sont réservés, bloqués, vidéo, galerie ou insuffisamment structurés : ce repli est un comportement normal et ne doit jamais être « corrigé » en affaiblissant les protections. Chaque décision doit rester sous une seconde.
 
 ## Réseau AFP
 
@@ -35,7 +36,7 @@ Sur un poste géré, vérifier au minimum :
 - détection du proxy système ;
 - inspection TLS et chaîne de certificats AFP ;
 - résolution DNS sur VPN et hors VPN ;
-- accès aux trois flux de référence et aux pages web du desk ;
+- accès aux 30 flux du registre et aux pages web du desk ;
 - comportement hors ligne : les articles en cache restent disponibles et la source est déclarée obsolète ;
 - reprise après veille et changement de réseau.
 
@@ -43,7 +44,7 @@ Les rafraîchissements RSS, Atom et Sitemap sont bornés à six requêtes simult
 
 Les URLs littérales de loopback, link-local et réseaux privés, ainsi que les noms `localhost`, `.local` et `.internal`, sont refusés dans le build de diffusion. Avant chaque requête et chaque saut de redirection en accès direct, la session Chromium réservée aux flux résout aussi le nom et refuse l’ensemble de la destination si une adresse A ou AAAA est locale, privée, réservée, CGNAT, ULA ou IPv4-mappée. La résolution et le téléchargement utilisent immédiatement la même session et son cache DNS afin de réduire la fenêtre de rebinding ; l’échec de résolution est fermé dans le paquet de production.
 
-Un proxy HTTP ou SOCKS peut toutefois résoudre la cible de son propre côté : l’application ne peut alors pas prouver l’IP réellement choisie par le proxy. La V0 adopte donc une politique volontairement restrictive. Si `resolveProxy` annonce une route non `DIRECT` — même avec un fallback direct — seules quatre racines HTTPS exactes codées en dur sont autorisées : les trois flux des connecteurs optimisés Le Monde, Le Figaro et Le Parisien, plus le sitemap d’enrichissement du Parisien. Leurs redirections doivent rester en HTTPS sur le même site. Toute autre URL — y compris un chemin personnalisé ou une variante HTTP sur l’un de ces domaines — est bloquée avant la requête. Cette exception est une confiance explicite dans ces quatre endpoints, dans la validation TLS de Chromium et dans la politique PAC/DNS du réseau AFP, pas une preuve technique de l’IP distante. La recette DSI doit donc vérifier le split-DNS et les routes PAC de ces endpoints ; tout élargissement du catalogue proxy exigera une nouvelle racine de confiance revue.
+Un proxy HTTP ou SOCKS peut toutefois résoudre la cible de son propre côté : l’application ne peut alors pas prouver l’IP réellement choisie par le proxy. La V0 adopte donc une politique volontairement restrictive. Si `resolveProxy` annonce une route non `DIRECT` — même avec un fallback direct — seules les racines HTTPS exactes dérivées de `electron/publication-registry.mjs` sont autorisées : un flux par publication et les enrichissements explicitement déclarés. Leurs redirections doivent rester en HTTPS sur le même site. Toute autre URL — y compris un chemin personnalisé ou une variante HTTP sur l’un de ces domaines — est bloquée avant la requête. Cette exception est une confiance explicite dans ces endpoints, dans la validation TLS de Chromium et dans la politique PAC/DNS du réseau AFP, pas une preuve technique de l’IP distante. La recette DSI doit donc relire la liste exacte produite par `CURATED_PROXY_ROOTS`, vérifier le split-DNS et les routes PAC de chaque endpoint ; tout ajout au registre exige une revue de cette nouvelle racine de confiance.
 
 Les redirections et les flux découverts automatiquement doivent en plus rester sur le même site enregistrable ; sinon le journaliste doit ajouter directement l’URL finale. Un futur flux réellement interne AFP devra disposer d’un consentement explicite et d’une politique dédiée avant d’entrer dans le pilote.
 

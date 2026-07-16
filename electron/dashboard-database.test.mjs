@@ -10,6 +10,7 @@ import {
   splitActiveUsageByLocalDay,
 } from "./database.mjs";
 import { createFeedEngine } from "./feed-engine.mjs";
+import { SOURCE_CATALOG } from "./publication-registry.mjs";
 import { compareFeedItems } from "../src/feed-presentation.ts";
 
 const RSS_FIXTURE = `<?xml version="1.0" encoding="UTF-8"?>
@@ -702,11 +703,7 @@ test("exposes the optimized source catalogue and reuses its connector", async ()
   });
   try {
     let state = engine.getState();
-    assert.deepEqual(state.sourceCatalog.map(({ id }) => id), [
-      "le-monde",
-      "le-figaro",
-      "le-parisien",
-    ]);
+    assert.deepEqual(state.sourceCatalog.map(({ id }) => id), SOURCE_CATALOG.map(({ id }) => id));
     assert.equal(Object.hasOwn(state.sourceCatalog[0], "feedUrl"), false);
 
     state = await engine.createPanel({ kind: "feed", name: "Une" });
@@ -1184,11 +1181,7 @@ test("exports and transactionally imports configuration without articles or brow
     assert.equal(imported.sources.length, 1);
     assert.equal(imported.sources[0].status, "idle");
     assert.equal(imported.sources[0].baselineCompletedAt, null);
-    assert.deepEqual(imported.sourceCatalog.map(({ id }) => id), [
-      "le-monde",
-      "le-figaro",
-      "le-parisien",
-    ]);
+    assert.deepEqual(imported.sourceCatalog.map(({ id }) => id), SOURCE_CATALOG.map(({ id }) => id));
 
     const beforeRejectedImport = targetEngine.getState();
     await assert.rejects(

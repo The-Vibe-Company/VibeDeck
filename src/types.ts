@@ -48,6 +48,10 @@ export interface SourceCatalogEntry {
   id: string;
   name: string;
   description: string;
+  group: "france" | "english-world";
+  category: "general" | "local" | "business" | "sports" | "culture";
+  rank: number;
+  iconPath: string;
   homepageUrl: string;
   connectorKind: ConnectorKind;
   refreshIntervalSeconds: number;

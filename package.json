@@ -20,6 +20,7 @@
     "start": "electron .",
     "build": "tsc --noEmit && vite build",
     "test": "node --test electron/*.test.mjs",
+    "test:publications": "node --test electron/publication-registry.test.mjs electron/article-reader.test.mjs",
     "test:conductor": "node scripts/test-conductor-run.mjs",
     "test:pilot-ui": "npm run build && node scripts/test-pilot-ui.mjs",
     "test:packaged": "node scripts/test-packaged-app.mjs",
