@@ -715,20 +715,24 @@ export function createWebPanelController({
     }
   }
 
-  function applyBounds(record, descriptor) {
+  function applyVisibleBounds(record) {
+    if (!record.visible) return;
     const boundsChanged =
-      record.appliedBounds.x !== descriptor.bounds.x ||
-      record.appliedBounds.y !== descriptor.bounds.y ||
-      record.appliedBounds.width !== descriptor.bounds.width ||
-      record.appliedBounds.height !== descriptor.bounds.height;
+      record.appliedBounds.x !== record.bounds.x ||
+      record.appliedBounds.y !== record.bounds.y ||
+      record.appliedBounds.width !== record.bounds.width ||
+      record.appliedBounds.height !== record.bounds.height;
+    if (!boundsChanged) return;
+    record.view.setBounds(record.bounds);
+    record.appliedBounds = { ...record.bounds };
+  }
+
+  function applyBounds(record, descriptor) {
     record.bounds = descriptor.bounds;
     record.requestedVisible = descriptor.visible;
     record.visible = shouldDisplay(record);
 
-    if (record.visible && boundsChanged) {
-      record.view.setBounds(descriptor.bounds);
-      record.appliedBounds = { ...descriptor.bounds };
-    }
+    applyVisibleBounds(record);
     record.view.setVisible(record.visible);
   }
 
@@ -1116,6 +1120,7 @@ export function createWebPanelController({
       record.title = normalized.article.title;
       record.loading = false;
       record.visible = shouldDisplay(record);
+      applyVisibleBounds(record);
       record.view.setVisible(record.visible);
       if (record.visible && typeof record.contents.focus === "function") record.contents.focus();
       emit(record);
@@ -1444,8 +1449,6 @@ export function createWebPanelController({
       record.homeUrl = normalized.url;
       record.originalUrl = normalized.url;
       void load(record, normalized.url).catch(() => {});
-    } else {
-      emit(record);
     }
     return snapshot(record);
   }
