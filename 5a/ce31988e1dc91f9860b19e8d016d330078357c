@@ -1,0 +1,37 @@
+src-tauri/windows-app-manifest.xml
+  s_05ade2cf1e5e3e::t_74766d1c7c428c 1-14
+src-tauri/build.rs
+  s_05ade2cf1e5e3e::t_74766d1c7c428c 2,6-22
+  s_05ade2cf1e5e3e::t_da1d2471dd94e4 3
+  s_05ade2cf1e5e3e::t_331eb0643f792c 4-5
+scripts/verify-tauri-config.mjs
+  s_05ade2cf1e5e3e::t_74766d1c7c428c 114-118,137-138,234-255
+  s_2df1f61006b570::t_6a6f75a416bd00 256
+scripts/verify-tauri-config.test.mjs
+  s_05ade2cf1e5e3e::t_74766d1c7c428c 63-79
+  s_2df1f61006b570::t_e0695553deb4d9 61-62,80-82
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "5ace31988e1dc91f9860b19e8d016d330078357c",
+  "prompts": {},
+  "sessions": {
+    "s_05ade2cf1e5e3e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6735-e918-7fd3-81db-b42e183df1be",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    },
+    "s_2df1f61006b570": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f65c6-b31f-7951-b63a-0d54c95d0e7d",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
