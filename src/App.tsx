@@ -4520,7 +4520,6 @@ function CustomSourceTester({
   const probeIdRef = useRef<string | null>(null);
   const onCatalogSourceResolvedRef = useRef(onCatalogSourceResolved);
   const currentKey = `${connectorKind}\u0000${input.trim()}`;
-  const resolutionPending = Boolean(input.trim()) && testedKeyRef.current !== currentKey;
 
   onCatalogSourceResolvedRef.current = onCatalogSourceResolved;
 
@@ -4529,11 +4528,10 @@ function CustomSourceTester({
     if (probeId) void window.vibedeck.cancelSourceProbe(probeId).catch(() => undefined);
   }, []);
 
-  useEffect(() => {
-    onResolutionPendingChange(resolutionPending || pending);
-  }, [onResolutionPendingChange, pending, resolutionPending]);
-
-  useEffect(() => () => onResolutionPendingChange(false), [onResolutionPendingChange]);
+  useLayoutEffect(
+    () => () => onResolutionPendingChange(false),
+    [onResolutionPendingChange],
+  );
 
   function invalidate(nextInput?: string, nextKind?: ConnectorPreference) {
     latestProbe.invalidate();
@@ -4556,6 +4554,7 @@ function CustomSourceTester({
     const probeId = crypto.randomUUID();
     probeIdRef.current = probeId;
     const requestKey = `${connectorKind}\u0000${url}`;
+    onResolutionPendingChange(true);
     setPending(true);
     setProbe(null);
     setError(null);
@@ -4585,7 +4584,10 @@ function CustomSourceTester({
             testedKeyRef.current = requestKey;
             setError(cleanError(caught));
           },
-          onSettled: () => setPending(false),
+          onSettled: () => {
+            setPending(false);
+            onResolutionPendingChange(false);
+          },
         },
       );
     } finally {
