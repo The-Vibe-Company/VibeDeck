@@ -1524,32 +1524,44 @@ try {
     },
     panelId,
   );
-  await page.evaluate(() => new Promise(
-    (resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)),
-  ));
-  assert.equal(
-    await panelLeaf.getByLabel("Plus d’actions", { exact: true }).evaluate(
-      (trigger) => document.activeElement === trigger,
-    ),
-    true,
-    "Masquer un contrôle secondaire focalisé doit transférer le vrai focus vers Plus d’actions.",
+  // Le transfert de focus suit la requête container + un requestAnimationFrame :
+  // sur un runner lent (Windows CI), la frame peut dépasser un double rAF —
+  // attendre le focus réel plutôt qu'un délai fixe.
+  await waitForDomFocus(
+    page,
+    panelLeaf.getByLabel("Plus d’actions", { exact: true }),
+    "Masquer un contrôle secondaire focalisé doit transférer le vrai focus vers Plus d’actions",
   );
   await page.keyboard.press("Enter");
   const thresholdMenu = page.getByRole("menu", { name: "Actions secondaires du panel" });
   await thresholdMenu.waitFor({ state: "visible" });
   await narrowWindow.evaluate((window) => window.setSize(1_600, 820));
   await thresholdMenu.waitFor({ state: "detached" });
-  assert.equal(
-    await panelLeaf.locator(".dashboard-panel").evaluate((panel) => {
-      const active = document.activeElement;
-      return active instanceof HTMLElement &&
-        panel.contains(active) &&
-        Boolean(active.closest(".panel-action--secondary")) &&
-        active.getClientRects().length > 0;
-    }),
-    true,
-    "Repasser au mode large doit fermer le menu et focaliser une action directe visible.",
-  );
+  {
+    const panelHandle = await panelLeaf.locator(".dashboard-panel").elementHandle();
+    assert.ok(panelHandle, "Le panel large doit rester présent.");
+    try {
+      const wait = await page.waitForFunction(
+        (panel) => {
+          const active = document.activeElement;
+          return active instanceof HTMLElement &&
+            panel.contains(active) &&
+            Boolean(active.closest(".panel-action--secondary")) &&
+            active.getClientRects().length > 0;
+        },
+        panelHandle,
+        { polling: "raf", timeout: 5_000 },
+      );
+      await wait.dispose();
+    } catch (error) {
+      throw new Error(
+        "Repasser au mode large doit fermer le menu et focaliser une action directe visible.",
+        { cause: error },
+      );
+    } finally {
+      await panelHandle.dispose();
+    }
+  }
   await narrowWindow.evaluate((window) => window.setSize(900, 820));
   await page.waitForFunction(
     (targetPanelId) => {
