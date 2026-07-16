@@ -1,0 +1,19 @@
+src-tauri/src/commands.rs
+  s_05ade2cf1e5e3e::t_2e877b4863bf9f 679-685,692-701,826,855,918,1010-1012
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "b650089779cec3ac6d6518e11d08c7b6b96241c8",
+  "prompts": {},
+  "sessions": {
+    "s_05ade2cf1e5e3e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6735-e918-7fd3-81db-b42e183df1be",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
