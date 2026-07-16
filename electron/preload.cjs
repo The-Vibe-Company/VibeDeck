@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("vibedeck", {
   getState: () => ipcRenderer.invoke("aggregator:get-state"),
+  getFeedPage: (request) => ipcRenderer.invoke("aggregator:get-feed-page", request),
   getUpdateState: () => ipcRenderer.invoke("updates:get-state"),
   checkForUpdates: () => ipcRenderer.invoke("updates:check"),
   restartForUpdate: () => ipcRenderer.invoke("updates:restart").then(() => undefined),

@@ -3,6 +3,7 @@ import electronUpdater from "electron-updater";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createFeedEngine } from "./feed-engine.mjs";
+import { MAX_FEED_PAGE_OFFSET, MAX_FEED_PAGE_SIZE } from "./database.mjs";
 import { createRefreshScheduler } from "./refresh-scheduler.mjs";
 import {
   backupAndImportDashboard,
@@ -156,6 +157,52 @@ function cleanItemIds(value) {
     throw new TypeError("Liste d’articles invalide.");
   }
   return [...new Set(value.map(cleanId))];
+}
+
+function cleanFeedPageRequest(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Page de fil invalide.");
+  }
+  const allowedKeys = new Set([
+    "panelId",
+    "sourceFilter",
+    "visibilityFilter",
+    "offset",
+    "limit",
+    "anchorItemId",
+    "focusedItemId",
+  ]);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
+    throw new TypeError("Page de fil invalide.");
+  }
+  const sourceFilter = value.sourceFilter === "all" ? "all" : cleanId(value.sourceFilter);
+  const visibilityFilter = value.visibilityFilter ?? "all";
+  if (visibilityFilter !== "all" && visibilityFilter !== "unseen") {
+    throw new TypeError("Filtre de visibilité invalide.");
+  }
+  if (
+    !Number.isSafeInteger(value.offset) ||
+    value.offset < 0 ||
+    value.offset > MAX_FEED_PAGE_OFFSET
+  ) {
+    throw new RangeError("Décalage de page invalide.");
+  }
+  if (
+    !Number.isSafeInteger(value.limit) ||
+    value.limit < 1 ||
+    value.limit > MAX_FEED_PAGE_SIZE
+  ) {
+    throw new RangeError("Taille de page invalide.");
+  }
+  return {
+    panelId: cleanId(value.panelId),
+    sourceFilter,
+    visibilityFilter,
+    offset: value.offset,
+    limit: value.limit,
+    anchorItemId: value.anchorItemId == null ? undefined : cleanId(value.anchorItemId),
+    focusedItemId: value.focusedItemId == null ? undefined : cleanId(value.focusedItemId),
+  };
 }
 
 function cleanSemanticSearchScope(value) {
@@ -373,9 +420,10 @@ function resolveWebPanelDescriptors(value, controller, window) {
         throw new TypeError("Identifiant du lecteur d’article invalide.");
       }
       const itemId = cleanId(descriptor.itemId);
+      const item = engine.getItem(itemId);
       const article = resolveReaderArticle(
         itemId,
-        state,
+        item ? { ...state, items: [item] } : { ...state, items: [] },
         controller.getActiveReaderArticle(itemId),
       );
       return {
@@ -485,10 +533,30 @@ function controllerForEvent(event) {
 }
 
 function registerHandle(channel, handler) {
-  ipcMain.handle(channel, (event, ...args) => {
+  ipcMain.handle(channel, async (event, ...args) => {
     requireMainSender(event);
-    return handler(event, ...args);
+    return projectRendererValue(await handler(event, ...args));
   });
+}
+
+function isAppState(value) {
+  return Boolean(
+    value && typeof value === "object" &&
+    Array.isArray(value.panels) && Array.isArray(value.sources) && Array.isArray(value.items) &&
+    value.dashboard && Number.isSafeInteger(value.contentRevision),
+  );
+}
+
+function projectRendererState(state) {
+  return isAppState(state) ? { ...state, items: [] } : state;
+}
+
+function projectRendererValue(value) {
+  if (isAppState(value)) return projectRendererState(value);
+  if (value && typeof value === "object" && isAppState(value.state)) {
+    return { ...value, state: projectRendererState(value.state) };
+  }
+  return value;
 }
 
 function cancelSourceProbe(window, probeId = null) {
@@ -525,16 +593,17 @@ function sendToWindow(window, channel, value) {
 }
 
 function readEngineState() {
-  const state = engine?.getState() ?? null;
+  const state = engine?.getRendererState() ?? null;
   lastRendererState = state;
   return state;
 }
 
 function broadcastState(state = readEngineState(), { syncSemantic = false } = {}) {
   if (!state) return;
-  lastRendererState = state;
+  const rendererState = projectRendererState(state);
+  lastRendererState = rendererState;
   for (const window of webPanelControllers.keys()) {
-    sendToWindow(window, "aggregator:state-changed", state);
+    sendToWindow(window, "aggregator:state-changed", rendererState);
   }
   if (syncSemantic) void scheduleSemanticSearchSync();
 }
@@ -563,7 +632,7 @@ function scheduleSemanticSearchSync() {
 }
 
 function semanticSearchSourceIds(scope) {
-  const state = engine.getState();
+  const state = engine.getRendererState();
   if (scope.kind === "panel") {
     const panel = state.panels.find((candidate) => candidate.id === scope.panelId);
     if (!panel || panel.kind !== "feed") throw new Error("Le fil de recherche n’existe plus.");
@@ -674,6 +743,8 @@ function registerIpcHandlers() {
     return updateController.restartForUpdate();
   });
   registerHandle("aggregator:get-state", () => readEngineState());
+  registerHandle("aggregator:get-feed-page", (_event, request) =>
+    engine.getFeedPage(cleanFeedPageRequest(request)));
   registerHandle("semantic-search:get-status", () => semanticSearch.getStatus());
   registerHandle("semantic-search:prepare", () => runEngineOperation(() => semanticSearch.prepare()));
   registerHandle("semantic-search:cancel-preparation", () => {
@@ -695,7 +766,7 @@ function registerIpcHandlers() {
     if (
       typeof cleanedInput === "object" &&
       cleanedInput.kind === "web" &&
-      engine.getState().panels.filter((panel) => panel.kind === "web").length >=
+      engine.getRendererState().panels.filter((panel) => panel.kind === "web").length >=
         MAX_DASHBOARD_WEB_PANELS
     ) {
       throw new RangeError(
@@ -716,7 +787,7 @@ function registerIpcHandlers() {
       throw new Error("Les données web sont en cours de réinitialisation.");
     }
     if (
-      engine.getState().panels.filter((panel) => panel.kind === "web").length >=
+      engine.getRendererState().panels.filter((panel) => panel.kind === "web").length >=
       MAX_DASHBOARD_WEB_PANELS
     ) {
       throw new RangeError(
@@ -746,7 +817,7 @@ function registerIpcHandlers() {
       const controller = controllerForEvent(event);
       const normalizedPreviewId = cleanWebPreviewId(previewId);
       if (
-        engine.getState().panels.filter((panel) => panel.kind === "web").length >=
+        engine.getRendererState().panels.filter((panel) => panel.kind === "web").length >=
         MAX_DASHBOARD_WEB_PANELS
       ) {
         throw new RangeError(
@@ -807,7 +878,7 @@ function registerIpcHandlers() {
           cleanFeedPanelConfigurationDraft(draft),
         ),
         {
-          getState: () => engine.getState(),
+          getState: () => engine.getRendererState(),
           broadcast: (state) => broadcastState(state, { syncSemantic: true }),
           onBroadcastError: (error) =>
             console.warn("Synchronisation finale du fil impossible :", error),
@@ -932,7 +1003,7 @@ function registerIpcHandlers() {
     }
     const configuration = await readImportedJson(filePath);
     const preview = engine.previewDashboardConfig(configuration);
-    const currentPanelCount = engine.getState().panels.length;
+    const currentPanelCount = engine.getRendererState().panels.length;
     const shownHosts = preview.hosts.slice(0, 8);
     const hiddenHostCount = Math.max(0, preview.hosts.length - shownHosts.length);
     const hostSummary = shownHosts.length > 0
@@ -994,7 +1065,7 @@ function registerIpcHandlers() {
       return { canceled: true, filePath: null };
     }
     return runEngineOperation(async () => {
-      const networkSources = engine.getState().sources.map((source) => ({
+      const networkSources = engine.getRendererState().sources.map((source) => ({
         sourceId: source.id,
         feedUrl: source.feedUrl,
       }));
@@ -1431,10 +1502,11 @@ if (!hasSingleInstanceLock) {
       requireProxyResolution: app.isPackaged,
       allowPrivateNetwork:
         !app.isPackaged && process.env.VIBEDECK_ALLOW_PRIVATE_NETWORK === "true",
+      compactMutationState: true,
     });
-    lastRendererState = engine.getState();
+    lastRendererState = engine.getRendererState();
     refreshScheduler = createRefreshScheduler({
-      getSources: () => engine.getState().sources,
+      getSources: () => engine.getRendererState().sources,
       refreshSources: (sourceIds, options) => engine.refreshSources(sourceIds, options),
       createArrivalBatchAt: () => engine.createArrivalBatchAt(),
       onStateChange: () => broadcastState(undefined, { syncSemantic: true }),

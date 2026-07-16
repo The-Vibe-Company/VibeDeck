@@ -1023,6 +1023,7 @@ export class FeedEngine {
     now = () => new Date(),
     usageTimeZone = null,
     allowPrivateNetwork = false,
+    compactMutationState = false,
   } = {}) {
     if (typeof fetchImpl !== "function") throw new TypeError("Aucune fonction de téléchargement disponible.");
     if (resolveHost !== null && typeof resolveHost !== "function") {
@@ -1044,6 +1045,7 @@ export class FeedEngine {
     this.requireHostResolution = requireHostResolution === true;
     this.requireProxyResolution = requireProxyResolution === true;
     this.allowPrivateNetwork = allowPrivateNetwork === true;
+    this.compactMutationState = compactMutationState === true;
     this.now = now;
     this.inflight = new Map();
     this.abortControllers = new Set();
@@ -1112,6 +1114,25 @@ export class FeedEngine {
     };
   }
 
+  getRendererState() {
+    return {
+      ...this.database.getState(this.#nowIso(), { includeItems: false }),
+      sourceCatalog: publicSourceCatalog(),
+    };
+  }
+
+  #operationState() {
+    return this.compactMutationState ? this.getRendererState() : this.getState();
+  }
+
+  getFeedPage(request) {
+    return this.database.getFeedPage(request);
+  }
+
+  getItem(itemId) {
+    return this.database.getItem(itemId);
+  }
+
   getSourceCatalog() {
     return publicSourceCatalog();
   }
@@ -1148,19 +1169,19 @@ export class FeedEngine {
   async createPanel(input, placement = null) {
     this.#assertFeedConfigurationMutationIdle();
     this.database.createPanel(input, placement, this.#nowIso());
-    return this.getState();
+    return this.#operationState();
   }
 
   async renamePanel(panelId, name) {
     this.#assertFeedConfigurationMutationIdle();
     this.database.renamePanel(panelId, name, this.#nowIso());
-    return this.getState();
+    return this.#operationState();
   }
 
   async setWebPanelUrl(panelId, url) {
     this.#assertFeedConfigurationMutationIdle();
     this.database.setWebPanelUrl(panelId, url, this.#nowIso());
-    return this.getState();
+    return this.#operationState();
   }
 
   async setFeedPanelDefaultRefresh(panelId, refreshIntervalSeconds) {
@@ -1170,7 +1191,7 @@ export class FeedEngine {
       normalizeRefreshInterval(refreshIntervalSeconds),
       this.#nowIso(),
     );
-    return this.getState();
+    return this.#operationState();
   }
 
   async saveFeedPanelConfiguration(panelId, draft) {
@@ -1240,7 +1261,7 @@ export class FeedEngine {
             this.database.detachSource(panelId, sourceId);
           }
         }
-        return this.getState();
+        return this.#operationState();
       } catch (caught) {
         try {
           this.database.restoreFeedPanelConfiguration(
@@ -1268,23 +1289,23 @@ export class FeedEngine {
   async deletePanel(panelId) {
     this.#assertFeedConfigurationMutationIdle();
     this.database.deletePanel(panelId, this.#nowIso());
-    return this.getState();
+    return this.#operationState();
   }
 
   async saveDashboardLayout(layout, expectedRevision) {
     this.#assertFeedConfigurationMutationIdle();
     this.database.saveDashboardLayout(layout, expectedRevision, this.#nowIso());
-    return this.getState();
+    return this.#operationState();
   }
 
   async markItemsSeen(itemIds) {
     this.database.markItemsSeen(itemIds, this.#nowIso());
-    return this.getState();
+    return this.getRendererState();
   }
 
   async markItemOpened(itemId) {
     this.database.markItemOpened(itemId, this.#nowIso());
-    return this.getState();
+    return this.getRendererState();
   }
 
   exportDashboardConfig() {
@@ -1298,7 +1319,7 @@ export class FeedEngine {
   async importDashboardConfig(configuration) {
     this.#assertFeedConfigurationMutationIdle();
     this.database.importDashboardConfig(configuration, this.#nowIso());
-    return this.getState();
+    return this.#operationState();
   }
 
   recordPilotEvent(type, context = {}) {
@@ -1332,7 +1353,7 @@ export class FeedEngine {
   async removeSource(panelId, sourceId) {
     this.#assertFeedConfigurationMutationIdle();
     this.database.detachSource(panelId, sourceId);
-    return this.getState();
+    return this.#operationState();
   }
 
   #rejectQueuedRefreshes(error) {
@@ -1429,7 +1450,7 @@ export class FeedEngine {
         arrivalBatchAt: task.arrivalBatchAt,
       });
       if (this.closed) throw new RefreshCancelledError("Le moteur de veille est fermé.");
-      task.resolve(this.getState());
+      task.resolve(this.#operationState());
     } catch (error) {
       task.reject(
         this.closed && !(error instanceof RefreshCancelledError)
@@ -1943,7 +1964,7 @@ export class FeedEngine {
         );
       }
       this.database.attachSource(panelId, existing.id);
-      return { sourceId: existing.id, state: this.getState() };
+      return { sourceId: existing.id, state: this.#operationState() };
     }
 
     const resolved = await this.#resolveSource(normalizedInput, request.connectorKind);
@@ -1983,7 +2004,7 @@ export class FeedEngine {
       },
       seenAt,
     );
-    return { sourceId, state: this.getState() };
+    return { sourceId, state: this.#operationState() };
   }
 
   async addCatalogSource(panelId, catalogId, options = {}) {
@@ -2105,7 +2126,7 @@ export class FeedEngine {
         this.#enqueueRefresh(sourceId, { force, arrivalBatchAt: batchAt })),
     );
     if (this.closed) throw new RefreshCancelledError("Le moteur de veille est fermé.");
-    return this.getState();
+    return this.#operationState();
   }
 
   refreshPanel(panelId, { force = false } = {}) {

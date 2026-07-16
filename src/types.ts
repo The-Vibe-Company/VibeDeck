@@ -41,6 +41,7 @@ export interface Source {
   baselineCompletedAt: string | null;
   consecutiveFailures: number;
   nextRetryAt: string | null;
+  arrivalRevision: number;
   itemCount: number;
 }
 
@@ -97,7 +98,30 @@ export interface AppState {
   sources: Source[];
   sourceCatalog: SourceCatalogEntry[];
   items: FeedItem[];
+  contentRevision: number;
+  arrivalRevision: number;
   refreshedAt: string;
+}
+
+export interface FeedPageRequest {
+  panelId: string;
+  sourceFilter: "all" | string;
+  visibilityFilter: "all" | "unseen";
+  offset: number;
+  limit: number;
+  anchorItemId?: string;
+  focusedItemId?: string;
+}
+
+export interface FeedPage {
+  revision: number;
+  offset: number;
+  queryTotalCount: number;
+  panelTotalCount: number;
+  panelUnseenCount: number;
+  anchorIndex: number | null;
+  previousItemDate: string | null;
+  items: FeedItem[];
 }
 
 export type CreatePanelInput =
@@ -274,6 +298,7 @@ export interface SemanticSearchResult {
 
 export interface VibeDeckApi {
   getState: () => Promise<AppState>;
+  getFeedPage: (request: FeedPageRequest) => Promise<FeedPage>;
   getUpdateState: () => Promise<UpdateState>;
   checkForUpdates: () => Promise<UpdateState>;
   restartForUpdate: () => Promise<void>;
