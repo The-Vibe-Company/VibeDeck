@@ -1678,6 +1678,7 @@ try {
     },
     panelId,
   );
+  await waitForResponsiveFocusEffects(page, panelLeaf.locator(".dashboard-panel"));
   await secondaryAction.focus();
   await waitForDomFocus(
     page,
@@ -1726,6 +1727,7 @@ try {
     },
     panelId,
   );
+  await waitForResponsiveFocusEffects(page, panelLeaf.locator(".dashboard-panel"));
   await secondaryAction.focus();
   await waitForDomFocus(
     page,
