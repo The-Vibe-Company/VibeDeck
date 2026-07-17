@@ -70,7 +70,7 @@ Raccourcis principaux :
 - `R` : actualiser le fil actif ;
 - `Échap` : fermer la recherche sans modifier le filtre actif, puis retirer ce filtre depuis le dashboard ; restaurer aussi un panel agrandi ou fermer une fenêtre de réglages.
 
-Le simple déplacement de la souris au-dessus d’un panel lui donne le focus clavier, sauf lorsqu’un champ, un bouton ou une page web possède déjà le clavier ; dans ce cas, un clic explicite évite d’interrompre la saisie. Après la fermeture du lecteur intégré avec `Échap`, la navigation dans le fil reprend directement.
+Le simple déplacement de la souris au-dessus d’un `Fil` lui redonne immédiatement le focus clavier, même depuis un champ, un bouton ou une page web de VibeDeck. Les panels `Page web` et `Nouveau` conservent leurs contrôles actifs au survol. Après la fermeture du lecteur intégré avec `Échap`, la navigation dans le fil reprend directement.
 
 Chaque en-tête de panel permet aussi de diviser l’espace verticalement ou horizontalement, d’agrandir le panel et de le déplacer par glisser-déposer. Les séparateurs se manipulent à la souris ou au clavier.
 

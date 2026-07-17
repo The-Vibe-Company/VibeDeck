@@ -873,6 +873,16 @@ try {
     true,
     "La navigation roving doit déplacer le focus DOM.",
   );
+  const feedTitle = filPanel.locator(".panel-title");
+  await feedTitle.focus();
+  await page.keyboard.press("F2");
+  const feedTitleInput = filPanel.getByLabel(/Renommer le panel/);
+  await waitForDomFocus(
+    page,
+    feedTitleInput,
+    "renommer un Fil doit focaliser son champ de titre",
+  );
+  await page.keyboard.press("Escape");
   const allFilter = page.getByRole("button", { name: /^Toutes/ });
   await allFilter.focus();
   await page.keyboard.press("ArrowDown");
@@ -885,10 +895,14 @@ try {
   await page.locator(".dashboard-panel").hover();
   assert.equal(
     await allFilter.evaluate((button) => document.activeElement === button),
-    true,
-    "Revenir à la souris dans un panel ne doit pas interrompre un contrôle actif.",
+    false,
+    "Survoler un Fil doit reprendre le focus depuis un de ses contrôles.",
   );
-  await allFilter.evaluate((button) => button.blur());
+  assert.equal(
+    await page.locator(".dashboard-panel").evaluate((panel) => document.activeElement === panel),
+    true,
+    "Le Fil survolé doit devenir le vrai focus DOM sans délai.",
+  );
   await page.locator(".global-bar").hover();
   // Hover a row distinct from the prior keyboard anchor (nth(1)) so the assertion
   // truly isolates hover-preselect: only onPointerMove can move the selection to nth(3).
@@ -898,7 +912,7 @@ try {
   assert.equal(
     await page.locator(".dashboard-panel").evaluate((panel) => document.activeElement === panel),
     true,
-    "Le survol doit rendre le panel prêt pour les raccourcis sans voler ensuite les contrôles.",
+    "Le survol doit rendre le Fil prêt pour les raccourcis.",
   );
   await page.waitForFunction(
     (articleId) => document.querySelector(".article-row--focused")?.id === articleId,
@@ -1209,6 +1223,139 @@ try {
     true,
     "Le plein écran doit rester directement accessible dans un panel web compact.",
   );
+  await webSoundButton.focus();
+  await previewWebLeaf.locator(".panel-header").hover();
+  assert.equal(
+    await webSoundButton.evaluate((button) => document.activeElement === button),
+    true,
+    "Survoler un panel Page web ne doit pas interrompre son contrôle actif.",
+  );
+  await filPanel.hover();
+  assert.equal(
+    await webSoundButton.evaluate((button) => document.activeElement === button),
+    false,
+    "Survoler un Fil doit reprendre le focus depuis le contrôle d’un autre panel.",
+  );
+  assert.equal(
+    await filPanel.evaluate((panel) => document.activeElement === panel),
+    true,
+    "Le Fil doit recevoir le vrai focus DOM depuis un autre panel.",
+  );
+
+  await feedTitle.focus();
+  await page.keyboard.press("F2");
+  const staleFeedTitleInput = filPanel.getByLabel(/Renommer le panel/);
+  await waitForDomFocus(
+    page,
+    staleFeedTitleInput,
+    "le champ de titre doit précéder la prise de focus native",
+  );
+  const staleFeedTitleInputBox = await staleFeedTitleInput.boundingBox();
+  assert.ok(staleFeedTitleInputBox, "Le champ de titre stale doit être visible avant le focus natif.");
+  const nativeFocusProbe = await electronApp.evaluate(async ({ app, BrowserWindow }, expectedUrl) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    if (!window) throw new Error("La fenêtre pilote est introuvable.");
+    const view = window.contentView.children.find(
+      (candidate) => "webContents" in candidate && candidate.webContents.getURL() === expectedUrl,
+    );
+    if (!view || !("webContents" in view)) {
+      throw new Error("La vue web native à focaliser est introuvable.");
+    }
+    view.webContents.focus();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return {
+      appActive: app.isActive(),
+      windowFocused: window.isFocused(),
+      dashboardFocused: window.webContents.isFocused(),
+      nativeFocused: view.webContents.isFocused(),
+    };
+  }, previewUrl);
+  if (nativeFocusProbe.windowFocused) {
+    assert.equal(
+      nativeFocusProbe.nativeFocused,
+      true,
+      "La vue web native doit posséder le focus avant le scénario de reprise.",
+    );
+  }
+  await page.mouse.move(
+    staleFeedTitleInputBox.x + staleFeedTitleInputBox.width / 2,
+    staleFeedTitleInputBox.y + staleFeedTitleInputBox.height / 2,
+  );
+  assert.equal(
+    await filPanel.evaluate((panel) => document.activeElement === panel),
+    true,
+    "Revenir directement sur un champ stale doit rendre le focus DOM au Fil.",
+  );
+  const nativeReturnRow = filPanel.locator(".article-row").nth(5);
+  const nativeReturnNextRow = filPanel.locator(".article-row").nth(6);
+  await hoverRow(nativeReturnRow);
+  assert.equal(
+    await filPanel.evaluate((panel) => document.activeElement === panel),
+    true,
+    "Survoler un Fil doit reprendre le vrai focus DOM depuis une vue web native.",
+  );
+  const dashboardFocusProbe = await electronApp.evaluate(async ({ app, BrowserWindow }, {
+    expectedUrl,
+    requireDashboardFocus,
+  }) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    if (!window) throw new Error("La fenêtre pilote est introuvable.");
+    const view = window.contentView.children.find(
+      (candidate) => "webContents" in candidate && candidate.webContents.getURL() === expectedUrl,
+    );
+    if (!view || !("webContents" in view)) {
+      throw new Error("La vue web native à vérifier est introuvable.");
+    }
+    if (requireDashboardFocus) {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if (window.webContents.isFocused() && !view.webContents.isFocused()) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+    return {
+      appActive: app.isActive(),
+      windowFocused: window.isFocused(),
+      dashboardFocused: window.webContents.isFocused(),
+      nativeFocused: view.webContents.isFocused(),
+    };
+  }, { expectedUrl: previewUrl, requireDashboardFocus: nativeFocusProbe.windowFocused });
+  if (nativeFocusProbe.windowFocused) {
+    assert.deepEqual(
+      {
+        windowFocused: dashboardFocusProbe.windowFocused,
+        dashboardFocused: dashboardFocusProbe.dashboardFocused,
+        nativeFocused: dashboardFocusProbe.nativeFocused,
+      },
+      { windowFocused: true, dashboardFocused: true, nativeFocused: false },
+      "Le survol doit transférer le propriétaire Electron du clavier de la vue native au dashboard.",
+    );
+    await electronApp.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      if (!window) throw new Error("La fenêtre pilote est introuvable.");
+      window.webContents.sendInputEvent({ type: "keyDown", keyCode: "Down" });
+      window.webContents.sendInputEvent({ type: "keyUp", keyCode: "Down" });
+    });
+  } else {
+    assert.deepEqual(
+      {
+        appActive: dashboardFocusProbe.appActive,
+        windowFocused: dashboardFocusProbe.windowFocused,
+      },
+      {
+        appActive: nativeFocusProbe.appActive,
+        windowFocused: nativeFocusProbe.windowFocused,
+      },
+      "Le survol dans le pilote caché ne doit pas activer VibeDeck au niveau système.",
+    );
+    await page.keyboard.press("ArrowDown");
+  }
+  await waitForDomFocus(
+    page,
+    nativeReturnNextRow,
+    "la première flèche après une vue web native doit contrôler immédiatement le Fil",
+  );
+  await page.locator(".global-bar").hover();
+
   await webSoundButton.click();
   const webMuteButton = previewWebLeaf.getByLabel("Couper le son", { exact: true });
   await webMuteButton.waitFor({ state: "visible" });

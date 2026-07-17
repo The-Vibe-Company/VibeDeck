@@ -3133,6 +3133,7 @@ function PanelFrame({
   }
 
   function canMoveFocusOnHover(panelElement: HTMLElement) {
+    if (kind === "FIL") return true;
     if (!document.hasFocus()) return false;
     const active = document.activeElement;
     if (!active || active === document.body || active === panelElement) return true;
@@ -3173,7 +3174,7 @@ function PanelFrame({
       onMouseDown={(event) => focusFromPointer(event.currentTarget)}
       onPointerEnter={(event) => {
         if (
-          document.activeElement !== event.currentTarget &&
+          (!document.hasFocus() || document.activeElement !== event.currentTarget) &&
           canMoveFocusOnHover(event.currentTarget)
         ) {
           focusFromPointer(event.currentTarget);
@@ -3181,7 +3182,9 @@ function PanelFrame({
       }}
       onPointerMove={(event) => {
         if (
-          document.activeElement !== event.currentTarget &&
+          (kind === "FIL" ||
+            !document.hasFocus() ||
+            document.activeElement !== event.currentTarget) &&
           canMoveFocusOnHover(event.currentTarget)
         ) {
           focusFromPointer(event.currentTarget);
