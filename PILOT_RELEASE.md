@@ -25,6 +25,8 @@ npm run build
 npm run test:pilot-ui
 npm run test:live
 npm run verify:release
+npm audit --omit=dev
+npm audit
 ```
 
 Le test live doit être exécuté depuis le réseau cible. Il doit confirmer que les 30 publications du registre retournent chacune des éléments exploitables, sans panne silencieuse. La recette du lecteur prend au plus cinq candidats par publication et rapporte uniquement le nombre de succès, de replis et la décision la plus lente ; les sorties ne doivent jamais contenir de titre, URL, contenu ou cookie. La lecture simplifiée est privilégiée, mais une publication peut revenir intégralement à la page originale lorsque ses articles courants sont réservés, bloqués, vidéo, galerie ou insuffisamment structurés : ce repli est un comportement normal et ne doit jamais être « corrigé » en affaiblissant les protections. Chaque décision doit rester sous une seconde.
@@ -78,7 +80,9 @@ Le diagnostic contient uniquement les durées agrégées et le nombre de session
 
 La diffusion directe exige un certificat `Developer ID Application` et des identifiants de notarisation Apple configurés uniquement dans les secrets CI.
 
-Release Please maintient la Release PR, `package.json`, `package-lock.json`, `.release-please-manifest.json` et `CHANGELOG.md`. Après fusion de cette PR, il crée un tag `vX.Y.Z` et une GitHub Release non publique. Le workflow signé la publie comme `latest` seulement après validation exacte des artefacts macOS et de leurs checksums. Tant que `ENABLE_WINDOWS_RELEASE` vaut `false`, le tag déclenche uniquement le build macOS signé et les artefacts sont ajoutés à cette release avant sa publication. Le secret d’organisation `RELEASE_PLEASE_TOKEN` doit être autorisé uniquement pour ce dépôt et disposer des permissions Contents, Pull Requests et Issues en écriture.
+Le workflow `pilot-build` exécute les tests et audits, construit les distributions macOS et Windows non signées, monte le DMG, lance les paquets réels et termine par le check stable `CI required`. Ce check est obligatoire sur `main`, branche à jour comprise, y compris pour les administrateurs et les Release PRs. `test:live` reste une recette réseau séparée et ne participe pas à ce check déterministe.
+
+Release Please maintient la Release PR, `package.json`, `package-lock.json`, `.release-please-manifest.json` et `CHANGELOG.md`. Il ne s’exécute qu’après un `pilot-build` réussi sur un push de `main`. Après fusion de la Release PR et nouveau passage vert sur `main`, il crée un tag `vX.Y.Z` et une GitHub Release non publique. Le workflow signé exige que le SHA tagué possède le check `CI required` réussi et émis par GitHub Actions, puis la publie comme `latest` seulement après validation exacte des artefacts macOS et de leurs checksums. Tant que `ENABLE_WINDOWS_RELEASE` vaut `false`, le tag déclenche uniquement le build macOS signé et les artefacts sont ajoutés à cette release avant sa publication. Le secret d’organisation `RELEASE_PLEASE_TOKEN` doit être autorisé uniquement pour ce dépôt et disposer des permissions Contents, Pull Requests et Issues en écriture.
 
 Le secret `APPLE_API_KEY` accepte le contenu brut du fichier `.p8` ou sa version encodée en base64. `MAC_CSC_LINK` contient le certificat `.p12` encodé en base64 ; les mots de passe et identifiants ne sont jamais stockés dans le dépôt.
 
@@ -92,7 +96,7 @@ npm run checksums:release
 npm run verify:checksums
 ```
 
-Le job `release-signed` refuse de produire une version de diffusion si le certificat est absent. Ses actions tierces sont épinglées par SHA, le tag doit correspondre exactement à la version de `package.json` et pointer sur l’historique de `main`, et le bundle contenu dans le DMG est monté, vérifié puis réellement lancé avant publication. Le ZIP et `latest-mac.yml` sont publiés avec le DMG pour permettre l’auto-mise à jour.
+Le job `release-signed` refuse de produire une version de diffusion si le certificat est absent. Ses actions tierces sont épinglées par SHA, le tag doit correspondre exactement à la version de `package.json`, pointer sur l’historique de `main` et avoir déjà franchi `CI required`. Les tests fonctionnels et audits ne sont donc pas repoussés après la création du tag. Le bundle contenu dans le DMG est monté, vérifié puis réellement lancé avant publication. Le ZIP et `latest-mac.yml` sont publiés avec le DMG pour permettre l’auto-mise à jour.
 
 Les secrets de signature doivent vivre uniquement dans l’environnement GitHub `signed-release`, sans reviewer obligatoire et avec sa politique de déploiement limitée aux tags `v*`. La fusion manuelle de la Release PR est le seul geste humain : le tag, la release non publique, la signature, la notarisation, les contrôles, l’upload des artefacts puis la publication comme `latest` s’enchaînent ensuite automatiquement. Le dépôt doit être public seulement après un scan de secrets de tout son historique ; `main` et les tags `v*` restent protégés. Les certificats ne doivent pas être provisionnés tant que ces règles sont en place.
 

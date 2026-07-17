@@ -345,6 +345,21 @@ assert.match(
   /token:\s*\$\{\{ secrets\.RELEASE_PLEASE_TOKEN \}\}/,
   "Le jeton d’organisation Release Please doit déclencher les checks des Release PRs",
 );
+assert.match(
+  releasePleaseWorkflow,
+  /workflow_run:\s*\n\s*workflows:\s*\[pilot-build\]\s*\n\s*types:\s*\[completed\]\s*\n\s*branches:\s*\[main\]/,
+  "Release Please doit attendre la fin du build pilote de main",
+);
+assert.match(
+  releasePleaseWorkflow,
+  /github\.event\.workflow_run\.conclusion == 'success'[\s\S]*github\.event\.workflow_run\.event == 'push'/,
+  "Release Please doit ignorer les builds rouges et les lancements non issus d’un push",
+);
+assert.doesNotMatch(
+  releasePleaseWorkflow,
+  /workflow_dispatch:/,
+  "Release Please ne doit pas pouvoir contourner manuellement la CI requise",
+);
 assert.match(buildWorkflow, /npm run verify:release/, "Le build CI doit vérifier sa configuration");
 assert.match(
   buildWorkflow,
@@ -352,9 +367,49 @@ assert.match(
   "Le build CI doit vérifier les invariants de viewport et de sélection",
 );
 assert.equal(
+  (buildWorkflow.match(/npm audit --omit=dev/g) ?? []).length,
+  1,
+  "La CI doit auditer une fois les dépendances runtime avant la release",
+);
+assert.equal(
+  (buildWorkflow.match(/^\s*- run: npm audit$/gm) ?? []).length,
+  1,
+  "La CI doit auditer une fois toutes les dépendances avant la release",
+);
+assert.match(
+  buildWorkflow,
+  /npm run dist:mac/,
+  "La CI macOS doit produire la distribution non signée complète",
+);
+assert.match(
+  buildWorkflow,
+  /npm run dist:win/,
+  "La CI Windows doit produire l’installateur non signé complet",
+);
+assert.match(
+  buildWorkflow,
+  /hdiutil attach[\s\S]*npm run test:packaged -- "\$app_path"/,
+  "La CI macOS doit monter puis lancer le bundle réellement contenu dans le DMG",
+);
+assert.equal(
   (buildWorkflow.match(/npm run test:packaged/g) ?? []).length,
   2,
   "Chaque paquet CI non signé doit être lancé après sa construction",
+);
+assert.match(
+  buildWorkflow,
+  /required:\s*\n\s*name:\s*CI required[\s\S]*needs:\s*\[policy, platform\]/,
+  "La CI doit exposer un unique check stable dépendant des audits et des deux plateformes",
+);
+assert.match(
+  buildWorkflow,
+  /cancel-in-progress:\s*\$\{\{ github\.event_name == 'pull_request' \}\}/,
+  "Les anciens runs d’une même PR doivent être annulés",
+);
+assert.match(
+  buildWorkflow,
+  /name:\s*Upload pilot UI failure diagnostic[\s\S]*\.context\/pilot-ui-failure\.png/,
+  "Un échec UI doit conserver une capture diagnostique",
 );
 const unsafeWorkflowUses = [
   ...findUnsafeWorkflowUses(buildWorkflow, "pilot-build.yml"),
@@ -410,7 +465,7 @@ assert.match(
 );
 assert.match(
   releaseWorkflow,
-  /validate:\s*\n\s*runs-on: ubuntu-latest\s*\n\s*permissions:\s*\n(?:\s*#[^\n]*\n)*\s*contents: write/,
+  /validate:\s*\n\s*runs-on: ubuntu-latest\s*\n\s*timeout-minutes:\s*10\s*\n\s*permissions:\s*\n(?:\s*#[^\n]*\n)*\s*contents: write/,
   "Le job de validation doit pouvoir inspecter une release non publique",
 );
 assert.ok(releaseValidationJob, "Le job de validation signé est introuvable");
@@ -428,6 +483,11 @@ assert.match(
   releaseWorkflow,
   /test "\$RELEASE_TAG" = "v\$version"/,
   "Le tag doit correspondre à la version du paquet",
+);
+assert.match(
+  releaseWorkflow,
+  /select\(\.name == "CI required" and \.app\.id == 15368\)[\s\S]*test "\$ci_conclusion" = success/,
+  "La release doit exiger le check CI required émis par GitHub Actions sur le SHA tagué",
 );
 assert.equal(
   (releaseWorkflow.match(/--publish always/g) ?? []).length,
@@ -496,8 +556,8 @@ assert.match(
 );
 assert.equal(
   (releaseWorkflow.match(/npm run test:pilot-ui/g) ?? []).length,
-  2,
-  "Chaque build signé doit exécuter la preuve UI Electron",
+  0,
+  "La release signée ne doit pas rejouer la preuve UI déjà validée par CI required",
 );
 assert.equal(
   (releaseWorkflow.match(/npm run test:packaged/g) ?? []).length,
@@ -506,13 +566,18 @@ assert.equal(
 );
 assert.equal(
   (releaseWorkflow.match(/npm audit --omit=dev/g) ?? []).length,
-  2,
-  "Chaque plateforme signée doit auditer les dépendances runtime",
+  0,
+  "La release signée ne doit pas repousser l’audit runtime après la création du tag",
 );
 assert.equal(
   (releaseWorkflow.match(/^\s*- run: npm audit$/gm) ?? []).length,
-  2,
-  "Chaque plateforme signée doit auditer toutes les dépendances",
+  0,
+  "La release signée ne doit pas repousser l’audit complet après la création du tag",
+);
+assert.equal(
+  (releaseWorkflow.match(/^\s*- run: npm test$/gm) ?? []).length,
+  0,
+  "La release signée ne doit pas rejouer les tests unitaires déjà validés par CI required",
 );
 assert.match(releaseWorkflow, /release\/latest-mac\.yml/, "Métadonnées macOS manquantes");
 assert.match(releaseWorkflow, /release\/latest\.yml/, "Métadonnées Windows manquantes");
