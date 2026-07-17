@@ -8,6 +8,17 @@ contextBridge.exposeInMainWorld("vibedeck", {
   restartForUpdate: () => ipcRenderer.invoke("updates:restart").then(() => undefined),
   createPanel: (input, placement) =>
     ipcRenderer.invoke("aggregator:create-panel", input, placement),
+  createFeedPanelWithSources: (operationId, input, placement, draft) =>
+    ipcRenderer.invoke(
+      "aggregator:create-feed-panel-with-sources",
+      operationId,
+      input,
+      placement,
+      draft,
+    ),
+  cancelFeedPanelCreation: (operationId) =>
+    ipcRenderer.invoke("aggregator:cancel-feed-panel-creation", operationId)
+      .then(() => undefined),
   renamePanel: (panelId, name) =>
     ipcRenderer.invoke("aggregator:rename-panel", panelId, name),
   setWebPanelUrl: (panelId, url) =>

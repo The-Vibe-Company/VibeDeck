@@ -14,8 +14,9 @@ import {
   normalizeInputUrl,
   parseFeedDocument,
   readResponseTextWithLimit,
+  settleWithConcurrencyLimits,
 } from "./feed-engine.mjs";
-import { CURATED_PROXY_ROOTS, PUBLICATIONS } from "./publication-registry.mjs";
+import { CURATED_PROXY_ROOTS, CURATED_SOURCES, PUBLICATIONS } from "./publication-registry.mjs";
 
 const RSS_FIXTURE = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
@@ -120,6 +121,50 @@ function response(body, { status = 200, headers = {}, url } = {}) {
   return result;
 }
 
+test("settles bounded work in input order with global and per-key limits", async () => {
+  const values = Array.from({ length: 18 }, (_, index) => ({
+    index,
+    host: index < 9 ? "one.test" : index < 15 ? "two.test" : "three.test",
+  }));
+  let active = 0;
+  let maximumActive = 0;
+  const activeByHost = new Map();
+  const maximumByHost = new Map();
+  const releases = [];
+
+  const settled = settleWithConcurrencyLimits(
+    values,
+    async (value) => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      const hostActive = (activeByHost.get(value.host) ?? 0) + 1;
+      activeByHost.set(value.host, hostActive);
+      maximumByHost.set(value.host, Math.max(maximumByHost.get(value.host) ?? 0, hostActive));
+      await new Promise((resolve) => releases.push(resolve));
+      active -= 1;
+      activeByHost.set(value.host, (activeByHost.get(value.host) ?? 1) - 1);
+      if (value.index === 7) throw new Error("échec attendu");
+      return value.index;
+    },
+    { keyForValue: ({ host }) => host },
+  );
+
+  while (releases.length < 6) await new Promise((resolve) => setImmediate(resolve));
+  while (releases.length > 0) {
+    releases.shift()();
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  const results = await settled;
+  assert.equal(maximumActive, 6);
+  assert.deepEqual([...maximumByHost.values()], [2, 2, 2]);
+  assert.equal(results.length, values.length);
+  assert.equal(results[7].status, "rejected");
+  assert.deepEqual(
+    results.filter(({ status }) => status === "fulfilled").map(({ value }) => value),
+    values.map(({ index }) => index).filter((index) => index !== 7),
+  );
+});
+
 async function createFeedPanel(engine, name = "À la une") {
   const state = await engine.createPanel({ kind: "feed", name });
   return state.panels.find((panel) => panel.kind === "feed" && panel.name === name);
@@ -168,9 +213,11 @@ test("exposes an immutable catalogue with only verified capabilities", () => {
   assert.equal(Object.isFrozen(SOURCE_CATALOG), true);
   assert.deepEqual(
     SOURCE_CATALOG.map(({ id, capabilities }) => ({ id, capabilities })),
-    PUBLICATIONS.map(({ id }) => ({
+    CURATED_SOURCES.map(({ id, sourceType }) => ({
       id,
-      capabilities: ["optimized-feed", "simplified-reading"],
+      capabilities: sourceType === "media"
+        ? ["optimized-feed", "simplified-reading"]
+        : ["optimized-feed"],
     })),
   );
   for (const source of SOURCE_CATALOG) {
@@ -591,15 +638,15 @@ function controlledRefreshFetch() {
   };
 }
 
-test("normalise pasted URLs and maps optimized publications", () => {
+test("normalise pasted URLs and maps curated sources", () => {
   assert.equal(normalizeInputUrl("example.test/path"), "https://example.test/path");
-  for (const publication of PUBLICATIONS) {
-    assert.equal(matchKnownPublication(publication.homepageUrl)?.id, publication.id);
-    assert.equal(matchKnownPublication(publication.feedUrl)?.id, publication.id);
-    for (const hostname of publication.hostnames) {
+  for (const source of CURATED_SOURCES) {
+    assert.equal(matchKnownPublication(source.homepageUrl)?.id, source.id);
+    assert.equal(matchKnownPublication(source.feedUrl)?.id, source.id);
+    for (const hostname of source.hostnames) {
       assert.equal(
         matchKnownPublication(`https://actualites.${hostname}/article-public`)?.id,
-        publication.id,
+        source.id,
       );
       assert.equal(matchKnownPublication(`https://${hostname}.evil.test/article`), null);
       assert.equal(matchKnownPublication(`https://${hostname}/rss/section.xml`), null);
@@ -687,6 +734,18 @@ test("parses RSS and deduplicates equivalent article links", () => {
     publishedAt: "2026-07-09T10:30:00.000Z",
     updatedAt: null,
   });
+});
+
+test("parses an RSS publication date wrapped in a semantic time element", () => {
+  const parsed = parseFeedDocument(
+    `<?xml version="1.0"?><rss version="2.0"><channel><title>Institution</title><item>
+      <title>Décision</title><link>https://example.test/decision</link>
+      <pubDate><time datetime="2026-07-09T16:47:15+02:00">Thu, 09 Jul 2026 16:47:15 +0200</time></pubDate>
+    </item></channel></rss>`,
+    "https://example.test/feed.xml",
+  );
+
+  assert.equal(parsed.items[0].publishedAt, "2026-07-09T14:47:15.000Z");
 });
 
 test("parses Atom links, summaries and dates", () => {
@@ -1369,7 +1428,7 @@ test("allows a curated catalog connector and its same-site redirect through a pr
   }
 });
 
-test("defaults every catalog publication to one minute while accepting an explicit override", async () => {
+test("uses source-specific catalog refresh defaults while accepting an explicit override", async () => {
   const engine = createFeedEngine({
     fetchImpl: async () => response(RSS_FIXTURE),
   });
@@ -1396,6 +1455,164 @@ test("defaults every catalog publication to one minute while accepting an explic
         .refreshIntervalSeconds,
       120,
     );
+
+    result = await engine.addCatalogSource(panelId, "cert-fr");
+    assert.equal(
+      result.state.sources.find(({ connectorId }) => connectorId === "cert-fr")
+        .refreshIntervalSeconds,
+      300,
+    );
+  } finally {
+    engine.close();
+  }
+});
+
+test("creates a sourced feed atomically while preserving catalog refresh defaults", async () => {
+  const engine = createFeedEngine({ fetchImpl: async () => response(RSS_FIXTURE) });
+  try {
+    const state = await engine.createFeedPanelWithSources(
+      { kind: "feed", name: "Desk" },
+      null,
+      {
+        name: "Desk",
+        defaultRefreshIntervalSeconds: 60,
+        keptSourceIds: [],
+        selectedCatalogIds: ["le-monde", "cert-fr"],
+        customSources: [],
+      },
+    );
+    const panel = state.panels.find(({ name }) => name === "Desk");
+    assert.ok(panel);
+    assert.equal(panel.sourceIds.length, 2);
+    assert.equal(
+      state.sources.find(({ connectorId }) => connectorId === "le-monde").refreshIntervalSeconds,
+      60,
+    );
+    assert.equal(
+      state.sources.find(({ connectorId }) => connectorId === "cert-fr").refreshIntervalSeconds,
+      300,
+    );
+  } finally {
+    engine.close();
+  }
+});
+
+test("preserves catalog selection order when parallel feeds finish out of order", async () => {
+  const pendingFetches = new Map();
+  const bothFetchesStarted = Promise.withResolvers();
+  const engine = createFeedEngine({
+    fetchImpl: async (url) => new Promise((resolve) => {
+      pendingFetches.set(String(url), resolve);
+      if (pendingFetches.size === 2) bothFetchesStarted.resolve();
+    }),
+  });
+  try {
+    const initial = await engine.createPanel({ kind: "feed", name: "Ordonné" });
+    const panel = initial.panels[0];
+    const saving = engine.saveFeedPanelConfiguration(
+      panel.id,
+      {
+        name: panel.name,
+        defaultRefreshIntervalSeconds: panel.defaultRefreshIntervalSeconds,
+        keptSourceIds: [],
+        selectedCatalogIds: ["le-monde", "cert-fr"],
+        customSources: [],
+      },
+    );
+
+    await bothFetchesStarted.promise;
+    pendingFetches.get("https://www.cert.ssi.gouv.fr/feed/")(
+      response(RSS_FIXTURE),
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    pendingFetches.get("https://www.lemonde.fr/rss/en_continu.xml")(
+      response(RSS_FIXTURE),
+    );
+    const saved = await saving;
+    const connectorBySourceId = new Map(
+      saved.sources.map((source) => [source.id, source.connectorId]),
+    );
+    assert.deepEqual(
+      saved.panels[0].sourceIds.map((sourceId) => connectorBySourceId.get(sourceId)),
+      ["le-monde", "cert-fr"],
+    );
+  } finally {
+    engine.close();
+  }
+});
+
+test("removes a new feed and restores shared source fields when one source fails", async () => {
+  const engine = createFeedEngine({
+    fetchImpl: async (url) => {
+      if (url === "https://feeds.bbci.co.uk/news/rss.xml") {
+        throw new Error("BBC indisponible");
+      }
+      return response(RSS_FIXTURE);
+    },
+  });
+  try {
+    let state = await engine.createPanel({ kind: "feed", name: "Existant" });
+    const existingPanel = state.panels[0];
+    state = (await engine.addCatalogSource(existingPanel.id, "le-monde", {
+      refreshIntervalSeconds: 300,
+    })).state;
+    const beforeLayout = state.dashboard.layout;
+
+    await assert.rejects(
+      engine.createFeedPanelWithSources(
+        { kind: "feed", name: "Incomplet" },
+        { targetPanelId: existingPanel.id, side: "right" },
+        {
+          name: "Incomplet",
+          defaultRefreshIntervalSeconds: 60,
+          keptSourceIds: [],
+          selectedCatalogIds: ["le-monde", "bbc"],
+          customSources: [],
+        },
+      ),
+      /Aucune modification conservée.*BBC indisponible/,
+    );
+
+    state = engine.getRendererState();
+    assert.deepEqual(state.panels.map(({ name }) => name), ["Existant"]);
+    assert.deepEqual(state.dashboard.layout, beforeLayout);
+    assert.equal(
+      state.sources.find(({ connectorId }) => connectorId === "le-monde").refreshIntervalSeconds,
+      300,
+    );
+  } finally {
+    engine.close();
+  }
+});
+
+test("cancels an in-flight sourced feed without retaining the panel", async () => {
+  const started = Promise.withResolvers();
+  const controller = new AbortController();
+  const engine = createFeedEngine({
+    fetchImpl: async (_url, options) => new Promise((_resolve, reject) => {
+      started.resolve();
+      options.signal.addEventListener("abort", () => {
+        reject(new DOMException("Aborted", "AbortError"));
+      }, { once: true });
+    }),
+  });
+  try {
+    const creating = engine.createFeedPanelWithSources(
+      { kind: "feed", name: "Annulé" },
+      null,
+      {
+        name: "Annulé",
+        defaultRefreshIntervalSeconds: 60,
+        keptSourceIds: [],
+        selectedCatalogIds: ["le-monde"],
+        customSources: [],
+      },
+      { signal: controller.signal },
+    );
+    await started.promise;
+    controller.abort();
+    await assert.rejects(creating, /Aucune modification conservée/);
+    assert.equal(engine.getRendererState().panels.length, 0);
   } finally {
     engine.close();
   }

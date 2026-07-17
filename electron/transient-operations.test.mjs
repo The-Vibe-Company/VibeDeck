@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  cleanFeedPanelCreationId,
   cleanSourceProbeId,
   cleanWebPreviewId,
   createLatestAbortOperationRegistry,
@@ -13,11 +14,18 @@ const UUID_B = "223e4567-e89b-42d3-a456-426614174000";
 test("accepts only strict transient UUIDs at the main-process boundary", () => {
   assert.equal(cleanSourceProbeId(` ${UUID_A} `), UUID_A);
   assert.equal(cleanWebPreviewId(` draft:${UUID_A} `), `draft:${UUID_A}`);
+  assert.equal(cleanFeedPanelCreationId(` draft:${UUID_A} `), `draft:${UUID_A}`);
   for (const invalid of [null, "", "draft:not-a-uuid", UUID_A]) {
     assert.throws(() => cleanWebPreviewId(invalid), /Identifiant d’aperçu web invalide/);
   }
   for (const invalid of [null, "", `draft:${UUID_A}`, "not-a-uuid"]) {
     assert.throws(() => cleanSourceProbeId(invalid), /Identifiant de test de source invalide/);
+  }
+  for (const invalid of [null, "", UUID_A, "draft:not-a-uuid"]) {
+    assert.throws(
+      () => cleanFeedPanelCreationId(invalid),
+      /Identifiant de création du fil invalide/,
+    );
   }
 });
 

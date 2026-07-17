@@ -463,12 +463,10 @@ test("restores exact ordered attachments after a partial local removal", async (
       currentState = added.state;
     }
     const panel = currentState.panels[0];
-    const detachSource = engine.database.detachSource.bind(engine.database);
-    let removalCount = 0;
-    engine.database.detachSource = (...args) => {
-      removalCount += 1;
-      if (removalCount === 2) throw new Error("suppression interrompue");
-      return detachSource(...args);
+    const replacePanelSources = engine.database.replacePanelSources.bind(engine.database);
+    engine.database.replacePanelSources = (...args) => {
+      replacePanelSources(...args);
+      throw new Error("remplacement interrompu");
     };
 
     await assert.rejects(
@@ -480,7 +478,7 @@ test("restores exact ordered attachments after a partial local removal", async (
           keptSourceIds: [sourceIds[2]],
         }),
       ),
-      /Aucune modification conservée : suppression interrompue/,
+      /Aucune modification conservée : remplacement interrompu/,
     );
 
     const restored = engine.getState().panels[0];
@@ -641,6 +639,43 @@ test("keeps a current catalog source when it is explicitly reselected", async ()
     );
 
     assert.deepEqual(saved.panels[0].sourceIds, [monde.sourceId]);
+  } finally {
+    engine.close();
+  }
+});
+
+test("keeps a primary catalog cadence unless the configuration explicitly overrides it", async () => {
+  const engine = createFeedEngine({ fetchImpl: async () => response() });
+  try {
+    let state = await engine.createPanel({
+      kind: "feed",
+      name: "Signaux",
+      defaultRefreshIntervalSeconds: 60,
+    });
+    const panel = state.panels[0];
+    state = await engine.saveFeedPanelConfiguration(
+      panel.id,
+      draft(panel, { selectedCatalogIds: ["cert-fr"] }),
+    );
+    assert.equal(
+      state.sources.find(({ connectorId }) => connectorId === "cert-fr")
+        .refreshIntervalSeconds,
+      300,
+    );
+
+    state = await engine.saveFeedPanelConfiguration(
+      panel.id,
+      draft(state.panels[0], {
+        keptSourceIds: [],
+        selectedCatalogIds: ["cert-fr"],
+        catalogRefreshIntervalSeconds: 60,
+      }),
+    );
+    assert.equal(
+      state.sources.find(({ connectorId }) => connectorId === "cert-fr")
+        .refreshIntervalSeconds,
+      60,
+    );
   } finally {
     engine.close();
   }

@@ -16,11 +16,12 @@ import {
 } from "./network-safety.mjs";
 import {
   CURATED_PROXY_ROOTS,
+  CURATED_SOURCES,
   PUBLICATIONS,
   SOURCE_CATALOG,
+  curatedSourceById,
+  curatedSourceForFeedUrl,
   publicSourceCatalog,
-  publicationById,
-  publicationForFeedUrl,
 } from "./publication-registry.mjs";
 
 export { isNonPublicIpAddress } from "./network-safety.mjs";
@@ -44,6 +45,67 @@ const MAX_FAILURE_BACKOFF_SECONDS = 1_800;
 const MAX_CONCURRENT_REFRESHES = 6;
 const MAX_CONCURRENT_REFRESHES_PER_HOST = 2;
 const MAX_SOURCE_PROBE_SAMPLES = 3;
+
+export async function settleWithConcurrencyLimits(
+  values,
+  mapper,
+  {
+    keyForValue = () => "default",
+    maximumConcurrent = MAX_CONCURRENT_REFRESHES,
+    maximumConcurrentPerKey = MAX_CONCURRENT_REFRESHES_PER_HOST,
+  } = {},
+) {
+  if (!Array.isArray(values) || typeof mapper !== "function" || typeof keyForValue !== "function") {
+    throw new TypeError("File de travail invalide.");
+  }
+  if (
+    !Number.isInteger(maximumConcurrent) || maximumConcurrent < 1 ||
+    !Number.isInteger(maximumConcurrentPerKey) || maximumConcurrentPerKey < 1
+  ) {
+    throw new RangeError("Limite de concurrence invalide.");
+  }
+  if (values.length === 0) return [];
+
+  const pendingIndexes = values.map((_value, index) => index);
+  const results = new Array(values.length);
+  const activeByKey = new Map();
+  let activeCount = 0;
+
+  return new Promise((resolve) => {
+    const schedule = () => {
+      while (activeCount < maximumConcurrent && pendingIndexes.length > 0) {
+        const pendingPosition = pendingIndexes.findIndex((index) => {
+          const key = String(keyForValue(values[index]));
+          return (activeByKey.get(key) ?? 0) < maximumConcurrentPerKey;
+        });
+        if (pendingPosition < 0) break;
+        const [index] = pendingIndexes.splice(pendingPosition, 1);
+        const key = String(keyForValue(values[index]));
+        activeCount += 1;
+        activeByKey.set(key, (activeByKey.get(key) ?? 0) + 1);
+        Promise.resolve()
+          .then(() => mapper(values[index], index))
+          .then(
+            (value) => {
+              results[index] = { status: "fulfilled", value };
+            },
+            (reason) => {
+              results[index] = { status: "rejected", reason };
+            },
+          )
+          .finally(() => {
+            activeCount -= 1;
+            const remainingForKey = (activeByKey.get(key) ?? 1) - 1;
+            if (remainingForKey > 0) activeByKey.set(key, remainingForKey);
+            else activeByKey.delete(key);
+            if (pendingIndexes.length === 0 && activeCount === 0) resolve(results);
+            else schedule();
+          });
+      }
+    };
+    schedule();
+  });
+}
 const CONNECTOR_PREFERENCES = new Set(["auto", "rss", "atom", "news-sitemap"]);
 const CURATED_PROXY_ENDPOINTS = new Set(CURATED_PROXY_ROOTS);
 const TRACKING_PARAMETERS = new Set([
@@ -69,10 +131,11 @@ const xmlParser = new XMLParser({
 });
 
 export const KNOWN_PUBLICATIONS = PUBLICATIONS;
+export const KNOWN_CURATED_SOURCES = CURATED_SOURCES;
 export { SOURCE_CATALOG };
 
 function connectorIdForFeedUrl(feedUrl) {
-  return publicationForFeedUrl(feedUrl)?.id ?? null;
+  return curatedSourceForFeedUrl(feedUrl)?.id ?? null;
 }
 
 function asArray(value) {
@@ -111,7 +174,15 @@ function cleanText(value, limit = 500) {
 }
 
 function normalizeDate(value) {
-  const text = valueAsText(value);
+  const nestedTime = value && typeof value === "object" && !Array.isArray(value)
+    ? value.time
+    : null;
+  const text = firstText(
+    value,
+    value?.["@_datetime"],
+    nestedTime?.["@_datetime"],
+    nestedTime,
+  );
   if (!text) return null;
   const timestamp = Date.parse(text);
   return Number.isNaN(timestamp) ? null : new Date(timestamp).toISOString();
@@ -274,20 +345,20 @@ export function assertSafeFeedUrl(
   return normalized;
 }
 
-export function matchKnownPublication(input) {
+export function matchKnownSource(input) {
   const inputUrl = normalizeInputUrl(input);
-  const exactPublication = KNOWN_PUBLICATIONS.find(({ feedUrl }) => feedUrl === inputUrl);
-  if (exactPublication) return { ...exactPublication, inputUrl };
+  const exactSource = KNOWN_CURATED_SOURCES.find(({ feedUrl }) => feedUrl === inputUrl);
+  if (exactSource) return { ...exactSource, inputUrl };
   const url = new URL(inputUrl);
   const hostname = baseHostname(url.hostname);
-  const publication = KNOWN_PUBLICATIONS.find(({ hostnames }) =>
+  const source = KNOWN_CURATED_SOURCES.find(({ hostnames }) =>
     hostnames.some((knownHostname) =>
       hostname === knownHostname || hostname.endsWith(`.${knownHostname}`),
     ),
   );
-  if (!publication) return null;
+  if (!source) return null;
 
-  // A publication homepage should get the polished default connector, but an
+  // A curated homepage should get the polished default connector, but an
   // explicitly pasted section feed or news sitemap must remain user-selectable.
   const path = url.pathname.toLowerCase();
   const looksExplicit =
@@ -295,8 +366,11 @@ export function matchKnownPublication(input) {
       /(?:^|\/)(?:rss|feed|feeds|sitemap)(?:\/|[-_.]|$)/.test(path) ||
       /\.(?:xml|rss|atom)(?:\/)?$/.test(path);
   if (looksExplicit) return null;
-  return { ...publication, inputUrl };
+  return { ...source, inputUrl };
 }
+
+// Historical export kept for callers that still use the media-oriented name.
+export const matchKnownPublication = matchKnownSource;
 
 export function canonicalizeUrl(value, baseUrl) {
   const resolved = resolveHttpUrl(value, baseUrl);
@@ -1194,7 +1268,28 @@ export class FeedEngine {
     return this.#operationState();
   }
 
-  async saveFeedPanelConfiguration(panelId, draft) {
+  async createFeedPanelWithSources(input, placement, draft, { signal = null } = {}) {
+    this.#assertFeedConfigurationMutationIdle();
+    if (this.closed) throw new RefreshCancelledError("Le moteur de veille est fermé.");
+    if (signal?.aborted) throw new RefreshCancelledError("Création du fil annulée.");
+    const panel = this.database.createPanel(input, placement, this.#nowIso());
+    try {
+      return await this.saveFeedPanelConfiguration(panel.id, draft, { signal });
+    } catch (caught) {
+      try {
+        this.database.deletePanel(panel.id, this.#nowIso());
+      } catch (rollbackError) {
+        throw new Error(
+          `Création interrompue et suppression du fil incomplète : ${configurationErrorText(caught)} ` +
+            `(suppression : ${configurationErrorText(rollbackError)})`,
+          { cause: caught },
+        );
+      }
+      throw caught;
+    }
+  }
+
+  async saveFeedPanelConfiguration(panelId, draft, { signal = null } = {}) {
     // Source rows are shared across panels. Only one complete configuration
     // transaction may run at once, otherwise a rollback in one panel could
     // overwrite a successful edit in another panel.
@@ -1215,18 +1310,34 @@ export class FeedEngine {
       const desiredSourceIds = new Set(draft.keptSourceIds);
 
       try {
+        if (signal?.aborted) throw new RefreshCancelledError("Création du fil annulée.");
         const existingConnectorIds = new Set(
           checkpoint.sourceConfigurations
             .filter(({ sourceId }) => keptSourceIds.has(sourceId))
             .map(({ connectorId }) => connectorId)
             .filter(Boolean),
         );
-        for (const catalogId of new Set(draft.selectedCatalogIds)) {
-          if (existingConnectorIds.has(catalogId)) continue;
-          const result = await this.#addCatalogSource(panelId, catalogId, {
-            refreshIntervalSeconds: draft.defaultRefreshIntervalSeconds,
-          });
-          desiredSourceIds.add(result.sourceId);
+        const catalogIds = [...new Set(draft.selectedCatalogIds)]
+          .filter((catalogId) => !existingConnectorIds.has(catalogId));
+        const catalogSettlements = await settleWithConcurrencyLimits(
+          catalogIds,
+          (catalogId) => this.#addCatalogSource(panelId, catalogId, {
+            refreshIntervalSeconds: draft.catalogRefreshIntervalSeconds,
+            signal,
+          }),
+          {
+            keyForValue: (catalogId) => {
+              const source = curatedSourceById(catalogId);
+              return source ? new URL(source.feedUrl).hostname : `unknown:${catalogId}`;
+            },
+          },
+        );
+        const rejectedCatalogSource = catalogSettlements.find(
+          (result) => result.status === "rejected",
+        );
+        if (rejectedCatalogSource) throw rejectedCatalogSource.reason;
+        for (const result of catalogSettlements) {
+          if (result.status === "fulfilled") desiredSourceIds.add(result.value.sourceId);
         }
 
         const seenCustomSources = new Set();
@@ -1237,9 +1348,11 @@ export class FeedEngine {
           const result = await this.#addSource(panelId, {
             ...source,
             refreshIntervalSeconds: draft.defaultRefreshIntervalSeconds,
-          });
+          }, { signal });
           desiredSourceIds.add(result.sourceId);
         }
+
+        if (signal?.aborted) throw new RefreshCancelledError("Création du fil annulée.");
 
         // Do network-dependent work first. The remaining local mutations are
         // still covered by the same private checkpoint.
@@ -1256,11 +1369,9 @@ export class FeedEngine {
             this.#nowIso(),
           );
         }
-        for (const sourceId of checkpoint.sourceIds) {
-          if (!desiredSourceIds.has(sourceId)) {
-            this.database.detachSource(panelId, sourceId);
-          }
-        }
+        // Network work may finish out of order. Replace the attachments once,
+        // using the draft order, so response timing never changes the panel.
+        this.database.replacePanelSources(panelId, [...desiredSourceIds]);
         return this.#operationState();
       } catch (caught) {
         try {
@@ -1765,7 +1876,7 @@ export class FeedEngine {
 
   async #resolveSource(inputUrl, expectedKind = "auto", { signal = null } = {}) {
     if (signal?.aborted) throw new FetchCancelledError();
-    const known = matchKnownPublication(inputUrl);
+    const known = matchKnownSource(inputUrl);
     if (known) {
       const response = await this.fetchEndpoint(known.feedUrl, {
         ttlSeconds: known.refreshIntervalSeconds,
@@ -1888,7 +1999,7 @@ export class FeedEngine {
   }
 
   async #enrichSpecializedSource(feedUrl, parsed, { signal = null } = {}) {
-    const enrichment = publicationForFeedUrl(feedUrl)?.enrichment;
+    const enrichment = curatedSourceForFeedUrl(feedUrl)?.enrichment;
     if (!enrichment) return parsed;
     try {
       const response = await this.fetchEndpoint(enrichment.url, {
@@ -1928,13 +2039,14 @@ export class FeedEngine {
       this.#addSource(panelId, input));
   }
 
-  async #addSource(panelId, input) {
+  async #addSource(panelId, input, { signal = null } = {}) {
     if (!this.database.hasPanel(panelId, "feed")) throw new Error("Panel de flux introuvable.");
+    if (signal?.aborted) throw new RefreshCancelledError("Création du fil annulée.");
     const request = normalizeSourceRequest(input);
     const normalizedInput = normalizeInputUrl(request.url);
     const refreshIntervalSeconds =
       request.refreshIntervalSeconds ?? this.database.getFeedPanelDefaultRefresh(panelId);
-    const known = matchKnownPublication(normalizedInput);
+    const known = matchKnownSource(normalizedInput);
     let existing = known
       ? this.database.findSourceByFeedUrl(known.feedUrl)
       : this.database.findSourceByInputOrFeedUrl(normalizedInput);
@@ -1952,6 +2064,7 @@ export class FeedEngine {
       existing = null;
     }
     if (existing) {
+      if (signal?.aborted) throw new RefreshCancelledError("Création du fil annulée.");
       assertConnectorKind(request.connectorKind, existing.connectorKind);
       if (known && existing.connectorId !== known.id) {
         this.database.setSourceConnectorId(existing.id, known.id, this.#nowIso());
@@ -1967,7 +2080,8 @@ export class FeedEngine {
       return { sourceId: existing.id, state: this.#operationState() };
     }
 
-    const resolved = await this.#resolveSource(normalizedInput, request.connectorKind);
+    const resolved = await this.#resolveSource(normalizedInput, request.connectorKind, { signal });
+    if (signal?.aborted) throw new RefreshCancelledError("Création du fil annulée.");
     assertConnectorKind(request.connectorKind, resolved.connectorKind);
     const seenAt = this.#nowIso();
     const sourceId = this.database.putSource(
@@ -2016,14 +2130,14 @@ export class FeedEngine {
     if (typeof catalogId !== "string" || !catalogId.trim()) {
       throw new TypeError("Source du catalogue invalide.");
     }
-    const publication = publicationById(catalogId.trim());
-    if (!publication) throw new Error("Cette source n’existe pas dans le catalogue.");
+    const source = curatedSourceById(catalogId.trim());
+    if (!source) throw new Error("Cette source n’existe pas dans le catalogue.");
     return this.#addSource(panelId, {
-      url: publication.homepageUrl,
-      connectorKind: publication.connectorKind,
+      url: source.homepageUrl,
+      connectorKind: source.connectorKind,
       refreshIntervalSeconds:
-        options?.refreshIntervalSeconds ?? publication.refreshIntervalSeconds,
-    });
+        options?.refreshIntervalSeconds ?? source.refreshIntervalSeconds,
+    }, { signal: options?.signal ?? null });
   }
 
   async #refreshOne(

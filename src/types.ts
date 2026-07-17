@@ -49,10 +49,20 @@ export interface SourceCatalogEntry {
   id: string;
   name: string;
   description: string;
+  sourceType: "media" | "primary";
   group: "france" | "english-world";
-  category: "general" | "local" | "business" | "sports" | "culture";
+  category:
+    | "general"
+    | "local"
+    | "business"
+    | "sports"
+    | "culture"
+    | "public-decisions"
+    | "data"
+    | "alerts"
+    | "research";
   rank: number;
-  iconPath: string;
+  iconPath: string | null;
   homepageUrl: string;
   connectorKind: ConnectorKind;
   refreshIntervalSeconds: number;
@@ -171,6 +181,7 @@ export interface FeedConfigurationCustomSource {
 export interface FeedPanelConfigurationDraft {
   name: string;
   defaultRefreshIntervalSeconds: number;
+  catalogRefreshIntervalSeconds?: number;
   keptSourceIds: string[];
   selectedCatalogIds: string[];
   customSources: FeedConfigurationCustomSource[];
@@ -306,6 +317,13 @@ export interface VibeDeckApi {
     input: string | CreatePanelInput,
     placement?: PanelPlacement,
   ) => Promise<AppState>;
+  createFeedPanelWithSources: (
+    operationId: string,
+    input: Extract<CreatePanelInput, { kind: "feed" }>,
+    placement: PanelPlacement | undefined,
+    draft: FeedPanelConfigurationDraft,
+  ) => Promise<AppState>;
+  cancelFeedPanelCreation: (operationId: string) => Promise<void>;
   renamePanel: (panelId: string, name: string) => Promise<AppState>;
   setWebPanelUrl: (panelId: string, url: string) => Promise<AppState>;
   deletePanel: (panelId: string) => Promise<AppState>;

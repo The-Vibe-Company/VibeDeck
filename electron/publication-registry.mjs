@@ -1,9 +1,13 @@
 const GROUPS = new Set(["france", "english-world"]);
-const CATEGORIES = new Set(["general", "local", "business", "sports", "culture"]);
+const SOURCE_TYPES = new Set(["media", "primary"]);
+const MEDIA_CATEGORIES = new Set(["general", "local", "business", "sports", "culture"]);
+const PRIMARY_CATEGORIES = new Set(["public-decisions", "data", "alerts", "research"]);
+const CATEGORIES = new Set([...MEDIA_CATEGORIES, ...PRIMARY_CATEGORIES]);
 const CONNECTOR_KINDS = new Set(["rss", "atom", "news-sitemap"]);
 const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ICON_PATH_PATTERN = /^\.\/provider-icons\/[a-z0-9]+(?:-[a-z0-9]+)*\.png$/;
 export const DEFAULT_PUBLICATION_REFRESH_INTERVAL_SECONDS = 60;
+export const DEFAULT_PRIMARY_SOURCE_REFRESH_INTERVAL_SECONDS = 300;
 
 function cleanHttpsUrl(value, label) {
   let url;
@@ -36,9 +40,11 @@ function deepFreeze(value) {
 }
 
 /**
- * Validates and freezes the complete definition of one optimized publication.
+ * Validates and freezes the complete definition of one curated source.
  * Feed endpoints and reader rules stay main-owned; only the catalog projection
- * returned by publicSourceCatalog() may cross the Electron boundary.
+ * returned by publicSourceCatalog() may cross the Electron boundary. The
+ * historical function name remains because existing optimized media definitions
+ * and tests import it directly.
  */
 export function definePublication(definition) {
   if (!definition || typeof definition !== "object" || Array.isArray(definition)) {
@@ -51,19 +57,32 @@ export function definePublication(definition) {
   if (!name || name.length > 120 || !description || description.length > 120) {
     throw new TypeError(`Nom ou description invalide pour ${id}.`);
   }
+  const sourceType = definition.sourceType ?? "media";
+  if (!SOURCE_TYPES.has(sourceType)) throw new TypeError(`Type de source invalide pour ${id}.`);
   if (!GROUPS.has(definition.group)) throw new TypeError(`Groupe invalide pour ${id}.`);
   if (!CATEGORIES.has(definition.category)) throw new TypeError(`Catégorie invalide pour ${id}.`);
+  if (sourceType === "media" && !MEDIA_CATEGORIES.has(definition.category)) {
+    throw new TypeError(`Catégorie média invalide pour ${id}.`);
+  }
+  if (sourceType === "primary" && !PRIMARY_CATEGORIES.has(definition.category)) {
+    throw new TypeError(`Catégorie de source primaire invalide pour ${id}.`);
+  }
   if (!Number.isInteger(definition.rank) || definition.rank < 1) {
     throw new TypeError(`Rang invalide pour ${id}.`);
   }
-  if (!ICON_PATH_PATTERN.test(definition.iconPath)) {
+  if (sourceType === "media" && !ICON_PATH_PATTERN.test(definition.iconPath)) {
+    throw new TypeError(`Chemin d’icône invalide pour ${id}.`);
+  }
+  if (sourceType === "primary" && !ICON_PATH_PATTERN.test(definition.iconPath)) {
     throw new TypeError(`Chemin d’icône invalide pour ${id}.`);
   }
   if (!CONNECTOR_KINDS.has(definition.connectorKind)) {
     throw new TypeError(`Type de flux invalide pour ${id}.`);
   }
   const refreshIntervalSeconds = definition.refreshIntervalSeconds
-    ?? DEFAULT_PUBLICATION_REFRESH_INTERVAL_SECONDS;
+    ?? (sourceType === "primary"
+      ? DEFAULT_PRIMARY_SOURCE_REFRESH_INTERVAL_SECONDS
+      : DEFAULT_PUBLICATION_REFRESH_INTERVAL_SECONDS);
   if (
     !Number.isInteger(refreshIntervalSeconds) ||
     refreshIntervalSeconds < 30 ||
@@ -88,10 +107,11 @@ export function definePublication(definition) {
     id,
     name,
     description,
+    sourceType,
     group: definition.group,
     category: definition.category,
     rank: definition.rank,
-    iconPath: definition.iconPath,
+    iconPath: definition.iconPath ?? null,
     homepageUrl: cleanHttpsUrl(definition.homepageUrl, `Page d’accueil ${id}`),
     hostnames: cleanStringArray(definition.hostnames, `Domaines ${id}`),
     feedUrl: cleanHttpsUrl(definition.feedUrl, `Flux ${id}`),
@@ -315,38 +335,163 @@ const entries = [
   },
 ];
 
+const primarySourceEntries = [
+  {
+    id: "assemblee-nationale", name: "Assemblée nationale", sourceType: "primary",
+    group: "france", category: "public-decisions", rank: 1,
+    description: "Les communiqués officiels de l’Assemblée nationale et de ses commissions.",
+    homepageUrl: "https://www.assemblee-nationale.fr/", hostnames: ["assemblee-nationale.fr"],
+    feedUrl: "https://www.assemblee-nationale.fr/dyn/rss/communiques-de-presse.xml", connectorKind: "rss",
+  },
+  {
+    id: "senat", name: "Sénat", sourceType: "primary",
+    group: "france", category: "public-decisions", rank: 2,
+    description: "Les derniers rapports publiés par le Sénat et ses commissions.",
+    homepageUrl: "https://www.senat.fr/", hostnames: ["senat.fr"],
+    feedUrl: "https://www.senat.fr/rss/rapports.rss", connectorKind: "rss",
+  },
+  {
+    id: "cour-des-comptes", name: "Cour des comptes", sourceType: "primary",
+    group: "france", category: "public-decisions", rank: 3,
+    description: "Les publications et actualités des juridictions financières.",
+    homepageUrl: "https://www.ccomptes.fr/fr", hostnames: ["ccomptes.fr"],
+    feedUrl: "https://www.ccomptes.fr/fr/rss/general", connectorKind: "rss",
+  },
+  {
+    id: "conseil-constitutionnel", name: "Conseil constitutionnel", sourceType: "primary",
+    group: "france", category: "public-decisions", rank: 4,
+    description: "Les décisions, saisines et actualités du Conseil constitutionnel.",
+    homepageUrl: "https://www.conseil-constitutionnel.fr/", hostnames: ["conseil-constitutionnel.fr"],
+    feedUrl: "https://www.conseil-constitutionnel.fr/flux/rss.xml", connectorKind: "rss",
+  },
+  {
+    id: "insee", name: "Insee", sourceType: "primary",
+    group: "france", category: "data", rank: 5,
+    description: "Les indicateurs et publications conjoncturelles de la statistique publique.",
+    homepageUrl: "https://www.insee.fr/fr/accueil", hostnames: ["insee.fr"],
+    feedUrl: "https://www.insee.fr/fr/flux/3", connectorKind: "rss",
+  },
+  {
+    id: "drees", name: "Drees", sourceType: "primary",
+    group: "france", category: "data", rank: 6,
+    description: "Les études et statistiques publiques sur la santé et les solidarités.",
+    homepageUrl: "https://drees.solidarites-sante.gouv.fr/", hostnames: ["drees.solidarites-sante.gouv.fr"],
+    feedUrl: "https://drees.solidarites-sante.gouv.fr/rss.xml", connectorKind: "rss",
+  },
+  {
+    id: "arcep", name: "Arcep", sourceType: "primary",
+    group: "france", category: "data", rank: 7,
+    description: "Les décisions et données du régulateur des télécoms, postes et médias.",
+    homepageUrl: "https://www.arcep.fr/", hostnames: ["arcep.fr"],
+    feedUrl: "https://www.arcep.fr/actualites/suivre-actualite-regulation-arcep/fil-dinfos/rss.xml", connectorKind: "rss",
+  },
+  {
+    id: "arcom", name: "Arcom", sourceType: "primary",
+    group: "france", category: "data", rank: 8,
+    description: "Les décisions du régulateur de l’audiovisuel et du numérique.",
+    homepageUrl: "https://www.arcom.fr/", hostnames: ["arcom.fr"],
+    feedUrl: "https://www.arcom.fr/rss/decisions", connectorKind: "rss",
+  },
+  {
+    id: "sante-publique-france", name: "Santé publique France", sourceType: "primary",
+    group: "france", category: "alerts", rank: 9,
+    description: "Les nouvelles de surveillance, prévention et santé publique.",
+    homepageUrl: "https://www.santepubliquefrance.fr/", hostnames: ["santepubliquefrance.fr"],
+    feedUrl: "https://www.santepubliquefrance.fr/rss/news/1008", connectorKind: "rss",
+  },
+  {
+    id: "cert-fr", name: "CERT-FR", sourceType: "primary",
+    group: "france", category: "alerts", rank: 10,
+    description: "Les avis, alertes et bulletins de sécurité informatique du CERT-FR.",
+    homepageUrl: "https://www.cert.ssi.gouv.fr/", hostnames: ["cert.ssi.gouv.fr"],
+    feedUrl: "https://www.cert.ssi.gouv.fr/feed/", connectorKind: "rss",
+  },
+  {
+    id: "rappel-conso", name: "RappelConso", sourceType: "primary",
+    group: "france", category: "alerts", rank: 11,
+    description: "Les rappels officiels de produits dangereux publiés par l’administration.",
+    homepageUrl: "https://rappel.conso.gouv.fr/", hostnames: ["rappel.conso.gouv.fr"],
+    feedUrl: "https://rappel.conso.gouv.fr/rss", connectorKind: "rss",
+  },
+  {
+    id: "cnrs", name: "CNRS", sourceType: "primary",
+    group: "france", category: "research", rank: 12,
+    description: "Les communiqués de presse sur les résultats scientifiques du CNRS.",
+    homepageUrl: "https://www.cnrs.fr/fr", hostnames: ["cnrs.fr"],
+    feedUrl: "https://www.cnrs.fr/fr/rss/press.rss", connectorKind: "rss",
+  },
+  {
+    id: "inserm", name: "Inserm", sourceType: "primary",
+    group: "france", category: "research", rank: 13,
+    description: "Les nouvelles de la recherche biomédicale et en santé de l’Inserm.",
+    homepageUrl: "https://www.inserm.fr/", hostnames: ["inserm.fr"],
+    feedUrl: "https://www.inserm.fr/actualite/feed/", connectorKind: "rss",
+  },
+  {
+    id: "cea", name: "CEA", sourceType: "primary",
+    group: "france", category: "research", rank: 14,
+    description: "Les dernières actualités scientifiques et technologiques du CEA.",
+    homepageUrl: "https://www.cea.fr/", hostnames: ["cea.fr"],
+    feedUrl: "https://www.cea.fr/_layouts/15/i2i/web/ceasrchrss.ashx?pid=3748&wid=g_9cac7691_a0b2_4e18_850e_0aeff2541696", connectorKind: "rss",
+  },
+  {
+    id: "conseil-ue", name: "Conseil de l’Union européenne", sourceType: "primary",
+    group: "english-world", category: "public-decisions", rank: 1,
+    description: "Les communiqués officiels du Conseil européen et du Conseil de l’Union européenne.",
+    homepageUrl: "https://www.consilium.europa.eu/en/", hostnames: ["consilium.europa.eu"],
+    feedUrl: "https://www.consilium.europa.eu/en/rss/pressreleases.ashx", connectorKind: "rss",
+  },
+  {
+    id: "oms", name: "Organisation mondiale de la Santé", sourceType: "primary",
+    group: "english-world", category: "alerts", rank: 2,
+    description: "Les alertes, recommandations et communiqués mondiaux de l’OMS en anglais.",
+    homepageUrl: "https://www.who.int/", hostnames: ["who.int"],
+    feedUrl: "https://www.who.int/rss-feeds/news-english.xml", connectorKind: "rss",
+  },
+];
+
 export const PUBLICATIONS = Object.freeze(entries.map((entry) => definePublication({
   ...entry,
   iconPath: `./provider-icons/${entry.id}.png`,
 })));
 
+export const PRIMARY_SOURCES = Object.freeze(primarySourceEntries.map((entry) => definePublication({
+  ...entry,
+  iconPath: `./provider-icons/${entry.id}.png`,
+})));
+
+export const CURATED_SOURCES = Object.freeze([...PUBLICATIONS, ...PRIMARY_SOURCES]);
+
 const ids = new Set();
 const ranks = new Set();
-for (const publication of PUBLICATIONS) {
-  if (ids.has(publication.id)) throw new TypeError(`Publication dupliquée : ${publication.id}.`);
-  ids.add(publication.id);
-  const rankKey = `${publication.group}:${publication.rank}`;
-  if (ranks.has(rankKey)) throw new TypeError(`Rang de publication dupliqué : ${rankKey}.`);
+for (const source of CURATED_SOURCES) {
+  if (ids.has(source.id)) throw new TypeError(`Source dupliquée : ${source.id}.`);
+  ids.add(source.id);
+  const rankKey = `${source.sourceType}:${source.group}:${source.rank}`;
+  if (ranks.has(rankKey)) throw new TypeError(`Rang de source dupliqué : ${rankKey}.`);
   ranks.add(rankKey);
 }
 
-export const SOURCE_CATALOG = Object.freeze(PUBLICATIONS.map((publication) => Object.freeze({
-  id: publication.id,
-  name: publication.name,
-  description: publication.description,
-  group: publication.group,
-  category: publication.category,
-  rank: publication.rank,
-  iconPath: publication.iconPath,
-  homepageUrl: publication.homepageUrl,
-  connectorKind: publication.connectorKind,
-  refreshIntervalSeconds: publication.refreshIntervalSeconds,
-  capabilities: Object.freeze(["optimized-feed", "simplified-reading"]),
+export const SOURCE_CATALOG = Object.freeze(CURATED_SOURCES.map((source) => Object.freeze({
+  id: source.id,
+  name: source.name,
+  description: source.description,
+  sourceType: source.sourceType,
+  group: source.group,
+  category: source.category,
+  rank: source.rank,
+  iconPath: source.iconPath,
+  homepageUrl: source.homepageUrl,
+  connectorKind: source.connectorKind,
+  refreshIntervalSeconds: source.refreshIntervalSeconds,
+  capabilities: Object.freeze(source.sourceType === "media"
+    ? ["optimized-feed", "simplified-reading"]
+    : ["optimized-feed"]),
 })));
 
-export const CURATED_PROXY_ROOTS = Object.freeze(PUBLICATIONS.flatMap((publication) => [
-  publication.feedUrl,
-  ...(publication.enrichment ? [publication.enrichment.url] : []),
+export const CURATED_PROXY_ROOTS = Object.freeze(CURATED_SOURCES.flatMap((source) => [
+  source.feedUrl,
+  ...(source.enrichment ? [source.enrichment.url] : []),
 ]));
 
 export function publicationById(id) {
@@ -355,6 +500,14 @@ export function publicationById(id) {
 
 export function publicationForFeedUrl(feedUrl) {
   return PUBLICATIONS.find((publication) => publication.feedUrl === feedUrl) ?? null;
+}
+
+export function curatedSourceById(id) {
+  return CURATED_SOURCES.find((source) => source.id === id) ?? null;
+}
+
+export function curatedSourceForFeedUrl(feedUrl) {
+  return CURATED_SOURCES.find((source) => source.feedUrl === feedUrl) ?? null;
 }
 
 export function publicSourceCatalog() {

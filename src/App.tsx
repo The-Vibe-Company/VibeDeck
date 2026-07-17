@@ -16,6 +16,9 @@ import {
   LifeBuoy,
   ListFilter,
   LoaderCircle,
+  Maximize2,
+  Minimize2,
+  Newspaper,
   Plus,
   RefreshCw,
   Rows2,
@@ -209,6 +212,8 @@ type ReaderReturnFocus = {
 type PanelPointerIntent = {
   clientX: number;
   clientY: number;
+  screenX: number;
+  screenY: number;
   moved: boolean;
   trusted: boolean;
 };
@@ -381,7 +386,10 @@ function restoreArticleFocus(target: ReaderReturnFocus) {
   focusDashboardPanelRoot(target.panelId);
 }
 
-function restoreSemanticSearchControl(restore: SemanticSearchRestoreState | null) {
+function restoreSemanticSearchControl(
+  restore: SemanticSearchRestoreState | null,
+  fallbackToPanel = true,
+) {
   const control = restore?.focusedControl;
   if (control) {
     const leaf = document.querySelector<HTMLElement>(
@@ -407,7 +415,9 @@ function restoreSemanticSearchControl(restore: SemanticSearchRestoreState | null
       if (document.activeElement === target) return true;
     }
   }
-  return restore?.focusedPanelId ? focusDashboardPanelRoot(restore.focusedPanelId) : false;
+  return fallbackToPanel && restore?.focusedPanelId
+    ? focusDashboardPanelRoot(restore.focusedPanelId)
+    : false;
 }
 
 export default function App() {
@@ -536,11 +546,14 @@ export default function App() {
   const pendingKeyboardPanelFocusRef = useRef<string | null>(null);
   const readerReturnFocusRef = useRef<ReaderReturnFocus | null>(null);
   const lastDashboardPointerPositionRef = useRef<{ x: number; y: number } | null>(null);
+  const lastDashboardPointerScreenPositionRef = useRef<{ x: number; y: number } | null>(null);
   const readerOpenPointerPositionRef = useRef<{ x: number; y: number } | null>(null);
   const focusedPanelIdRef = useRef<string | null>(null);
   const semanticResultItemsRef = useRef<FeedItem[]>([]);
   const semanticBaseItemIdsRef = useRef(new Set<string>());
   const semanticSearchRestoreRef = useRef<SemanticSearchRestoreState | null>(null);
+  const semanticSearchReturnFocusRef = useRef<SemanticSearchRestoreState | null>(null);
+  const semanticSearchReturnPointerPositionRef = useRef<{ x: number; y: number } | null>(null);
   const activeSemanticSearchRef = useRef<ActiveSemanticSearch | null>(null);
   const semanticSearchNativeOriginRef = useRef(false);
   const pendingSeenItemIdsRef = useRef(new Set<string>());
@@ -986,6 +999,8 @@ export default function App() {
       }
       readerReturnFocusRef.current = null;
       readerOpenPointerPositionRef.current = null;
+      semanticSearchReturnFocusRef.current = null;
+      semanticSearchReturnPointerPositionRef.current = null;
     };
     document.addEventListener("pointerdown", cancelReaderReturnForPointerDown, true);
     return () => {
@@ -1317,6 +1332,7 @@ export default function App() {
 
   function closeDraft(draftId: string) {
     if (draftsRef.current[draftId]?.pending || draftCompletionRef.current.has(draftId)) {
+      void window.vibedeck.cancelFeedPanelCreation(draftId);
       return;
     }
     void cancelWebPreview(draftId).catch((error) => showToast(cleanError(error)));
@@ -1335,6 +1351,7 @@ export default function App() {
     input: CreatePanelInput,
     catalogIds: string[] = [],
     customSources: PendingCustomSource[] = [],
+    catalogRefreshIntervalSeconds?: number,
   ) {
     const draft = draftsRef.current[draftId];
     if (!draft || !state) return;
@@ -1354,16 +1371,32 @@ export default function App() {
     serverLayoutMutationRef.current = true;
     try {
       const webPreview = webPreviewDraftsRef.current[draftId];
-      let nextState = input.kind === "web" && webPreview
-        ? await window.vibedeck.commitWebPreview(
+      let nextState = input.kind === "feed"
+        ? await window.vibedeck.createFeedPanelWithSources(
+            draftId,
+            input,
+            panelPlacementForDraft(draft),
+            {
+              name: input.name,
+              defaultRefreshIntervalSeconds: input.defaultRefreshIntervalSeconds ?? 60,
+              ...(catalogRefreshIntervalSeconds === undefined
+                ? {}
+                : { catalogRefreshIntervalSeconds }),
+              keptSourceIds: [],
+              selectedCatalogIds: catalogIds,
+              customSources,
+            },
+          )
+        : input.kind === "web" && webPreview
+          ? await window.vibedeck.commitWebPreview(
             webPreview.previewId,
             input.name,
             panelPlacementForDraft(draft),
           )
-        : await window.vibedeck.createPanel(
-            input,
-            panelPlacementForDraft(draft),
-          );
+          : await window.vibedeck.createPanel(
+              input,
+              panelPlacementForDraft(draft),
+            );
       const createdPanel = nextState.panels.find(({ id }) => !previousIds.has(id));
       if (!createdPanel) throw new Error("Le nouveau panel n’a pas pu être retrouvé.");
 
@@ -1372,42 +1405,6 @@ export default function App() {
         delete nextPreviews[draftId];
         webPreviewDraftsRef.current = nextPreviews;
         setWebPreviewDrafts(nextPreviews);
-      }
-
-      const sourceErrors: string[] = [];
-      let sourceSuccesses = 0;
-      if (createdPanel.kind === "feed") {
-        const refreshIntervalSeconds =
-          input.kind === "feed" ? input.defaultRefreshIntervalSeconds : undefined;
-        for (const catalogId of catalogIds) {
-          try {
-            const result = await window.vibedeck.addCatalogSource(
-              createdPanel.id,
-              catalogId,
-              { refreshIntervalSeconds },
-            );
-            nextState = result.state;
-            sourceSuccesses += 1;
-          } catch (error) {
-            sourceErrors.push(cleanError(error));
-          }
-        }
-        for (const source of customSources) {
-          try {
-            const result = await window.vibedeck.addSource(createdPanel.id, {
-              ...source,
-              refreshIntervalSeconds,
-            });
-            nextState = result.state;
-            sourceSuccesses += 1;
-          } catch (error) {
-            sourceErrors.push(cleanError(error));
-          }
-        }
-        if (sourceSuccesses === 0 && catalogIds.length + customSources.length > 0) {
-          await window.vibedeck.deletePanel(createdPanel.id);
-          throw new Error(sourceErrors[0] ?? "Aucune source n’a pu être ajoutée à ce fil.");
-        }
       }
 
       const desiredLayout = replacePanelId(layoutRef.current, draftId, createdPanel.id);
@@ -1428,14 +1425,11 @@ export default function App() {
       delete nextDrafts[draftId];
       draftsRef.current = nextDrafts;
       setDrafts(nextDrafts);
+      pendingKeyboardPanelFocusRef.current = createdPanel.id;
       applyServerState(nextState, true);
       setFocusedPanelId(createdPanel.id);
 
-      if (sourceErrors.length > 0) {
-        showToast(
-          `${sourceErrors.length} source(s) ignorée(s) : ${sourceErrors[0]}`,
-        );
-      } else if (layoutWarning) {
+      if (layoutWarning) {
         showToast("Panel créé, mais sa disposition a été réinitialisée.");
       } else {
         showToast(input.kind === "web" ? "Page web ajoutée" : "Fil créé");
@@ -1622,6 +1616,9 @@ export default function App() {
       },
     ])));
     semanticSearchRestoreRef.current = null;
+    semanticSearchReturnFocusRef.current = restore;
+    semanticSearchReturnPointerPositionRef.current =
+      lastDashboardPointerScreenPositionRef.current;
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
         if (!restore) return;
@@ -1637,7 +1634,26 @@ export default function App() {
             list.scrollTop = anchorRow.offsetTop - anchor.viewportTop;
           } else if (list) list.scrollTop = scrollTop;
         }
-        restoreSemanticSearchControl(restore);
+        const restorePendingFocus = (fallbackToPanel = false, finalAttempt = false) => {
+          if (semanticSearchReturnFocusRef.current !== restore) return;
+          const restored = restoreSemanticSearchControl(restore, false);
+          if (!restored && fallbackToPanel && restore?.focusedPanelId) {
+            focusDashboardPanelRoot(restore.focusedPanelId);
+          }
+          if (finalAttempt) {
+            semanticSearchReturnFocusRef.current = null;
+            semanticSearchReturnPointerPositionRef.current = null;
+          }
+        };
+        // Windows peut émettre un survol stationnaire après le remontage de la
+        // ligne. Les reprises bornées gagnent cette course, mais toute nouvelle
+        // intention clavier ou pointeur efface la cible avant le prochain essai.
+        restorePendingFocus();
+        window.requestAnimationFrame(() => restorePendingFocus());
+        for (const delay of [50, 150, 300, 600]) {
+          window.setTimeout(() => restorePendingFocus(), delay);
+        }
+        window.setTimeout(() => restorePendingFocus(true, true), 1_000);
       });
     });
   }
@@ -1793,6 +1809,10 @@ export default function App() {
       ) {
         readerReturnFocusRef.current = null;
         readerOpenPointerPositionRef.current = null;
+      }
+      if (semanticSearchReturnFocusRef.current && event.key !== "Escape") {
+        semanticSearchReturnFocusRef.current = null;
+        semanticSearchReturnPointerPositionRef.current = null;
       }
       if (event.key === "Escape") {
         if (semanticSearchOpen) {
@@ -2035,8 +2055,14 @@ export default function App() {
           onStartXPreview={(url) => startXPreview(panelId, url)}
           onReloadWebPreview={() => reloadWebPreview(panelId)}
           onCancelWebPreview={() => cancelWebPreview(panelId)}
-          onComplete={(input, catalogIds, customSources) =>
-            completeDraft(panelId, input, catalogIds, customSources)
+          onComplete={(input, catalogIds, customSources, catalogRefreshIntervalSeconds) =>
+            completeDraft(
+              panelId,
+              input,
+              catalogIds,
+              customSources,
+              catalogRefreshIntervalSeconds,
+            )
           }
         />
       );
@@ -2051,7 +2077,33 @@ export default function App() {
         if (!intent) {
           readerReturnFocusRef.current = null;
           readerOpenPointerPositionRef.current = null;
+          semanticSearchReturnFocusRef.current = null;
+          semanticSearchReturnPointerPositionRef.current = null;
           return false;
+        }
+        const nextPosition = { x: intent.clientX, y: intent.clientY };
+        const nextScreenPosition = { x: intent.screenX, y: intent.screenY };
+        const semanticReturnPosition = semanticSearchReturnPointerPositionRef.current;
+        if (semanticSearchReturnFocusRef.current) {
+          const explicitMove =
+            (intent.moved && !intent.trusted) ||
+            (intent.trusted && semanticReturnPosition !== null && (
+              semanticReturnPosition.x !== nextScreenPosition.x ||
+              semanticReturnPosition.y !== nextScreenPosition.y
+            ));
+          if (explicitMove) {
+            semanticSearchReturnFocusRef.current = null;
+            semanticSearchReturnPointerPositionRef.current = null;
+          } else {
+            if (intent.trusted && semanticReturnPosition === null) {
+              semanticSearchReturnPointerPositionRef.current = nextScreenPosition;
+            }
+            if (intent.trusted) {
+              lastDashboardPointerPositionRef.current = nextPosition;
+              lastDashboardPointerScreenPositionRef.current = nextScreenPosition;
+            }
+            return true;
+          }
         }
         if (
           readerReturnFocusRef.current &&
@@ -2064,9 +2116,11 @@ export default function App() {
           // seul un clic (intent null ci-dessus) ou le clavier prime.
           return true;
         }
-        const nextPosition = { x: intent.clientX, y: intent.clientY };
         const readerOpenPosition = readerOpenPointerPositionRef.current;
-        if (intent.trusted) lastDashboardPointerPositionRef.current = nextPosition;
+        if (intent.trusted) {
+          lastDashboardPointerPositionRef.current = nextPosition;
+          lastDashboardPointerScreenPositionRef.current = nextScreenPosition;
+        }
         if (
           intent.trusted &&
           readerReturnFocusRef.current &&
@@ -3321,6 +3375,8 @@ function PanelFrame({
         onPointerIntent?.({
           clientX: event.clientX,
           clientY: event.clientY,
+          screenX: event.screenX,
+          screenY: event.screenY,
           moved: false,
           trusted: event.isTrusted,
         });
@@ -3330,6 +3386,8 @@ function PanelFrame({
         if (onPointerIntent?.({
           clientX: event.clientX,
           clientY: event.clientY,
+          screenX: event.screenX,
+          screenY: event.screenY,
           moved: event.movementX !== 0 || event.movementY !== 0,
           trusted: event.isTrusted,
         })) return;
@@ -3346,6 +3404,8 @@ function PanelFrame({
         if (onPointerIntent?.({
           clientX: event.clientX,
           clientY: event.clientY,
+          screenX: event.screenX,
+          screenY: event.screenY,
           moved: event.movementX !== 0 || event.movementY !== 0,
           trusted: event.isTrusted,
         })) return;
@@ -3816,6 +3876,8 @@ function FeedPanelView({
           if (onPointerIntent({
             clientX: event.clientX,
             clientY: event.clientY,
+            screenX: event.screenX,
+            screenY: event.screenY,
             moved: event.movementX !== 0 || event.movementY !== 0,
             trusted: event.isTrusted,
           })) return;
@@ -3859,7 +3921,9 @@ function FeedPanelView({
         </span>
         <time
           dateTime={item.publishedAt ?? item.updatedAt ?? item.firstSeenAt}
-          title={item.publishedAt || item.updatedAt ? undefined : "Heure indisponible"}
+          title={item.publishedAt || item.updatedAt
+            ? undefined
+            : "Date de publication non fournie · heure de détection locale"}
         >
           {formatItemTime(item)}
         </time>
@@ -4533,12 +4597,25 @@ function catalogCapabilityLabel(capability: SourceCatalogEntry["capabilities"][n
   return "Lecture simplifiée prioritaire";
 }
 
-const CATALOG_LANGUAGES = [
-  { id: "france", label: "Français", context: "France" },
-  { id: "english-world", label: "Anglais", context: "International" },
+const CATALOG_SOURCE_TYPES = [
+  { id: "media", label: "Médias" },
+  { id: "primary", label: "Sources primaires" },
+] as const;
+
+const CATALOG_GROUPS = [
+  { group: "france", mediaContext: "France", primaryContext: "France" },
+  {
+    group: "english-world",
+    mediaContext: "Monde anglophone",
+    primaryContext: "Europe & monde",
+  },
 ] as const;
 
 const CATALOG_CATEGORIES = [
+  { id: "public-decisions", label: "Décisions publiques" },
+  { id: "data", label: "Chiffres & régulateurs" },
+  { id: "alerts", label: "Alertes" },
+  { id: "research", label: "Recherche" },
   { id: "general", label: "Actualité générale" },
   { id: "local", label: "Actualité locale" },
   { id: "business", label: "Économie" },
@@ -4566,11 +4643,14 @@ function SourceCatalogPicker({
   disabled?: boolean;
   onToggle: (catalogId: string) => void;
 }) {
+  const pickerId = useId();
   const [query, setQuery] = useState("");
+  const [activeSourceType, setActiveSourceType] = useState<"media" | "primary">("media");
   const [openCategories, setOpenCategories] = useState<Set<string>>(new Set());
   const normalizedQuery = query.trim().toLocaleLowerCase("fr");
+  const activeType = CATALOG_SOURCE_TYPES.find(({ id }) => id === activeSourceType)!;
   const filtered = catalog
-    .filter((entry) =>
+    .filter((entry) => entry.sourceType === activeSourceType &&
       `${entry.name} ${entry.description} ${entry.homepageUrl}`
         .toLocaleLowerCase("fr")
         .includes(normalizedQuery),
@@ -4579,36 +4659,80 @@ function SourceCatalogPicker({
 
   return (
     <div className="catalog-picker">
+      <div className="catalog-picker__types" role="tablist" aria-label="Type de sources">
+        {CATALOG_SOURCE_TYPES.map((sourceType) => {
+          const count = catalog.filter((entry) => entry.sourceType === sourceType.id).length;
+          const selected = activeSourceType === sourceType.id;
+          return (
+            <button
+              type="button"
+              role="tab"
+              id={`${pickerId}-${sourceType.id}`}
+              key={sourceType.id}
+              aria-selected={selected}
+              aria-controls={`${pickerId}-panel`}
+              tabIndex={selected ? 0 : -1}
+              className={selected ? "is-selected" : ""}
+              disabled={disabled}
+              onClick={() => {
+                setActiveSourceType(sourceType.id);
+                setQuery("");
+              }}
+              onKeyDown={(event) => {
+                if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+                event.preventDefault();
+                const nextType = sourceType.id === "media" ? "primary" : "media";
+                setActiveSourceType(nextType);
+                setQuery("");
+                window.requestAnimationFrame(() =>
+                  document.getElementById(`${pickerId}-${nextType}`)?.focus());
+              }}
+            >
+              <strong>{sourceType.label}</strong>
+              <span>{count}</span>
+            </button>
+          );
+        })}
+      </div>
       <label className="search-input catalog-picker__search">
         <Search size={14} />
         <span className="visually-hidden">Rechercher un connecteur optimisé</span>
         <input
           value={query}
-          placeholder="Rechercher un média…"
+          placeholder="Rechercher une source…"
           onChange={(event) => setQuery(event.target.value)}
           disabled={disabled}
         />
       </label>
-      <div className="provider-list" aria-label="Connecteurs optimisés">
-        {CATALOG_LANGUAGES.map((language) => {
-          const languageEntries = filtered.filter((entry) => entry.group === language.id);
-          if (languageEntries.length === 0) return null;
+      <div
+        id={`${pickerId}-panel`}
+        className="provider-list"
+        aria-labelledby={`${pickerId}-${activeSourceType}`}
+        role="tabpanel"
+      >
+        {CATALOG_GROUPS.map((catalogGroup) => {
+          const groupContext = activeSourceType === "media"
+            ? catalogGroup.mediaContext
+            : catalogGroup.primaryContext;
+          const groupEntries = filtered.filter((entry) =>
+            entry.group === catalogGroup.group);
+          if (groupEntries.length === 0) return null;
+          const groupKey = `${activeSourceType}:${catalogGroup.group}`;
           return (
-            <section className="provider-language-group" key={language.id} aria-label={language.label}>
+            <section className="provider-language-group" key={groupKey} aria-label={`${activeType.label} · ${groupContext}`}>
               <div className="provider-language-group__heading">
                 <span>
-                  <strong>{language.label}</strong>
-                  <small>{language.context}</small>
+                  <strong>{groupContext}</strong>
                 </span>
-                <em>{languageEntries.length} médias</em>
+                <em>{groupEntries.length} sources</em>
               </div>
               {CATALOG_CATEGORIES.map((category) => {
-                const entries = languageEntries.filter((entry) => entry.category === category.id);
+                const entries = groupEntries.filter((entry) => entry.category === category.id);
                 if (entries.length === 0) return null;
-                const categoryKey = `${language.id}:${category.id}`;
+                const categoryKey = `${groupKey}:${category.id}`;
                 const isOpen = Boolean(normalizedQuery) || openCategories.has(categoryKey);
                 return (
-                  <section className="provider-group" key={categoryKey} aria-label={`${language.label} · ${category.label}`}>
+                  <section className="provider-group" key={categoryKey} aria-label={`${activeType.label} · ${groupContext} · ${category.label}`}>
                     <button
                       type="button"
                       className="provider-group__heading"
@@ -4819,7 +4943,7 @@ function CustomSourceTester({
             setProbe(result);
             if (result.connectorId) {
               onCatalogSourceResolvedRef.current(result.connectorId);
-              setReadyMessage("Journal optimisé sélectionné");
+              setReadyMessage("Source optimisée sélectionnée");
               return;
             }
             const candidate = {
@@ -5097,6 +5221,7 @@ function DraftPanelView({
     input: CreatePanelInput,
     catalogIds?: string[],
     customSources?: PendingCustomSource[],
+    catalogRefreshIntervalSeconds?: number,
   ) => Promise<void>;
 }) {
   const contentRef = useRef<HTMLDivElement>(null);
@@ -5111,6 +5236,7 @@ function DraftPanelView({
   const [webUrl, setWebUrl] = useState("");
   const [feedName, setFeedName] = useState("");
   const [defaultRefreshInterval, setDefaultRefreshInterval] = useState(60);
+  const [catalogRefreshIntervalOverridden, setCatalogRefreshIntervalOverridden] = useState(false);
   const [selectedCatalog, setSelectedCatalog] = useState<Set<string>>(new Set());
   const [customSources, setCustomSources] = useState<PendingCustomSource[]>([]);
   const [sourceResolutionPending, setSourceResolutionPending] = useState(false);
@@ -5221,6 +5347,7 @@ function DraftPanelView({
         },
         [...selectedCatalog],
         customSources,
+        catalogRefreshIntervalOverridden ? defaultRefreshInterval : undefined,
       );
     } catch (caught) {
       setError(cleanError(caught));
@@ -5237,13 +5364,13 @@ function DraftPanelView({
       canRename={false}
       onFocus={onFocus}
       onClose={onClose}
-      closeDisabled={busy}
+      closeDisabled={busy && !(draft.pending && step === "feed")}
     >
       <div
         ref={contentRef}
         className="draft-panel"
         aria-busy={busy}
-        inert={busy ? true : undefined}
+        inert={busy && !draft.pending ? true : undefined}
       >
         {draft.pending && (
           <div className="panel-empty" role="status">
@@ -5256,6 +5383,11 @@ function DraftPanelView({
                   : "Création du fil…"}
             </strong>
             <span>La configuration est vérifiée et enregistrée localement.</span>
+            {step === "feed" && (
+              <button type="button" className="quiet-button" onClick={onClose}>
+                Annuler la création
+              </button>
+            )}
           </div>
         )}
         {!draft.pending && step === "type" && (
@@ -5505,11 +5637,22 @@ function DraftPanelView({
                 />
               </label>
               <label className="compact-select-field">
-                <span>Actualisation des nouvelles sources</span>
+                <span>Cadence des nouvelles sources</span>
                 <select
-                  value={defaultRefreshInterval}
-                  onChange={(event) => setDefaultRefreshInterval(Number(event.target.value))}
+                  value={catalogRefreshIntervalOverridden
+                    ? String(defaultRefreshInterval)
+                    : "recommended"}
+                  onChange={(event) => {
+                    if (event.target.value === "recommended") {
+                      setDefaultRefreshInterval(60);
+                      setCatalogRefreshIntervalOverridden(false);
+                    } else {
+                      setDefaultRefreshInterval(Number(event.target.value));
+                      setCatalogRefreshIntervalOverridden(true);
+                    }
+                  }}
                 >
+                  <option value="recommended">Recommandée · médias 1 min · sources primaires 5 min</option>
                   {REFRESH_INTERVAL_OPTIONS.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
@@ -5617,15 +5760,15 @@ function EmptyDashboard({
       <span className="step-kicker">Prêt à surveiller</span>
       <h1>Retrouvez vos sources au même endroit</h1>
       <p>
-        Choisissez parmi 30 publications optimisées ou collez simplement l’adresse d’une source.
+        Choisissez des médias, institutions, alertes et publications scientifiques, ou collez l’adresse d’une source.
         Le fil se met à jour sans déplacer ce que vous êtes en train de lire.
       </p>
       <div className="empty-dashboard__actions">
-        <button type="button" className="primary-button" onClick={onStartTemplate}>
-          <Rss size={15} /> Lancer Veille concurrents
+        <button type="button" className="primary-button" onClick={onCreate}>
+          <Plus size={15} /> Créer un panel
         </button>
-        <button type="button" className="quiet-button" onClick={onCreate}>
-          <Plus size={15} /> Créer autrement
+        <button type="button" className="quiet-button" onClick={onStartTemplate}>
+          <Newspaper size={15} /> Veille concurrents
         </button>
       </div>
     </section>
@@ -6297,6 +6440,7 @@ function FeedConfigModal({
   const [defaultRefreshInterval, setDefaultRefreshInterval] = useState(
     panel.defaultRefreshIntervalSeconds,
   );
+  const [catalogRefreshIntervalOverridden, setCatalogRefreshIntervalOverridden] = useState(false);
   const [customSources, setCustomSources] = useState<PendingCustomSource[]>([]);
   const [sourceResolutionPending, setSourceResolutionPending] = useState(false);
   const [pending, setPending] = useState(false);
@@ -6311,6 +6455,9 @@ function FeedConfigModal({
       const nextState = await saveFeedPanelConfiguration(window.vibedeck, panel, state, {
         name: name.trim(),
         defaultRefreshIntervalSeconds: defaultRefreshInterval,
+        ...(catalogRefreshIntervalOverridden
+          ? { catalogRefreshIntervalSeconds: defaultRefreshInterval }
+          : {}),
         keptSourceIds: [...keptSourceIds],
         selectedCatalogIds: [...selectedCatalogIds],
         customSources,
@@ -6349,11 +6496,22 @@ function FeedConfigModal({
               />
             </label>
             <label className="compact-select-field compact-select-field--modal">
-              <span>Actualisation des nouvelles sources</span>
+              <span>Cadence des nouvelles sources</span>
               <select
-                value={defaultRefreshInterval}
-                onChange={(event) => setDefaultRefreshInterval(Number(event.target.value))}
+                value={catalogRefreshIntervalOverridden
+                  ? String(defaultRefreshInterval)
+                  : "recommended"}
+                onChange={(event) => {
+                  if (event.target.value === "recommended") {
+                    setDefaultRefreshInterval(panel.defaultRefreshIntervalSeconds);
+                    setCatalogRefreshIntervalOverridden(false);
+                  } else {
+                    setDefaultRefreshInterval(Number(event.target.value));
+                    setCatalogRefreshIntervalOverridden(true);
+                  }
+                }}
               >
+                <option value="recommended">Recommandée · médias 1 min · sources primaires 5 min</option>
                 {REFRESH_INTERVAL_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}

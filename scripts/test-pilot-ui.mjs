@@ -1055,24 +1055,45 @@ try {
     true,
     "Entrer dans le constructeur de Fil doit placer le vrai focus dans son premier champ.",
   );
-  const categoryButtons = draftLeaf.locator(".provider-group__heading");
-  assert.equal(await categoryButtons.count(), 6, "Le catalogue doit être regroupé par langue et type.");
+  const mediaTab = draftLeaf.getByRole("tab", { name: /Médias/ });
+  const primaryTab = draftLeaf.getByRole("tab", { name: /Sources primaires/ });
+  assert.equal(await mediaTab.getAttribute("aria-selected"), "true");
+  assert.equal(await primaryTab.getAttribute("aria-selected"), "false");
+  let categoryButtons = draftLeaf.locator(".provider-group__heading");
+  assert.ok(await categoryButtons.count() > 0, "Le catalogue médias doit être regroupé par zone et rubrique.");
   for (let index = 0; index < await categoryButtons.count(); index += 1) {
     const categoryButton = categoryButtons.nth(index);
     assert.equal(await categoryButton.getAttribute("aria-expanded"), "false");
     await categoryButton.click();
   }
-  assert.equal(await draftLeaf.locator(".provider-row").count(), 30, "Ouvrir les catégories doit révéler les trente publications.");
+  assert.equal(await draftLeaf.locator(".provider-row").count(), 30, "L’onglet Médias ne doit révéler que les médias.");
   assert.equal(
     await draftLeaf.locator(".provider-row .provider-mark img").count(),
     30,
     "Chaque publication optimisée doit disposer de sa véritable icône locale.",
   );
+  await primaryTab.click();
+  assert.equal(await mediaTab.getAttribute("aria-selected"), "false");
+  assert.equal(await primaryTab.getAttribute("aria-selected"), "true");
+  categoryButtons = draftLeaf.locator(".provider-group__heading");
+  for (let index = 0; index < await categoryButtons.count(); index += 1) {
+    await categoryButtons.nth(index).click();
+  }
+  assert.equal(
+    await draftLeaf.locator(".provider-row").count(),
+    16,
+    "L’onglet Sources primaires ne doit révéler que les institutions et organismes.",
+  );
+  assert.equal(
+    await draftLeaf.locator(".provider-row .provider-mark img").count(),
+    16,
+    "Chaque source primaire doit disposer de son identité visuelle locale.",
+  );
   await page.waitForFunction(() => {
     const images = [...document.querySelectorAll(
       '.split-layout__leaf[data-panel-id^="draft:"] .provider-row .provider-mark img',
     )];
-    return images.length === 30 && images.every((image) =>
+    return images.length === 16 && images.every((image) =>
       image.complete && image.naturalWidth === 96 && image.naturalHeight === 96);
   });
   assert.deepEqual(
@@ -1082,17 +1103,28 @@ try {
         naturalWidth: image.naturalWidth,
         naturalHeight: image.naturalHeight,
       }))),
-    Array.from({ length: 30 }, () => ({ complete: true, naturalWidth: 96, naturalHeight: 96 })),
-    "Les trente fichiers d’icône doivent réellement être décodés par le renderer.",
+    Array.from({ length: 16 }, () => ({ complete: true, naturalWidth: 96, naturalHeight: 96 })),
+    "Les seize fichiers d’icône primaires doivent réellement être décodés par le renderer.",
   );
-  assert.equal(await draftLeaf.locator('.provider-language-group[aria-label="Français"] .provider-row').count(), 20);
   assert.equal(
-    await draftLeaf.locator('.provider-language-group[aria-label="Anglais"] .provider-row').count(),
-    10,
+    await draftLeaf.locator('.provider-language-group[aria-label="Sources primaires · France"] .provider-row').count(),
+    14,
+  );
+  assert.equal(
+    await draftLeaf.locator('.provider-language-group[aria-label="Sources primaires · Europe & monde"] .provider-row').count(),
+    2,
+  );
+  assert.equal(
+    await draftLeaf.locator('.provider-language-group[aria-label^="Médias"]').count(),
+    0,
+    "Les médias ne doivent pas rester mélangés à la catégorie active.",
   );
   const catalogSearch = draftLeaf.getByLabel("Rechercher un connecteur optimisé");
   await catalogSearch.fill("BBC");
-  assert.equal(await draftLeaf.locator(".provider-row").count(), 1, "La recherche doit filtrer les deux sections.");
+  assert.equal(await draftLeaf.locator(".provider-row").count(), 0, "La recherche reste bornée à la grande catégorie active.");
+  await mediaTab.click();
+  await catalogSearch.fill("BBC");
+  assert.equal(await draftLeaf.locator(".provider-row").count(), 1, "Changer de catégorie doit rendre ses sources recherchables.");
   const bbcRow = draftLeaf.getByRole("button", { name: /BBC/ });
   await catalogSearch.focus();
   await page.keyboard.press("Tab");
@@ -1187,6 +1219,19 @@ try {
   );
   const customFeedLeaf = page.locator(
     `.split-layout__leaf[data-panel-id="${customFeedPanelId}"]`,
+  );
+  const customFeedPanelRoot = customFeedLeaf.locator(".dashboard-panel");
+  await waitForDomFocus(
+    page,
+    customFeedPanelRoot,
+    "le fil créé doit recevoir le vrai focus DOM",
+  );
+  await page.keyboard.press("ArrowDown");
+  assert.equal(
+    await customFeedLeaf.locator(".article-row").first().evaluate((row) =>
+      document.activeElement === row),
+    true,
+    "La première flèche après création doit agir dans le nouveau fil.",
   );
   await clickPanelAction(page, customFeedLeaf, "Configurer les sources");
   let customFeedDialog = page.getByRole("dialog", { name: "Configuration du fil" });
@@ -1471,6 +1516,12 @@ try {
     };
     ipcMain.on("dashboard:focus", globalThis.__vibedeckPilotDashboardFocusListener);
   });
+  await waitForNativeWebView(
+    electronApp,
+    previewUrl,
+    true,
+    "la vue web native doit être prête avant le scénario de reprise",
+  );
   const nativeFocusProbe = await electronApp.evaluate(async ({ app, BrowserWindow }, expectedUrl) => {
     const window = BrowserWindow.getAllWindows()[0];
     if (!window) throw new Error("La fenêtre pilote est introuvable.");

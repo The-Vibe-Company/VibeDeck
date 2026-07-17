@@ -164,6 +164,29 @@ test("saves a feed configuration through one main-owned IPC operation", async ()
   assert.equal(api.releaseFeedPanelConfigurationCheckpoint, undefined);
 });
 
+test("creates and cancels a sourced feed through narrow main-owned IPC operations", async () => {
+  const { api, calls } = await loadPreloadApi();
+  const operationId = "draft:123e4567-e89b-42d3-a456-426614174000";
+  const input = { kind: "feed", name: "Décisions" };
+  const placement = { targetPanelId: "panel-1", side: "right" };
+  const draft = {
+    name: "Décisions",
+    defaultRefreshIntervalSeconds: 60,
+    keptSourceIds: [],
+    selectedCatalogIds: ["assemblee-nationale"],
+    customSources: [],
+  };
+
+  await api.createFeedPanelWithSources(operationId, input, placement, draft);
+  assert.equal(await api.cancelFeedPanelCreation(operationId), undefined);
+  assert.deepEqual(calls, [
+    ["aggregator:create-feed-panel-with-sources", operationId, input, placement, draft],
+    ["aggregator:cancel-feed-panel-creation", operationId],
+  ]);
+  assert.equal(api.captureFeedPanelConfiguration, undefined);
+  assert.equal(api.restoreFeedPanelConfiguration, undefined);
+});
+
 test("refreshes a complete feed panel through one main-owned IPC operation", async () => {
   const { api, calls } = await loadPreloadApi();
 

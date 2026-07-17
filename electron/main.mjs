@@ -39,6 +39,7 @@ import {
   normalizeSearchMode,
 } from "./semantic-search.mjs";
 import {
+  cleanFeedPanelCreationId,
   cleanSourceProbeId,
   cleanWebPreviewId,
   createLatestAbortOperationRegistry,
@@ -107,6 +108,7 @@ const activeOperations = new Set();
 const webPanelControllers = new Map();
 const webPreviewAuthorizations = createWebPreviewAuthorizationStore();
 const sourceProbeOperations = createLatestAbortOperationRegistry();
+const feedPanelCreationOperations = createLatestAbortOperationRegistry();
 const resettingWebPanelControllers = new WeakSet();
 const semanticSearchNativeFocus = new WeakMap();
 const semanticSearchNativeRestoreRequested = new WeakSet();
@@ -339,6 +341,10 @@ function cleanFeedPanelConfigurationDraft(value) {
     defaultRefreshIntervalSeconds: cleanRefreshInterval(
       value.defaultRefreshIntervalSeconds,
     ),
+    catalogRefreshIntervalSeconds: cleanRefreshInterval(
+      value.catalogRefreshIntervalSeconds,
+      { optional: true },
+    ),
     keptSourceIds: cleanBoundedIds(
       value.keptSourceIds,
       "Liste de sources conservées",
@@ -565,8 +571,13 @@ function cancelSourceProbe(window, probeId = null) {
   return sourceProbeOperations.cancel(window, probeId);
 }
 
+function cancelFeedPanelCreation(window, operationId = null) {
+  return feedPanelCreationOperations.cancel(window, operationId);
+}
+
 function destroyWebPanelController(window) {
   cancelSourceProbe(window);
+  cancelFeedPanelCreation(window);
   webPreviewAuthorizations.clear(window);
   const controller = webPanelControllers.get(window);
   if (!controller) return Promise.resolve();
@@ -814,6 +825,42 @@ function registerIpcHandlers() {
     broadcastState(state);
     return state;
   }));
+  registerHandle(
+    "aggregator:create-feed-panel-with-sources",
+    (event, operationId, input, placement, draft) => {
+      const window = requireMainSender(event);
+      const normalizedOperationId = cleanFeedPanelCreationId(operationId);
+      const cleanedInput = cleanPanelInput(input);
+      if (typeof cleanedInput !== "object" || cleanedInput.kind !== "feed") {
+        throw new TypeError("Configuration de fil invalide.");
+      }
+      const operation = feedPanelCreationOperations.start(window, normalizedOperationId);
+      return runEngineOperation(async () => {
+        try {
+          return await runWithFinalStateBroadcast(
+            () => engine.createFeedPanelWithSources(
+              cleanedInput,
+              cleanPanelPlacement(placement),
+              cleanFeedPanelConfigurationDraft(draft),
+              { signal: operation.controller.signal },
+            ),
+            {
+              getState: () => engine.getRendererState(),
+              broadcast: (state) => broadcastState(state, { syncSemantic: true }),
+              onBroadcastError: (error) =>
+                console.warn("Synchronisation finale du nouveau fil impossible :", error),
+            },
+          );
+        } finally {
+          feedPanelCreationOperations.finish(window, operation);
+        }
+      });
+    },
+  );
+  registerHandle("aggregator:cancel-feed-panel-creation", (event, operationId) => {
+    const window = requireMainSender(event);
+    cancelFeedPanelCreation(window, cleanFeedPanelCreationId(operationId));
+  });
   registerHandle("web-preview:start", (event, previewId, url) =>
     startAuthorizedWebPreview(event, previewId, url, cleanSourceUrl));
   registerHandle("x-preview:start", (event, previewId, url) =>
@@ -1310,6 +1357,7 @@ function createWindow() {
     (_event, _url, isInPlace, isMainFrame) => {
       if (isMainFrame !== false && isInPlace !== true) {
         cancelSourceProbe(window);
+        cancelFeedPanelCreation(window);
         webPreviewAuthorizations.clear(window);
         webPanelController.destroyAll();
       }
@@ -1317,6 +1365,7 @@ function createWindow() {
   );
   window.webContents.on("render-process-gone", () => {
     cancelSourceProbe(window);
+    cancelFeedPanelCreation(window);
     webPreviewAuthorizations.clear(window);
     webPanelController.destroyAll();
   });

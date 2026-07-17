@@ -104,9 +104,12 @@ class FakeReaderSession {
   }
 }
 
-test("every proposed catalog connector has an enabled dedicated adapter", () => {
+test("every simplified-reading catalog connector has an enabled dedicated adapter", () => {
   assert.deepEqual(
-    SOURCE_CATALOG.map(({ id }) => id).sort(),
+    SOURCE_CATALOG
+      .filter(({ capabilities }) => capabilities.includes("simplified-reading"))
+      .map(({ id }) => id)
+      .sort(),
     ARTICLE_READER_ADAPTERS.filter(({ enabled }) => enabled).map(({ connectorId }) => connectorId).sort(),
   );
 });
@@ -122,7 +125,9 @@ test("adapters only authorize their declared HTTPS publication domains", () => {
 });
 
 test("extracts each publication through its dedicated server-HTML root", () => {
-  for (const { id: connectorId } of SOURCE_CATALOG) {
+  for (const { id: connectorId } of SOURCE_CATALOG.filter(
+    ({ capabilities }) => capabilities.includes("simplified-reading"),
+  )) {
     const result = extractArticleHtml({
       connectorId,
       html: publicHtml(connectorId),
