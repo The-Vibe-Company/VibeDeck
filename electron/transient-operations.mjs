@@ -21,6 +21,13 @@ export function cleanSourceProbeId(value) {
   });
 }
 
+export function cleanFeedPanelCreationId(value) {
+  return cleanUuid(value, {
+    prefix: "draft:",
+    label: "Identifiant de création du fil",
+  });
+}
+
 export function createLatestAbortOperationRegistry({
   createController = () => new AbortController(),
 } = {}) {

@@ -2116,6 +2116,49 @@ button:disabled {
   margin-bottom: 8px;
 }
 
+.catalog-picker__types {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.catalog-picker__types button {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--muted);
+  text-align: left;
+}
+
+.catalog-picker__types button:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.catalog-picker__types button.is-selected {
+  border-color: color-mix(in srgb, var(--amber) 55%, var(--line));
+  background: color-mix(in srgb, var(--amber) 8%, var(--bg));
+  color: var(--text);
+}
+
+.catalog-picker__types strong {
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.catalog-picker__types span {
+  color: var(--muted);
+  font: 8px/1 var(--mono);
+}
+
 .provider-list,
 .current-source-list,
 .queued-source-list {

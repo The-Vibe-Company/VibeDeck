@@ -2205,6 +2205,54 @@ export class LocalFeedDatabase {
     }
   }
 
+  replacePanelSources(panelId, sourceIds) {
+    if (!this.hasPanel(panelId, "feed")) throw new Error("Panel de flux introuvable.");
+    if (!Array.isArray(sourceIds)) throw new TypeError("Les sources du panel sont invalides.");
+    if (sourceIds.length > MAX_FEED_CONFIGURATION_CHECKPOINT_SOURCES) {
+      throw new RangeError("Le panel contient trop de sources.");
+    }
+    const normalizedSourceIds = sourceIds.map((sourceId) =>
+      cleanIdentifier(sourceId, "Source"));
+    if (new Set(normalizedSourceIds).size !== normalizedSourceIds.length) {
+      throw new Error("Les sources du panel contiennent un doublon.");
+    }
+
+    this.database.exec("BEGIN IMMEDIATE;");
+    try {
+      const sourceExists = this.database.prepare("SELECT 1 FROM sources WHERE id = ?");
+      for (const sourceId of normalizedSourceIds) {
+        if (!sourceExists.get(sourceId)) throw new Error("Source introuvable.");
+      }
+      const currentSourceIds = this.database
+        .prepare(`
+          SELECT source_id
+          FROM panel_sources
+          WHERE panel_id = ?
+          ORDER BY position ASC
+        `)
+        .all(panelId)
+        .map(({ source_id: sourceId }) => sourceId);
+      const unchanged =
+        currentSourceIds.length === normalizedSourceIds.length &&
+        currentSourceIds.every((sourceId, index) => sourceId === normalizedSourceIds[index]);
+      if (!unchanged) {
+        this.database.prepare("DELETE FROM panel_sources WHERE panel_id = ?").run(panelId);
+        const attach = this.database.prepare(`
+          INSERT INTO panel_sources (panel_id, source_id, position)
+          VALUES (?, ?, ?)
+        `);
+        normalizedSourceIds.forEach((sourceId, position) => {
+          attach.run(panelId, sourceId, position);
+        });
+        this.#incrementContentRevision();
+      }
+      this.database.exec("COMMIT;");
+    } catch (error) {
+      this.database.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
   listPanelSourceIds(panelId) {
     if (!this.hasPanel(panelId, "feed")) throw new Error("Panel de flux introuvable.");
     return this.database

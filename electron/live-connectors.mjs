@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { createFeedEngine } from "./feed-engine.mjs";
 import { createArticleReaderService } from "./article-reader.mjs";
-import { PUBLICATIONS } from "./publication-registry.mjs";
+import { CURATED_SOURCES, PUBLICATIONS } from "./publication-registry.mjs";
 
 const directory = mkdtempSync(path.join(tmpdir(), "vibedeck-live-"));
 const engine = createFeedEngine({ dbPath: path.join(directory, "smoke.sqlite3") });
@@ -40,7 +40,7 @@ try {
   }
   const panel = state.panels.find(({ kind }) => kind === "feed");
   if (!panel) throw new Error("Aucun panel de test n’a pu être créé.");
-  for (const publication of PUBLICATIONS) {
+  for (const publication of CURATED_SOURCES) {
     const startedAt = performance.now();
     const result = await engine.addCatalogSource(panel.id, publication.id);
     const source = result.state.sources.find(({ id }) => id === result.sourceId);
@@ -64,7 +64,8 @@ try {
 
   state = engine.getState();
   let fallbackOnlySources = 0;
-  for (const source of state.sources.filter(({ connectorId }) => connectorId)) {
+  const readerConnectorIds = new Set(PUBLICATIONS.map(({ id }) => id));
+  for (const source of state.sources.filter(({ connectorId }) => readerConnectorIds.has(connectorId))) {
     const candidates = state.items
       .filter(({ sourceId }) => sourceId === source.id)
       .slice(0, 5);
@@ -97,7 +98,7 @@ try {
     `✓ Fil agrégé: ${state.items.length} actualités, ${healthySources}/${state.sources.length} sources à jour`,
   );
   console.log(
-    `✓ Lecture simplifiée prioritaire: ${state.sources.length - fallbackOnlySources}/${state.sources.length} publications extraites, ${fallbackOnlySources} repli(s) intégral(aux) normal(aux) vers la page originale`,
+    `✓ Lecture simplifiée prioritaire: ${PUBLICATIONS.length - fallbackOnlySources}/${PUBLICATIONS.length} publications extraites, ${fallbackOnlySources} repli(s) intégral(aux) normal(aux) vers la page originale`,
   );
 } finally {
   await readerService.shutdown();

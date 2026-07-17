@@ -6,7 +6,10 @@ import { fileURLToPath } from "node:url";
 
 import {
   CURATED_PROXY_ROOTS,
+  CURATED_SOURCES,
+  DEFAULT_PRIMARY_SOURCE_REFRESH_INTERVAL_SECONDS,
   DEFAULT_PUBLICATION_REFRESH_INTERVAL_SECONDS,
+  PRIMARY_SOURCES,
   PUBLICATIONS,
   SOURCE_CATALOG,
   definePublication,
@@ -29,6 +32,7 @@ test("freezes an exact 20/10 publication snapshot with consecutive ranks", () =>
   }
 
   for (const publication of PUBLICATIONS) {
+    assert.equal(publication.sourceType, "media");
     assert.equal(Object.isFrozen(publication), true);
     assert.equal(Object.isFrozen(publication.reader), true);
     assert.equal(Object.isFrozen(publication.hostnames), true);
@@ -49,17 +53,40 @@ test("freezes an exact 20/10 publication snapshot with consecutive ranks", () =>
   );
 });
 
+test("freezes a 14/2 primary-source snapshot with slower refreshes", () => {
+  assert.equal(PRIMARY_SOURCES.length, 16);
+  assert.equal(Object.isFrozen(PRIMARY_SOURCES), true);
+  assert.equal(new Set(PRIMARY_SOURCES.map(({ id }) => id)).size, 16);
+
+  for (const [group, expectedCount] of [["france", 14], ["english-world", 2]]) {
+    const sources = PRIMARY_SOURCES.filter((source) => source.group === group);
+    assert.equal(sources.length, expectedCount);
+    assert.deepEqual(sources.map(({ rank }) => rank),
+      Array.from({ length: expectedCount }, (_, index) => index + 1));
+  }
+
+  for (const source of PRIMARY_SOURCES) {
+    assert.equal(source.sourceType, "primary");
+    assert.match(source.iconPath, /^\.\/provider-icons\/[a-z0-9-]+\.png$/);
+    assert.equal(source.refreshIntervalSeconds, DEFAULT_PRIMARY_SOURCE_REFRESH_INTERVAL_SECONDS);
+  }
+  assert.deepEqual(
+    [...new Set(PRIMARY_SOURCES.map(({ category }) => category))].sort(),
+    ["alerts", "data", "public-decisions", "research"],
+  );
+});
+
 test("keeps all network roots exact, HTTPS and credential-free", () => {
-  const expectedRoots = PUBLICATIONS.flatMap((publication) => [
-    publication.feedUrl,
-    ...(publication.enrichment ? [publication.enrichment.url] : []),
+  const expectedRoots = CURATED_SOURCES.flatMap((source) => [
+    source.feedUrl,
+    ...(source.enrichment ? [source.enrichment.url] : []),
   ]);
   assert.deepEqual(CURATED_PROXY_ROOTS, expectedRoots);
   assert.equal(new Set(CURATED_PROXY_ROOTS).size, CURATED_PROXY_ROOTS.length);
 
   for (const value of [
     ...CURATED_PROXY_ROOTS,
-    ...PUBLICATIONS.map(({ homepageUrl }) => homepageUrl),
+    ...CURATED_SOURCES.map(({ homepageUrl }) => homepageUrl),
   ]) {
     const url = new URL(value);
     assert.equal(url.protocol, "https:");
@@ -71,13 +98,18 @@ test("keeps all network roots exact, HTTPS and credential-free", () => {
 
 test("projects only bounded public metadata across the Electron boundary", () => {
   assert.equal(Object.isFrozen(SOURCE_CATALOG), true);
-  assert.equal(SOURCE_CATALOG.length, 30);
+  assert.equal(SOURCE_CATALOG.length, 46);
   for (const entry of SOURCE_CATALOG) {
     assert.equal(Object.isFrozen(entry), true);
     assert.equal(Object.isFrozen(entry.capabilities), true);
     for (const key of privateCatalogKeys) assert.equal(Object.hasOwn(entry, key), false);
-    assert.match(entry.iconPath, /^\.\/provider-icons\/[a-z0-9-]+\.png$/);
-    assert.equal(entry.refreshIntervalSeconds, 60, entry.id);
+    if (entry.sourceType === "media") {
+      assert.match(entry.iconPath, /^\.\/provider-icons\/[a-z0-9-]+\.png$/);
+      assert.equal(entry.refreshIntervalSeconds, 60, entry.id);
+    } else {
+      assert.match(entry.iconPath, /^\.\/provider-icons\/[a-z0-9-]+\.png$/);
+      assert.equal(entry.refreshIntervalSeconds, 300, entry.id);
+    }
   }
 
   const projection = publicSourceCatalog();
@@ -85,8 +117,8 @@ test("projects only bounded public metadata across the Electron boundary", () =>
   assert.equal(SOURCE_CATALOG[0].capabilities.includes("mutation-test"), false);
 });
 
-test("ships one bounded 96px PNG icon for every publication", () => {
-  for (const publication of PUBLICATIONS) {
+test("ships one bounded 96px PNG icon for every curated source", () => {
+  for (const publication of CURATED_SOURCES) {
     const iconPath = path.join(repositoryRoot, "public", publication.iconPath.slice(2));
     const stats = statSync(iconPath);
     const png = readFileSync(iconPath);
@@ -120,4 +152,14 @@ test("definePublication rejects unsafe or incomplete additions", () => {
   assert.throws(() => definePublication({ ...valid, category: "autre" }), /Catégorie/);
   assert.throws(() => definePublication({ ...valid, iconPath: "https://publication.test/icon.png" }), /icône/);
   assert.throws(() => definePublication({ ...valid, refreshIntervalSeconds: 10 }), /Intervalle/);
+  assert.throws(() => definePublication({ ...valid, sourceType: "primary" }), /Catégorie de source primaire/);
+  const primary = definePublication({
+    ...valid,
+    id: "source-primaire-test",
+    sourceType: "primary",
+    category: "alerts",
+    iconPath: "./provider-icons/source-primaire-test.png",
+  });
+  assert.equal(primary.iconPath, "./provider-icons/source-primaire-test.png");
+  assert.equal(primary.refreshIntervalSeconds, DEFAULT_PRIMARY_SOURCE_REFRESH_INTERVAL_SECONDS);
 });
