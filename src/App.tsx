@@ -2060,10 +2060,12 @@ export default function App() {
           readerReturnFocusRef.current &&
           readerOpenPosition === null
         ) {
-          // Session clavier pure : le premier événement est ambigu (teardown
-          // ou mouvement). Il devient la référence ; le suivant libère le hover.
-          readerOpenPointerPositionRef.current = nextPosition;
-          return true;
+          // Les événements de teardown natif ont été absorbés tant que la
+          // surface existait. Sans position d’ouverture, le premier événement
+          // fiable qui suit est donc une intention utilisateur et doit gagner.
+          readerReturnFocusRef.current = null;
+          readerOpenPointerPositionRef.current = null;
+          return false;
         }
         // Chromium/Windows peut donner un movementX/Y non nul à l’enter créé
         // par le retrait d’une WebContentsView : les coordonnées absolues sont

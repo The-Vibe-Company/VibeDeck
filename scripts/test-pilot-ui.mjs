@@ -1464,6 +1464,13 @@ try {
   );
   const staleFeedTitleInputBox = await staleFeedTitleInput.boundingBox();
   assert.ok(staleFeedTitleInputBox, "Le champ de titre stale doit être visible avant le focus natif.");
+  await electronApp.evaluate(({ ipcMain }) => {
+    globalThis.__vibedeckPilotDashboardFocusRequests = 0;
+    globalThis.__vibedeckPilotDashboardFocusListener = () => {
+      globalThis.__vibedeckPilotDashboardFocusRequests += 1;
+    };
+    ipcMain.on("dashboard:focus", globalThis.__vibedeckPilotDashboardFocusListener);
+  });
   const nativeFocusProbe = await electronApp.evaluate(async ({ app, BrowserWindow }, expectedUrl) => {
     const window = BrowserWindow.getAllWindows()[0];
     if (!window) throw new Error("La fenêtre pilote est introuvable.");
@@ -1534,6 +1541,18 @@ try {
       nativeFocused: view.webContents.isFocused(),
     };
   }, { expectedUrl: previewUrl, requireDashboardFocus: nativeFocusProbe.windowFocused });
+  const dashboardFocusRequests = await electronApp.evaluate(({ ipcMain }) => {
+    const listener = globalThis.__vibedeckPilotDashboardFocusListener;
+    if (typeof listener === "function") ipcMain.removeListener("dashboard:focus", listener);
+    const count = globalThis.__vibedeckPilotDashboardFocusRequests ?? 0;
+    delete globalThis.__vibedeckPilotDashboardFocusListener;
+    delete globalThis.__vibedeckPilotDashboardFocusRequests;
+    return count;
+  });
+  assert.ok(
+    dashboardFocusRequests > 0,
+    "Le survol du Fil doit demander au main process de rendre le clavier au dashboard.",
+  );
   if (nativeFocusProbe.windowFocused) {
     assert.deepEqual(
       {
