@@ -1827,6 +1827,11 @@ try {
   );
   const secondaryAction = panelLeaf.getByLabel("Réduire le texte de ce fil", { exact: true });
   await secondaryAction.focus();
+  await waitForDomFocus(
+    page,
+    secondaryAction,
+    "le contrôle secondaire doit réellement recevoir le focus avant le passage en mode compact",
+  );
   await narrowWindow.evaluate((window) => window.setSize(1_000, 820));
   await page.waitForFunction(
     (targetPanelId) => {
@@ -1837,9 +1842,6 @@ try {
     },
     panelId,
   );
-  // Le transfert de focus suit la requête container + un requestAnimationFrame :
-  // sur un runner lent (Windows CI), la frame peut dépasser un double rAF —
-  // attendre le focus réel plutôt qu'un délai fixe.
   await waitForDomFocus(
     page,
     panelLeaf.getByLabel("Plus d’actions", { exact: true }),
@@ -1848,6 +1850,11 @@ try {
   await page.keyboard.press("Enter");
   const thresholdMenu = page.getByRole("menu", { name: "Actions secondaires du panel" });
   await thresholdMenu.waitFor({ state: "visible" });
+  await waitForDomFocus(
+    page,
+    thresholdMenu.getByRole("menuitem").first(),
+    "Entrée depuis Plus d’actions doit focaliser le premier élément du menu",
+  );
   await narrowWindow.evaluate((window) => window.setSize(1_600, 820));
   await thresholdMenu.waitFor({ state: "detached" });
   {
@@ -2983,6 +2990,7 @@ try {
   await page.evaluate((itemId) => window.vibedeck.markItemOpened(itemId), sharedItemId);
   assert.ok(sharedItemId, "L’arrivée partagée doit posséder un identifiant.");
   await sharedSiblingRow.waitFor({ state: "visible" });
+  await sharedSiblingRow.locator(".article-meta em.is-opened").waitFor({ state: "visible" });
   assert.match(
     (await sharedSiblingRow.locator(".article-meta em").textContent()) ?? "",
     /Ouvert/,
