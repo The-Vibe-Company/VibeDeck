@@ -949,7 +949,8 @@ export default function App() {
       activeElement instanceof HTMLElement &&
       activeElement !== document.body &&
       activeElement.isConnected &&
-      activeElement.id !== target.rowId
+      activeElement.id !== target.rowId &&
+      !activeElement.matches(".dashboard-panel")
     ) {
       return;
     }
