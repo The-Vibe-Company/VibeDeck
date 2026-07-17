@@ -1264,7 +1264,7 @@ try {
     view.webContents.focus();
     await new Promise((resolve) => setTimeout(resolve, 20));
     return {
-      appActive: app.isActive(),
+      appActive: process.platform === "darwin" ? app.isActive() : null,
       windowFocused: window.isFocused(),
       dashboardFocused: window.webContents.isFocused(),
       nativeFocused: view.webContents.isFocused(),
@@ -1313,7 +1313,7 @@ try {
       }
     }
     return {
-      appActive: app.isActive(),
+      appActive: process.platform === "darwin" ? app.isActive() : null,
       windowFocused: window.isFocused(),
       dashboardFocused: window.webContents.isFocused(),
       nativeFocused: view.webContents.isFocused(),
