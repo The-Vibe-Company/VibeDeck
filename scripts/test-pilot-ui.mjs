@@ -206,6 +206,22 @@ async function waitForDomFocus(page, locator, label, timeoutMs = 5_000) {
   }
 }
 
+async function waitForResponsiveFocusEffects(page, panelLocator) {
+  const handle = await panelLocator.elementHandle();
+  assert.ok(handle, "Le panel responsive est introuvable.");
+  try {
+    await page.evaluate((panel) => new Promise((resolve) => {
+      const observer = new ResizeObserver(() => {
+        observer.disconnect();
+        requestAnimationFrame(() => requestAnimationFrame(resolve));
+      });
+      observer.observe(panel);
+    }), handle);
+  } finally {
+    await handle.dispose();
+  }
+}
+
 async function waitForEnabled(page, locator, label, timeoutMs = 5_000) {
   const handle = await locator.elementHandle();
   assert.ok(handle, `${label} : élément introuvable.`);
@@ -1615,6 +1631,115 @@ try {
   );
   const secondaryAction = panelLeaf.getByLabel("Réduire le texte de ce fil", { exact: true });
   await secondaryAction.focus();
+  await waitForDomFocus(
+    page,
+    secondaryAction,
+    "le contrôle secondaire doit recevoir le focus avant de créer un override conditionnel",
+  );
+  await page.keyboard.press("Enter");
+  const conditionalResetAction = panelLeaf.getByRole("button", {
+    name: /revenir à la taille par défaut/,
+  });
+  await conditionalResetAction.waitFor({ state: "visible" });
+  await conditionalResetAction.focus();
+  await waitForDomFocus(
+    page,
+    conditionalResetAction,
+    "l’action conditionnelle de reset doit recevoir le focus avant sa suppression",
+  );
+  await page.keyboard.press("Enter");
+  await conditionalResetAction.waitFor({ state: "detached" });
+  await page.waitForFunction(() => document.activeElement === document.body);
+  await narrowWindow.evaluate((window) => window.setSize(1_000, 820));
+  await page.waitForFunction(
+    (targetPanelId) => {
+      const panel = document.querySelector(
+        `.split-layout__leaf[data-panel-id="${targetPanelId}"] .dashboard-panel`,
+      );
+      return panel instanceof HTMLElement && panel.getBoundingClientRect().width <= 760;
+    },
+    panelId,
+  );
+  await waitForResponsiveFocusEffects(page, panelLeaf.locator(".dashboard-panel"));
+  assert.equal(
+    await page.evaluate(() => document.activeElement === document.body),
+    true,
+    "Supprimer une action conditionnelle ne doit pas armer un futur transfert de focus responsive.",
+  );
+  await narrowWindow.evaluate((window) => window.setSize(1_600, 820));
+  await page.waitForFunction(
+    (targetPanelId) => {
+      const panel = document.querySelector(
+        `.split-layout__leaf[data-panel-id="${targetPanelId}"] .dashboard-panel`,
+      );
+      return panel instanceof HTMLElement && panel.getBoundingClientRect().width > 760;
+    },
+    panelId,
+  );
+  await secondaryAction.focus();
+  await waitForDomFocus(
+    page,
+    secondaryAction,
+    "le contrôle secondaire doit recevoir le focus avant le scénario négatif",
+  );
+  const stablePrimaryAction = panelLeaf.getByLabel("Rechercher dans ce fil", { exact: true });
+  await stablePrimaryAction.focus();
+  await waitForDomFocus(
+    page,
+    stablePrimaryAction,
+    "un vrai contrôle voisin doit effacer le dernier focus secondaire mémorisé",
+  );
+  await page.evaluate(() => {
+    const previousTabIndex = document.body.getAttribute("tabindex");
+    document.body.tabIndex = -1;
+    document.body.focus({ preventScroll: true });
+    if (previousTabIndex === null) document.body.removeAttribute("tabindex");
+    else document.body.setAttribute("tabindex", previousTabIndex);
+  });
+  await narrowWindow.evaluate((window) => window.setSize(1_000, 820));
+  await page.waitForFunction(
+    (targetPanelId) => {
+      const panel = document.querySelector(
+        `.split-layout__leaf[data-panel-id="${targetPanelId}"] .dashboard-panel`,
+      );
+      return panel instanceof HTMLElement && panel.getBoundingClientRect().width <= 760;
+    },
+    panelId,
+  );
+  await waitForResponsiveFocusEffects(page, panelLeaf.locator(".dashboard-panel"));
+  assert.equal(
+    await page.evaluate(() => document.activeElement === document.body),
+    true,
+    "Un vrai focus ailleurs doit empêcher tout transfert responsive ultérieur.",
+  );
+  await narrowWindow.evaluate((window) => window.setSize(1_600, 820));
+  await page.waitForFunction(
+    (targetPanelId) => {
+      const panel = document.querySelector(
+        `.split-layout__leaf[data-panel-id="${targetPanelId}"] .dashboard-panel`,
+      );
+      return panel instanceof HTMLElement && panel.getBoundingClientRect().width > 760;
+    },
+    panelId,
+  );
+  await secondaryAction.focus();
+  await waitForDomFocus(
+    page,
+    secondaryAction,
+    "le contrôle secondaire doit réellement recevoir le focus avant le passage en mode compact",
+  );
+  await page.evaluate(() => {
+    const previousTabIndex = document.body.getAttribute("tabindex");
+    document.body.tabIndex = -1;
+    document.body.focus({ preventScroll: true });
+    if (previousTabIndex === null) document.body.removeAttribute("tabindex");
+    else document.body.setAttribute("tabindex", previousTabIndex);
+  });
+  assert.equal(
+    await page.evaluate(() => document.activeElement === document.body),
+    true,
+    "Le test doit reproduire le retour transitoire du focus vers le document observé sous Windows.",
+  );
   await narrowWindow.evaluate((window) => window.setSize(1_000, 820));
   await page.waitForFunction(
     (targetPanelId) => {
@@ -1636,6 +1761,11 @@ try {
   await page.keyboard.press("Enter");
   const thresholdMenu = page.getByRole("menu", { name: "Actions secondaires du panel" });
   await thresholdMenu.waitFor({ state: "visible" });
+  await waitForDomFocus(
+    page,
+    thresholdMenu.getByRole("menuitem").first(),
+    "Entrée depuis Plus d’actions doit focaliser le premier élément du menu",
+  );
   await narrowWindow.evaluate((window) => window.setSize(1_600, 820));
   await thresholdMenu.waitFor({ state: "detached" });
   {
@@ -2798,6 +2928,7 @@ try {
   await page.evaluate((itemId) => window.vibedeck.markItemOpened(itemId), sharedItemId);
   assert.ok(sharedItemId, "L’arrivée partagée doit posséder un identifiant.");
   await sharedSiblingRow.waitFor({ state: "visible" });
+  await sharedSiblingRow.locator(".article-meta em.is-opened").waitFor({ state: "visible" });
   assert.match(
     (await sharedSiblingRow.locator(".article-meta em").textContent()) ?? "",
     /Ouvert/,
