@@ -1996,9 +1996,33 @@ try {
     reader.sendInputEvent({ type: "keyUp", keyCode: "Escape" });
   }, { articlePrefix: `${origin}/articles/`, requireFocus: showWindow });
   await page.locator(".link-reader").waitFor({ state: "detached" });
-  await page.waitForFunction(
-    (articleId) => document.activeElement?.id === articleId,
-    readerSourceId,
+  await waitForDomFocus(
+    page,
+    readerSourceRow,
+    "Échap depuis le lecteur natif doit rendre le focus à la ligne d’origine",
+  );
+  await electronApp.evaluate(async ({ webContents }, articlePrefix) => {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (!webContents.getAllWebContents().some((contents) =>
+        contents.getURL().startsWith(articlePrefix))) return;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error("La vue native du lecteur reste présente après Échap.");
+  }, `${origin}/articles/`);
+  // Sur Windows, Chromium peut rendre le focus à la racine du renderer plus
+  // d'une seconde après le retrait de la WebContentsView. Rejouer ce vol tardif
+  // sans intention clavier ou pointeur : la reprise ciblée doit gagner la course.
+  await page.waitForTimeout(1_100);
+  await readerSourceRow.evaluate((row) => {
+    const panel = row.closest(".dashboard-panel");
+    if (!(panel instanceof HTMLElement)) throw new Error("Le Fil du lecteur est introuvable.");
+    panel.focus({ preventScroll: true });
+  });
+  await waitForDomFocus(
+    page,
+    readerSourceRow,
+    "la reprise tardive du lecteur doit restaurer la ligne après le focus natif Windows",
+    1_000,
   );
   await page.keyboard.press("ArrowDown");
   await page.waitForFunction(

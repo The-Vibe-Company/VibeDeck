@@ -955,6 +955,17 @@ export default function App() {
       if (readerReturnFocusRef.current !== target) return;
       restoreArticleFocus(target);
     };
+    let panelRootFocusFrame = 0;
+    const restoreAfterPanelRootFocus = (event: FocusEvent) => {
+      if (
+        readerReturnFocusRef.current !== target ||
+        !(event.target instanceof HTMLElement) ||
+        !event.target.matches(".dashboard-panel")
+      ) return;
+      window.cancelAnimationFrame(panelRootFocusFrame);
+      panelRootFocusFrame = window.requestAnimationFrame(restorePendingFocus);
+    };
+    document.addEventListener("focusin", restoreAfterPanelRootFocus, true);
     restorePendingFocus();
     const frame = window.requestAnimationFrame(restorePendingFocus);
     // Sous Windows, Chromium peut appliquer le focus natif de la surface
@@ -965,7 +976,9 @@ export default function App() {
       window.setTimeout(restorePendingFocus, delay)
     );
     return () => {
+      document.removeEventListener("focusin", restoreAfterPanelRootFocus, true);
       window.cancelAnimationFrame(frame);
+      window.cancelAnimationFrame(panelRootFocusFrame);
       for (const retry of retries) window.clearTimeout(retry);
     };
   }, [linkPreview, readerSurfacePresent]);
