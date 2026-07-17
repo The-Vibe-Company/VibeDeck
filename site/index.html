@@ -26,11 +26,14 @@ html { scroll-behavior: smooth; }
 .nav-link:hover { color: #1c1a16; }
 .btn-header { background: #1c1a16; color: #faf8f4; padding: 9px 18px; border-radius: 9px; font-weight: 500; white-space: nowrap; }
 .btn-header:hover { background: #3a362e; color: #faf8f4; }
-.btn-amber { background: #f5a623; color: #1c1a16; padding: 14px 28px; border-radius: 11px; font-weight: 600; font-size: 16px; white-space: nowrap; box-shadow: 0 2px 0 #d18c0f; }
+.btn-amber, .btn-ghost { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; font-family: inherit; cursor: pointer; }
+.btn-amber { border: 0; background: #f5a623; color: #1c1a16; padding: 14px 28px; border-radius: 11px; font-weight: 600; font-size: 16px; white-space: nowrap; box-shadow: 0 2px 0 #d18c0f; }
 .btn-amber:hover { background: #ffb63d; color: #1c1a16; }
 .btn-ghost { border: 1.5px solid #ddd6c8; color: #2a2823; padding: 13px 28px; border-radius: 11px; font-size: 16px; white-space: nowrap; background: #fff; }
 .btn-ghost:hover { border-color: #f5a623; color: #b97a10; }
+.btn-amber:disabled, .btn-ghost:disabled { cursor: wait; opacity: 0.72; }
 .nav-link:focus-visible, .btn-header:focus-visible, .btn-amber:focus-visible, .btn-ghost:focus-visible { outline: 3px solid #8f5d08; outline-offset: 3px; }
+.download-status[data-state="error"] { color: #9d321f !important; }
 
 /* --- Démo interactive (maquette sombre) --- */
 .demo-btn-outline { display: inline-flex; min-height: 29px; align-items: center; padding: 6px 11px; border: 1px solid oklch(34.45% 0.0106 91.6); border-radius: 5px; background: transparent; color: oklch(76.77% 0.0164 86.4); cursor: pointer; font-size: 11.5px; font-weight: 600; font-family: inherit; }
@@ -206,10 +209,11 @@ html { scroll-behavior: smooth; }
     </svg>
     <h2 style="margin:0; font-size:clamp(28px, 4.5vw, 40px); font-weight:700; letter-spacing:-0.02em; color:#1c1a16;">Montez votre deck</h2>
     <p style="margin:0; font-size:16px; color:#5c574c; max-width:440px; text-wrap:pretty;">Gratuit et open source. Disponible pour macOS et Windows.</p>
-    <div style="display:flex; flex-wrap:wrap; gap:14px; justify-content:center;">
-      <a href="https://github.com/The-Vibe-Company/VibeDeck/releases/latest" class="btn-amber">Télécharger pour macOS</a>
-      <a href="https://github.com/The-Vibe-Company/VibeDeck/releases/latest" class="btn-ghost">Télécharger pour Windows</a>
+    <div id="download-actions" style="display:flex; flex-wrap:wrap; gap:14px; justify-content:center;">
+      <button type="button" data-download-platform="macos" class="btn-ghost">Télécharger pour macOS</button>
+      <button type="button" data-download-platform="windows" class="btn-ghost">Télécharger pour Windows</button>
     </div>
+    <p id="download-status" class="download-status" data-state="ready" aria-live="polite" aria-atomic="true" style="min-height:1.25em; margin:0; font-family:'IBM Plex Mono',monospace; font-size:12px; color:#5c574c;">Choisissez votre plateforme.</p>
   </section>
 
   <footer style="border-top:1px solid #e9e4da; padding:24px clamp(20px, 5vw, 56px); display:flex; flex-wrap:wrap; gap:12px; justify-content:space-between; align-items:center;">
@@ -226,6 +230,7 @@ html { scroll-behavior: smooth; }
 
 </div>
 
+<script src="./downloads.js"></script>
 <script>
 (function () {
   'use strict';
