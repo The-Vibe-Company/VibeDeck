@@ -30,6 +30,9 @@ const releaseWindowsSignedJob = releaseWorkflow.match(
 const releasePublishJob = releaseWorkflow.match(
   /\n  publish:[\s\S]*$/,
 )?.[0] ?? "";
+const buildWindowsSigningSmokeJob = buildWorkflow.match(
+  /\n  windows_signing_smoke:[\s\S]*?(?=\n  required:)/,
+)?.[0] ?? "";
 const releasePleaseWorkflow = readFileSync(
   path.join(root, ".github/workflows/release-please.yml"),
   "utf8",
@@ -396,6 +399,35 @@ assert.match(
   /npm run dist:win/,
   "La CI Windows doit produire l’installateur non signé complet",
 );
+assert.ok(
+  buildWindowsSigningSmokeJob,
+  "Le test manuel isolé de signature Windows est introuvable",
+);
+assert.match(
+  buildWindowsSigningSmokeJob,
+  /github\.event_name == 'workflow_dispatch'[\s\S]*inputs\.windows_signing_smoke == true/,
+  "La signature Windows de test doit rester une action manuelle explicite",
+);
+assert.match(
+  buildWindowsSigningSmokeJob,
+  /environment:\s*signed-release[\s\S]*npm run dist:win:signed -- --publish never/,
+  "Le test Windows signé doit utiliser l’environnement protégé sans publier",
+);
+assert.match(
+  buildWindowsSigningSmokeJob,
+  /Get-AuthenticodeSignature[\s\S]*Status -ne "Valid"[\s\S]*SignerCertificate\.Subject/,
+  "Le test Windows signé doit vérifier Authenticode et le sujet du certificat",
+);
+assert.match(
+  buildWindowsSigningSmokeJob,
+  /npm run verify:packaged-fuses[\s\S]*npm run test:packaged/,
+  "Le test Windows signé doit vérifier les fuses puis lancer le paquet réel",
+);
+assert.doesNotMatch(
+  buildWindowsSigningSmokeJob,
+  /gh release|--publish (?:always|onTagOrDraft)/,
+  "Le test Windows signé ne doit créer, modifier ou publier aucune release",
+);
 assert.match(
   buildWorkflow,
   /hdiutil attach[\s\S]*npm run test:packaged -- "\$app_path"/,
@@ -403,8 +435,8 @@ assert.match(
 );
 assert.equal(
   (buildWorkflow.match(/npm run test:packaged/g) ?? []).length,
-  2,
-  "Chaque paquet CI non signé doit être lancé après sa construction",
+  3,
+  "Chaque paquet CI non signé et le smoke signé doivent être lancés après construction",
 );
 assert.match(
   buildWorkflow,
