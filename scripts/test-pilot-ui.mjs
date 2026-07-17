@@ -2182,6 +2182,10 @@ try {
   );
   await publishUpdateState("up-to-date");
   await page.locator(".update-ready-cta").waitFor({ state: "detached" });
+  // Le contrat des Fils donne la priorité à la surface réellement survolée.
+  // Placer aussi le pointeur sur Réglages isole ici le contrat responsive :
+  // redimensionner seul ne doit pas faire perdre le focus à ce contrôle.
+  await globalSettingsButton.hover();
   await globalSettingsButton.focus();
   const compactWindow = await electronApp.browserWindow(page);
   await compactWindow.evaluate(
