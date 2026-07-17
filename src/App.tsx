@@ -971,7 +971,13 @@ export default function App() {
   }, [linkPreview, readerSurfacePresent]);
 
   useEffect(() => {
-    const cancelReaderReturnForPointerDown = () => {
+    const cancelReaderReturnForPointerDown = (event: PointerEvent) => {
+      if (
+        event.target instanceof Element &&
+        event.target.closest('.restore-pill, .link-reader [aria-label="Retour au fil"]')
+      ) {
+        return;
+      }
       readerReturnFocusRef.current = null;
       readerOpenPointerPositionRef.current = null;
     };

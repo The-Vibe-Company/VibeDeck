@@ -2474,6 +2474,11 @@ try {
   );
   await readerOverScrollableLayout.getByLabel("Retour au fil").click();
   await readerOverScrollableLayout.waitFor({ state: "detached" });
+  await waitForDomFocus(
+    page,
+    readerWithScrollbarRow,
+    "Retour au fil doit restaurer le vrai focus DOM sur la ligne d’origine",
+  );
 
   await page.evaluate(async () => {
     const state = await window.vibedeck.getState();
