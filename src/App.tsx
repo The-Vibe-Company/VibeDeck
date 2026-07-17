@@ -2909,16 +2909,6 @@ function AdaptiveActionMenu({ actions }: { actions: PanelMenuAction[] }) {
     const rememberFocus = (event: FocusEvent) => {
       const target = event.target;
       if (!(target instanceof HTMLElement)) return;
-      // Chromium peut rendre momentanément le focus au body lorsqu'une action
-      // focalisée disparaît à un breakpoint responsive. Garder cette action en
-      // mémoire permet au ResizeObserver de transférer le focus vers le menu
-      // visible ; un vrai focus ailleurs continue de vider la référence.
-      const remembered = lastSecondaryFocusRef.current;
-      if (
-        target === document.body &&
-        remembered?.isConnected &&
-        panel.contains(remembered)
-      ) return;
       lastSecondaryFocusRef.current = panel.contains(target) &&
         target.closest(".panel-action--secondary")
         ? target
@@ -2974,21 +2964,15 @@ function AdaptiveActionMenu({ actions }: { actions: PanelMenuAction[] }) {
         return;
       }
       if (!compact) return;
-      const remembered = lastSecondaryFocusRef.current;
-      const rememberedSecondaryStillMounted = Boolean(
-        remembered?.isConnected &&
-        panel.contains(remembered) &&
-        remembered.closest(".panel-action--secondary"),
-      );
-      if (remembered && !rememberedSecondaryStillMounted) {
-        lastSecondaryFocusRef.current = null;
-      }
-      if (
-        rememberedSecondaryStillMounted &&
-        trigger.isConnected &&
-        trigger.getClientRects().length > 0
-      ) {
-        trigger.focus({ preventScroll: true });
+      const active = document.activeElement;
+      const secondaryStillFocused =
+        active instanceof HTMLElement &&
+        panel.contains(active) &&
+        active.closest(".panel-action--secondary");
+      if (secondaryStillFocused || (
+        active === document.body && lastSecondaryFocusRef.current
+      )) {
+        window.requestAnimationFrame(() => trigger.focus({ preventScroll: true }));
       }
     });
     observer.observe(panel);
