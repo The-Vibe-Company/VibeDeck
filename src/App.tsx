@@ -470,6 +470,7 @@ export default function App() {
   const [linkPreview, setLinkPreview] = useState<LinkPreview | null>(null);
   const [modal, setModal] = useState<ModalState | null>(null);
   const [interactionActive, setInteractionActive] = useState(false);
+  const [structuralMutationPending, setStructuralMutationPending] = useState(false);
   const [openPanelActionMenuIds, setOpenPanelActionMenuIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -556,6 +557,11 @@ export default function App() {
   const hydratedRef = useRef(false);
   const serverLayoutMutationRef = useRef(false);
 
+  function markStructuralMutation(pending: boolean) {
+    serverLayoutMutationRef.current = pending;
+    setStructuralMutationPending(pending);
+  }
+
   useEffect(() => {
     if (
       !restoreSettingsUpdateFocus ||
@@ -590,6 +596,7 @@ export default function App() {
   } | null>(null);
   const pendingKeyboardPanelFocusRef = useRef<string | null>(null);
   const readerReturnFocusRef = useRef<ReaderReturnFocus | null>(null);
+  const readerEscapeRestoreRef = useRef<ReaderReturnFocus | null>(null);
   const lastDashboardPointerPositionRef = useRef<{ x: number; y: number } | null>(null);
   const readerOpenPointerPositionRef = useRef<{ x: number; y: number } | null>(null);
   const focusedPanelIdRef = useRef<string | null>(null);
@@ -1012,6 +1019,10 @@ export default function App() {
         });
         return;
       }
+      if (panelId === LINK_READER_ID) {
+        readerEscapeRestoreRef.current = readerReturnFocusRef.current;
+        window.vibedeck.focusDashboard();
+      }
       setLinkPreview((current) => {
         if (current) return null;
         return current;
@@ -1073,9 +1084,15 @@ export default function App() {
     const retries = [50, 150, 300, 600, 1_000].map((delay) =>
       window.setTimeout(restorePendingFocus, delay)
     );
+    const releaseEscapeRestore = window.setTimeout(() => {
+      if (readerEscapeRestoreRef.current === target) {
+        readerEscapeRestoreRef.current = null;
+      }
+    }, 1_050);
     return () => {
       window.cancelAnimationFrame(frame);
       for (const retry of retries) window.clearTimeout(retry);
+      window.clearTimeout(releaseEscapeRestore);
     };
   }, [linkPreview, readerSurfacePresent]);
 
@@ -1094,6 +1111,7 @@ export default function App() {
         return;
       }
       readerReturnFocusRef.current = null;
+      readerEscapeRestoreRef.current = null;
       readerOpenPointerPositionRef.current = null;
     };
     document.addEventListener("pointerdown", cancelReaderReturnForPointerDown, true);
@@ -1400,6 +1418,7 @@ export default function App() {
     const destinationLayout = hasDraft ? runtime?.transientLayout ?? tab.layout : tab.layout;
     setLinkPreview(null);
     readerReturnFocusRef.current = null;
+    readerEscapeRestoreRef.current = null;
     setActiveTabId(tabId);
     setLayout(destinationLayout);
     layoutRef.current = destinationLayout;
@@ -1425,7 +1444,7 @@ export default function App() {
       const targetTabId = activeTabIdRef.current;
       if (!targetTabId) return Promise.resolve();
       const job = saveChainRef.current.then(async () => {
-        serverLayoutMutationRef.current = true;
+        markStructuralMutation(true);
         try {
           const nextState = await window.vibedeck.saveDashboardLayout(
             targetTabId,
@@ -1438,7 +1457,7 @@ export default function App() {
           const recovered = await window.vibedeck.getState();
           applyServerState(recovered, true);
         } finally {
-          serverLayoutMutationRef.current = false;
+          markStructuralMutation(false);
         }
       });
       saveChainRef.current = job.catch(() => undefined);
@@ -1451,7 +1470,7 @@ export default function App() {
     targetPanelId: string | null = null,
     direction: "row" | "column" = "row",
   ) {
-    if (settingsOpen && settingsPendingOperation) return null;
+    if (serverLayoutMutationRef.current || (settingsOpen && settingsPendingOperation)) return null;
     setSettingsOpen(false);
     setLinkPreview(null);
     const existingDraftId = Object.keys(draftsRef.current)[0];
@@ -1649,7 +1668,7 @@ export default function App() {
     draftCompletionRef.current.add(draftId);
     setDraftPending(draftId, true);
     const previousIds = new Set(state.panels.map(({ id }) => id));
-    serverLayoutMutationRef.current = true;
+    markStructuralMutation(true);
     try {
       const webPreview = webPreviewDraftsRef.current[draftId];
       let nextState = input.kind === "web" && webPreview
@@ -1742,12 +1761,12 @@ export default function App() {
     } finally {
       draftCompletionRef.current.delete(draftId);
       setDraftPending(draftId, false);
-      serverLayoutMutationRef.current = false;
+      markStructuralMutation(false);
     }
   }
 
   async function closePanel(panelId: string) {
-    serverLayoutMutationRef.current = true;
+    markStructuralMutation(true);
     try {
       const nextState = await window.vibedeck.deletePanel(panelId);
       applyServerState(nextState, true);
@@ -1760,13 +1779,13 @@ export default function App() {
     } catch (error) {
       showToast(cleanError(error));
     } finally {
-      serverLayoutMutationRef.current = false;
+      markStructuralMutation(false);
     }
   }
 
   async function clearDashboard() {
     if (!state) return;
-    serverLayoutMutationRef.current = true;
+    markStructuralMutation(true);
     try {
       const nextState = await window.vibedeck.resetDashboard(state.dashboard.revision);
       applyServerState(nextState, true);
@@ -1778,13 +1797,13 @@ export default function App() {
     } catch (error) {
       showToast(cleanError(error));
     } finally {
-      serverLayoutMutationRef.current = false;
+      markStructuralMutation(false);
     }
   }
 
   async function createDashboardTab() {
     if (!state || state.dashboard.tabs.length >= 9) return;
-    serverLayoutMutationRef.current = true;
+    markStructuralMutation(true);
     try {
       const nextState = await window.vibedeck.createDashboardTab(
         `Onglet ${state.dashboard.tabs.length + 1}`,
@@ -1799,13 +1818,13 @@ export default function App() {
     } catch (error) {
       showToast(cleanError(error));
     } finally {
-      serverLayoutMutationRef.current = false;
+      markStructuralMutation(false);
     }
   }
 
   async function renameDashboardTab(tabId: string, name: string) {
     if (!state) return;
-    serverLayoutMutationRef.current = true;
+    markStructuralMutation(true);
     try {
       const nextState = await window.vibedeck.renameDashboardTab(
         tabId,
@@ -1816,14 +1835,14 @@ export default function App() {
     } catch (error) {
       showToast(cleanError(error));
     } finally {
-      serverLayoutMutationRef.current = false;
+      markStructuralMutation(false);
       setRenamingTabId(null);
     }
   }
 
   async function reorderDashboardTabs(tabIds: string[]) {
     if (!state) return;
-    serverLayoutMutationRef.current = true;
+    markStructuralMutation(true);
     try {
       applyServerState(await window.vibedeck.reorderDashboardTabs(
         tabIds,
@@ -1832,7 +1851,7 @@ export default function App() {
     } catch (error) {
       showToast(cleanError(error));
     } finally {
-      serverLayoutMutationRef.current = false;
+      markStructuralMutation(false);
     }
   }
 
@@ -1841,7 +1860,7 @@ export default function App() {
     const draftIds = Object.values(draftsRef.current)
       .filter((draft) => draft.tabId === tabId)
       .map(({ id }) => id);
-    serverLayoutMutationRef.current = true;
+    markStructuralMutation(true);
     try {
       const nextState = await window.vibedeck.deleteDashboardTab(
         tabId,
@@ -1879,7 +1898,7 @@ export default function App() {
     } catch (error) {
       showToast(cleanError(error));
     } finally {
-      serverLayoutMutationRef.current = false;
+      markStructuralMutation(false);
     }
   }
 
@@ -1900,7 +1919,7 @@ export default function App() {
 
   async function commitPanelMove(placement: CrossTabPanelPlacement) {
     if (!state || !panelMovePlacement) return;
-    serverLayoutMutationRef.current = true;
+    markStructuralMutation(true);
     try {
       const nextState = await window.vibedeck.movePanelToTab(
         panelMovePlacement.panelId,
@@ -1918,7 +1937,7 @@ export default function App() {
       applyServerState(await window.vibedeck.getState(), true);
       setPanelMovePlacement(null);
     } finally {
-      serverLayoutMutationRef.current = false;
+      markStructuralMutation(false);
     }
   }
 
@@ -1964,6 +1983,7 @@ export default function App() {
 
   function openItem(item: FeedItem, returnFocus: ReaderReturnFocus) {
     readerReturnFocusRef.current = returnFocus;
+    readerEscapeRestoreRef.current = null;
     readerOpenPointerPositionRef.current = lastDashboardPointerPositionRef.current;
     setWebStates((current) => {
       if (!(LINK_READER_ID in current)) return current;
@@ -2247,6 +2267,7 @@ export default function App() {
         event.key !== "Escape"
       ) {
         readerReturnFocusRef.current = null;
+        readerEscapeRestoreRef.current = null;
         readerOpenPointerPositionRef.current = null;
       }
       if (event.key === "Escape") {
@@ -2535,13 +2556,25 @@ export default function App() {
     ) : content;
     const common = {
       focused: focusedPanelId === panel.id,
-      actionsDisabled: Object.keys(drafts).length > 0,
+      actionsDisabled: structuralMutationPending || Object.keys(drafts).length > 0,
       onFocus: () => setFocusedPanelId(panel.id),
       onPointerIntent: (intent: PanelPointerIntent | null) => {
         if (!intent) {
           readerReturnFocusRef.current = null;
+          readerEscapeRestoreRef.current = null;
           readerOpenPointerPositionRef.current = null;
           return false;
+        }
+        if (
+          intent.trusted &&
+          readerReturnFocusRef.current &&
+          readerEscapeRestoreRef.current === readerReturnFocusRef.current
+        ) {
+          // La destruction d’une WebContentsView peut produire un pointerenter
+          // synthétique sous Windows. Un vrai clic ou une touche annule ce
+          // verrou via les gestionnaires dédiés ; le simple teardown ne doit
+          // pas voler le retour de focus demandé par Échap.
+          return true;
         }
         if (
           readerReturnFocusRef.current &&
@@ -2736,7 +2769,7 @@ export default function App() {
           className="primary-button global-add"
           aria-label="Nouveau panel"
           title="Nouveau panel"
-          disabled={Boolean(settingsPendingOperation)}
+          disabled={Boolean(settingsPendingOperation) || structuralMutationPending}
           onClick={() => beginDraft()}
         >
           <Plus size={14} /> <span className="global-action-label">Nouveau panel</span>
@@ -2750,6 +2783,7 @@ export default function App() {
         draggedPanelId={draggedPanelId}
         disabled={
           Boolean(settingsPendingOperation) ||
+          structuralMutationPending ||
           Boolean(modal) ||
           interactionActive ||
           Boolean(panelMovePlacement) ||
@@ -2789,7 +2823,7 @@ export default function App() {
           {layout ? (
             <SplitLayout
               layout={layout}
-              disabled={Object.keys(drafts).length > 0}
+              disabled={structuralMutationPending || Object.keys(drafts).length > 0}
               renderPanel={renderPanel}
               onPanelDragStateChange={setDraggedPanelId}
               onRatioChange={(splitId, ratio) => {

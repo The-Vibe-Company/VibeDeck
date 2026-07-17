@@ -507,15 +507,33 @@ try {
     "Un MIME d’onglet forgé sans drag interne actif doit être ignoré.",
   );
   await secondTabContainer.dragTo(firstTabContainer);
+  await page.waitForFunction(
+    ([firstId, secondId]) => [...document.querySelectorAll('[role="tab"]')]
+      .map(({ id }) => id)
+      .join(",") === `dashboard-tab-${firstId},dashboard-tab-${secondId}`,
+    [secondTabId, initialTabId],
+  );
   await page.waitForFunction(() => window.vibedeck.getState().then(
     (state) => state.dashboard.tabs[0]?.name === "Listes X",
   ));
   await firstTabContainer.dragTo(secondTabContainer);
+  await page.waitForFunction(
+    ([firstId, secondId]) => [...document.querySelectorAll('[role="tab"]')]
+      .map(({ id }) => id)
+      .join(",") === `dashboard-tab-${firstId},dashboard-tab-${secondId}`,
+    [initialTabId, secondTabId],
+  );
   await page.waitForFunction(() => window.vibedeck.getState().then(
     (state) => state.dashboard.tabs[0]?.name === "Onglet 1",
   ));
   await page.screenshot({ path: path.join(projectRoot, ".context", "dashboard-tabs.png") });
-  await page.getByRole("button", { name: "Nouveau panel" }).click();
+  const newPanelButton = page.getByRole("button", { name: "Nouveau panel", exact: true });
+  await newPanelButton.waitFor({ state: "visible" });
+  await page.waitForFunction(() => {
+    const button = document.querySelector('button[aria-label="Nouveau panel"]');
+    return button instanceof HTMLButtonElement && !button.disabled;
+  });
+  await newPanelButton.click();
   await page.locator(".draft-panel").waitFor({ state: "visible" });
   const draftPanelId = await page.locator('.split-layout__leaf[data-panel-id^="draft:"]')
     .getAttribute("data-panel-id");
@@ -3327,12 +3345,16 @@ try {
     true,
     "Déplacer depuis le menu adaptatif doit fermer le menu et rendre le focus au titre durable.",
   );
+  await page.waitForFunction(() => [...document.querySelectorAll('[role="tab"]')]
+    .every((tab) => tab instanceof HTMLButtonElement && !tab.disabled));
   await page.keyboard.press("Alt+ArrowLeft");
   await page.waitForFunction(
     (targetPanelId) =>
       document.querySelector(".split-layout__leaf")?.getAttribute("data-panel-id") === targetPanelId,
     panelId,
   );
+  await page.waitForFunction(() => [...document.querySelectorAll('[role="tab"]')]
+    .every((tab) => tab instanceof HTMLButtonElement && !tab.disabled));
   await primaryTitle.focus();
   await page.keyboard.press("Alt+ArrowRight");
   await page.waitForFunction(
@@ -3345,6 +3367,8 @@ try {
     true,
     "Le titre déplacé doit conserver le focus clavier.",
   );
+  await page.waitForFunction(() => [...document.querySelectorAll('[role="tab"]')]
+    .every((tab) => tab instanceof HTMLButtonElement && !tab.disabled));
   await page.keyboard.press("Alt+ArrowLeft");
   await page.waitForFunction(
     (targetPanelId) =>
@@ -3529,6 +3553,8 @@ try {
     "Le panel voisin doit révéler à la demande l’état global déjà ouvert.",
   );
 
+  await page.waitForFunction(() => [...document.querySelectorAll('[role="tab"]')]
+    .every((tab) => tab instanceof HTMLButtonElement && !tab.disabled));
   const panelOrderBeforeDrag = await page.locator(".split-layout__leaf").evaluateAll((leaves) =>
     leaves.map((leaf) => leaf.getAttribute("data-panel-id")),
   );
@@ -3577,33 +3603,7 @@ try {
     "Un texte externe ne doit jamais remplacer un identifiant de panel.",
   );
 
-  await page.evaluate(async ({ sourcePanelId, targetPanelId }) => {
-    const source = document.querySelector(
-      `.split-layout__leaf[data-panel-id="${sourcePanelId}"] .panel-header`,
-    );
-    if (!(source instanceof HTMLElement)) throw new Error("En-tête source introuvable.");
-    const transfer = new DataTransfer();
-    source.dispatchEvent(new DragEvent("dragstart", {
-      bubbles: true,
-      cancelable: true,
-      dataTransfer: transfer,
-    }));
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-    const target = document.querySelector(
-      `.split-layout__leaf[data-panel-id="${targetPanelId}"]`,
-    );
-    if (!(target instanceof HTMLElement)) throw new Error("Panel cible introuvable.");
-    target.dispatchEvent(new DragEvent("dragover", {
-      bubbles: true,
-      cancelable: true,
-      dataTransfer: transfer,
-    }));
-    target.dispatchEvent(new DragEvent("drop", {
-      bubbles: true,
-      cancelable: true,
-      dataTransfer: transfer,
-    }));
-  }, { sourcePanelId: panelId, targetPanelId: narrowPanelId });
+  await panelLeaf.locator(".panel-header").dragTo(narrowLeaf);
   await page.waitForFunction(
     (expectedFirstPanelId) =>
       document.querySelector(".split-layout__leaf")?.getAttribute("data-panel-id") ===
