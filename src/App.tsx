@@ -98,26 +98,6 @@ const LINK_READER_ID = "reader:article";
 // Assez long pour qu'un simple passage de souris ne compte pas, assez court
 // pour rester réactif quand on s'arrête vraiment pour lire.
 const HOVER_SEEN_DELAY_MS = 1000;
-
-type PointerCoordinates = { x: number; y: number };
-
-let lastDashboardPointerPosition: PointerCoordinates | null = null;
-let suppressedReaderReturnPointerPosition: PointerCoordinates | null = null;
-
-function shouldSuppressReaderReturnHover(event: { clientX: number; clientY: number }) {
-  const nextPosition = { x: event.clientX, y: event.clientY };
-  const suppressedPosition = suppressedReaderReturnPointerPosition;
-  lastDashboardPointerPosition = nextPosition;
-  if (!suppressedPosition) return false;
-  if (
-    suppressedPosition.x === nextPosition.x &&
-    suppressedPosition.y === nextPosition.y
-  ) {
-    return true;
-  }
-  suppressedReaderReturnPointerPosition = null;
-  return false;
-}
 const MAX_DASHBOARD_WEB_PANELS = 6;
 const FEED_TEXT_SCALE_STORAGE_KEY = "vibedeck.feedTextScale";
 const FEED_TEXT_SCALE_OVERRIDES_STORAGE_KEY = "vibedeck.feedTextScale.overrides";
@@ -220,6 +200,13 @@ type LinkPreview = {
 type ReaderReturnFocus = {
   panelId: string;
   rowId: string;
+};
+
+type PanelPointerIntent = {
+  clientX: number;
+  clientY: number;
+  moved: boolean;
+  trusted: boolean;
 };
 
 type ActiveSemanticSearch = {
@@ -571,6 +558,8 @@ export default function App() {
   } | null>(null);
   const pendingKeyboardPanelFocusRef = useRef<string | null>(null);
   const readerReturnFocusRef = useRef<ReaderReturnFocus | null>(null);
+  const lastDashboardPointerPositionRef = useRef<{ x: number; y: number } | null>(null);
+  const readerOpenPointerPositionRef = useRef<{ x: number; y: number } | null>(null);
   const focusedPanelIdRef = useRef<string | null>(null);
   const semanticResultItemsRef = useRef<FeedItem[]>([]);
   const semanticBaseItemIdsRef = useRef(new Set<string>());
@@ -959,24 +948,38 @@ export default function App() {
     };
   }, [applyServerState]);
 
+  const readerSurfacePresent = LINK_READER_ID in webStates;
+
   useLayoutEffect(() => {
-    if (linkPreview || !readerReturnFocusRef.current) return;
-    const target = readerReturnFocusRef.current;
-    readerReturnFocusRef.current = null;
-    const activeElement = document.activeElement;
-    if (!document.hasFocus()) return;
     if (
-      activeElement instanceof HTMLElement &&
-      activeElement !== document.body &&
-      activeElement.isConnected &&
-      activeElement.id !== target.rowId &&
-      !activeElement.matches(".dashboard-panel")
-    ) {
+      linkPreview ||
+      readerSurfacePresent ||
+      !readerReturnFocusRef.current
+    ) return;
+    const target = readerReturnFocusRef.current;
+    const shouldPreserveCurrentFocus = () => {
+      const activeElement = document.activeElement;
+      return activeElement instanceof HTMLElement &&
+        activeElement !== document.body &&
+        activeElement.isConnected &&
+        activeElement.id !== target.rowId &&
+        !activeElement.matches(".dashboard-panel");
+    };
+    if (!document.hasFocus() || shouldPreserveCurrentFocus()) {
+      if (readerReturnFocusRef.current === target) {
+        readerReturnFocusRef.current = null;
+        readerOpenPointerPositionRef.current = null;
+      }
       return;
     }
-    suppressedReaderReturnPointerPosition = lastDashboardPointerPosition;
-    restoreArticleFocus(target);
-  }, [linkPreview]);
+    const frame = window.requestAnimationFrame(() => {
+      if (readerReturnFocusRef.current !== target) return;
+      readerReturnFocusRef.current = null;
+      readerOpenPointerPositionRef.current = null;
+      if (!shouldPreserveCurrentFocus()) restoreArticleFocus(target);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [linkPreview, readerSurfacePresent]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setClock(new Date()), 15_000);
@@ -1487,6 +1490,7 @@ export default function App() {
 
   function openItem(item: FeedItem, returnFocus: ReaderReturnFocus) {
     readerReturnFocusRef.current = returnFocus;
+    readerOpenPointerPositionRef.current = lastDashboardPointerPositionRef.current;
     setWebStates((current) => {
       if (!(LINK_READER_ID in current)) return current;
       const next = { ...current };
@@ -1743,6 +1747,12 @@ export default function App() {
   // raccourci rapide observe la nouvelle interface avec un état React périmé.
   useLayoutEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
+      // Une action clavier explicite après la fermeture du lecteur prime sur
+      // la restauration différée qui attend encore la destruction native.
+      if (!linkPreview && readerReturnFocusRef.current) {
+        readerReturnFocusRef.current = null;
+        readerOpenPointerPositionRef.current = null;
+      }
       if (event.key === "Escape") {
         if (semanticSearchOpen) {
           closeSemanticSearchPalette();
@@ -1993,6 +2003,27 @@ export default function App() {
       maximized: maximizedPanelId === panel.id,
       actionsDisabled: Object.keys(drafts).length > 0,
       onFocus: () => setFocusedPanelId(panel.id),
+      onPointerIntent: (intent: PanelPointerIntent | null) => {
+        if (!intent) {
+          readerReturnFocusRef.current = null;
+          readerOpenPointerPositionRef.current = null;
+          return;
+        }
+        const nextPosition = { x: intent.clientX, y: intent.clientY };
+        const readerOpenPosition = readerOpenPointerPositionRef.current;
+        if (intent.trusted) lastDashboardPointerPositionRef.current = nextPosition;
+        if (
+          readerReturnFocusRef.current &&
+          (intent.moved || (
+            intent.trusted &&
+            readerOpenPosition !== null &&
+            (readerOpenPosition.x !== nextPosition.x || readerOpenPosition.y !== nextPosition.y)
+          ))
+        ) {
+          readerReturnFocusRef.current = null;
+          readerOpenPointerPositionRef.current = null;
+        }
+      },
       onSplit: (direction: "row" | "column") => beginDraft(panel.id, direction),
       onMaximize: () =>
         setMaximizedPanelId((current) => (current === panel.id ? null : panel.id)),
@@ -2818,6 +2849,7 @@ interface PanelFrameProps {
   actionsDisabled?: boolean;
   canRename?: boolean;
   onFocus: () => void;
+  onPointerIntent?: (intent: PanelPointerIntent | null) => void;
   onRename?: (name: string) => void | Promise<void>;
   onSplit?: (direction: "row" | "column") => void;
   onMove?: (offset: -1 | 1, identity: PanelFocusIdentity) => void;
@@ -3121,6 +3153,7 @@ function PanelFrame({
   actionsDisabled = false,
   canRename = true,
   onFocus,
+  onPointerIntent,
   onRename,
   onSplit,
   onMove,
@@ -3193,9 +3226,23 @@ function PanelFrame({
       }`}
       style={style}
       tabIndex={-1}
-      onMouseDown={(event) => focusFromPointer(event.currentTarget)}
+      onMouseDown={(event) => {
+        onPointerIntent?.(null);
+        onPointerIntent?.({
+          clientX: event.clientX,
+          clientY: event.clientY,
+          moved: false,
+          trusted: event.isTrusted,
+        });
+        focusFromPointer(event.currentTarget);
+      }}
       onPointerEnter={(event) => {
-        if (shouldSuppressReaderReturnHover(event)) return;
+        onPointerIntent?.({
+          clientX: event.clientX,
+          clientY: event.clientY,
+          moved: event.movementX !== 0 || event.movementY !== 0,
+          trusted: event.isTrusted,
+        });
         if (
           (kind === "FIL" ||
             !document.hasFocus() ||
@@ -3206,7 +3253,12 @@ function PanelFrame({
         }
       }}
       onPointerMove={(event) => {
-        if (shouldSuppressReaderReturnHover(event)) return;
+        onPointerIntent?.({
+          clientX: event.clientX,
+          clientY: event.clientY,
+          moved: event.movementX !== 0 || event.movementY !== 0,
+          trusted: event.isTrusted,
+        });
         if (
           (kind === "FIL"
             ? event.movementX !== 0 || event.movementY !== 0
@@ -3408,6 +3460,7 @@ interface StandardPanelActions {
   maximized: boolean;
   actionsDisabled: boolean;
   onFocus: () => void;
+  onPointerIntent: (intent: PanelPointerIntent | null) => void;
   onSplit: (direction: "row" | "column") => void;
   onMove: (offset: -1 | 1, identity: PanelFocusIdentity) => void;
   onMaximize: () => void;
@@ -3679,8 +3732,7 @@ function FeedPanelView({
         onBlur={() => {
           if (!seen && !opened) onSeen([item.id]);
         }}
-        onPointerMove={(event) => {
-          if (shouldSuppressReaderReturnHover(event)) return;
+        onPointerMove={() => {
           if (ui.focusedItemId !== item.id) onUi({ focusedItemId: item.id });
           if (seen || opened) return;
           if (hoverSeenTimerRef.current?.id === item.id) return;

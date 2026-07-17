@@ -2647,12 +2647,33 @@ try {
     reader.sendInputEvent({ type: "keyUp", keyCode: "Escape" });
   }, `${origin}/articles/`);
   await page.locator(".link-reader").waitFor({ state: "detached" });
+  const readerPointerOverrideRow = panelLeaf
+    .locator(".article-row:not(.article-row--focused)")
+    .nth(10);
+  const readerPointerOverrideId = await readerPointerOverrideRow.getAttribute("id");
+  assert.ok(readerPointerOverrideId, "La ligne de reprise au pointeur doit être identifiable.");
+  const readerPointerOverrideNextId = await readerPointerOverrideRow.evaluate(
+    (row) => row.nextElementSibling?.id ?? null,
+  );
+  assert.ok(readerPointerOverrideNextId, "La ligne suivante après la reprise doit exister.");
+  await readerPointerOverrideRow.evaluate((row) => {
+    const event = new PointerEvent("pointermove", { bubbles: true, pointerType: "mouse" });
+    Object.defineProperty(event, "movementX", { value: 1 });
+    row.dispatchEvent(event);
+  });
   await page.waitForFunction(
-    ({ articleId, targetPanelId }) =>
-      document.activeElement?.id === articleId &&
-      document.activeElement?.closest(".split-layout__leaf")?.getAttribute("data-panel-id") ===
-        targetPanelId,
-    { articleId: sharedReaderSourceId, targetPanelId: narrowPanelId },
+    (targetPanelId) => {
+      const panel = document.querySelector(
+        `.split-layout__leaf[data-panel-id="${targetPanelId}"] .dashboard-panel`,
+      );
+      return panel === document.activeElement;
+    },
+    panelId,
+  );
+  await page.keyboard.press("ArrowDown");
+  await page.waitForFunction(
+    (articleId) => document.activeElement?.id === articleId,
+    readerPointerOverrideNextId,
   );
 
   const compactMaximizedWindow = await electronApp.browserWindow(page);
@@ -3236,10 +3257,8 @@ try {
   await page.locator(".link-reader").waitFor({ state: "visible" });
   await page.keyboard.press("Escape");
   await page.locator(".link-reader").waitFor({ state: "detached" });
-  assert.equal(
-    await page.evaluate(() => document.activeElement?.classList.contains("article-row") ?? false),
-    true,
-    "Entrée puis Échap près de la fin doit rendre le vrai focus au fil virtuel.",
+  await page.waitForFunction(
+    () => document.activeElement?.classList.contains("article-row") ?? false,
   );
 
   console.log(`✓ baseline: ${baselineArticleCount} articles interclassés, roving tabindex actif`);
