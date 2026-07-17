@@ -209,6 +209,13 @@ type ReaderReturnFocus = {
   rowId: string;
 };
 
+type PanelPointerIntent = {
+  clientX: number;
+  clientY: number;
+  moved: boolean;
+  trusted: boolean;
+};
+
 type ActiveSemanticSearch = {
   query: string;
   scope: SemanticSearchScope;
@@ -531,6 +538,8 @@ export default function App() {
   } | null>(null);
   const pendingKeyboardPanelFocusRef = useRef<string | null>(null);
   const readerReturnFocusRef = useRef<ReaderReturnFocus | null>(null);
+  const lastDashboardPointerPositionRef = useRef<{ x: number; y: number } | null>(null);
+  const readerOpenPointerPositionRef = useRef<{ x: number; y: number } | null>(null);
   const focusedPanelIdRef = useRef<string | null>(null);
   const semanticResultItemsRef = useRef<FeedItem[]>([]);
   const semanticBaseItemIdsRef = useRef(new Set<string>());
@@ -933,22 +942,59 @@ export default function App() {
     };
   }, [applyServerState]);
 
+  const readerSurfacePresent = LINK_READER_ID in webStates;
+
   useLayoutEffect(() => {
-    if (linkPreview || !readerReturnFocusRef.current) return;
-    const target = readerReturnFocusRef.current;
-    readerReturnFocusRef.current = null;
-    const activeElement = document.activeElement;
-    if (!document.hasFocus()) return;
     if (
-      activeElement instanceof HTMLElement &&
-      activeElement !== document.body &&
-      activeElement.isConnected &&
-      activeElement.id !== target.rowId
-    ) {
-      return;
-    }
-    restoreArticleFocus(target);
-  }, [linkPreview]);
+      linkPreview ||
+      !readerReturnFocusRef.current
+    ) return;
+    const target = readerReturnFocusRef.current;
+    // Le focus DOM interne n’active pas la fenêtre native : on peut donc
+    // restaurer la ligne même quand le pilote (ou VibeDeck) reste en arrière-plan.
+    // Toute intention clavier ou pointeur explicite annule déjà la cible en
+    // amont ; l’activeElement observé pendant le teardown natif est transitoire.
+    const restorePendingFocus = () => {
+      if (readerReturnFocusRef.current !== target) return;
+      restoreArticleFocus(target);
+    };
+    restorePendingFocus();
+    const frame = window.requestAnimationFrame(restorePendingFocus);
+    // Sous Windows, Chromium peut appliquer le focus natif de la surface
+    // sous le curseur après la frame qui suit la destruction de la vue. Ces
+    // reprises bornées gagnent cette course sans lutter contre l’utilisateur :
+    // toute intention explicite efface `readerReturnFocusRef` en amont.
+    const retries = [50, 150, 300, 600, 1_000].map((delay) =>
+      window.setTimeout(restorePendingFocus, delay)
+    );
+    return () => {
+      window.cancelAnimationFrame(frame);
+      for (const retry of retries) window.clearTimeout(retry);
+    };
+  }, [linkPreview, readerSurfacePresent]);
+
+  useEffect(() => {
+    const cancelReaderReturnForPointerDown = (event: PointerEvent) => {
+      if (
+        event.target instanceof Element &&
+        (
+          event.target.closest(".restore-pill, .link-reader") ||
+          (
+            document.querySelector(".link-reader") &&
+            event.target.closest(".panel-action-menu")
+          )
+        )
+      ) {
+        return;
+      }
+      readerReturnFocusRef.current = null;
+      readerOpenPointerPositionRef.current = null;
+    };
+    document.addEventListener("pointerdown", cancelReaderReturnForPointerDown, true);
+    return () => {
+      document.removeEventListener("pointerdown", cancelReaderReturnForPointerDown, true);
+    };
+  }, []);
 
   useEffect(() => {
     const timer = window.setInterval(() => setClock(new Date()), 15_000);
@@ -1461,6 +1507,7 @@ export default function App() {
 
   function openItem(item: FeedItem, returnFocus: ReaderReturnFocus) {
     readerReturnFocusRef.current = returnFocus;
+    readerOpenPointerPositionRef.current = lastDashboardPointerPositionRef.current;
     setWebStates((current) => {
       if (!(LINK_READER_ID in current)) return current;
       const next = { ...current };
@@ -1719,6 +1766,16 @@ export default function App() {
   // raccourci rapide observe la nouvelle interface avec un état React périmé.
   useLayoutEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
+      // Une action clavier explicite après la fermeture du lecteur prime sur
+      // la restauration différée qui attend encore la destruction native.
+      if (
+        !linkPreview &&
+        readerReturnFocusRef.current &&
+        event.key !== "Escape"
+      ) {
+        readerReturnFocusRef.current = null;
+        readerOpenPointerPositionRef.current = null;
+      }
       if (event.key === "Escape") {
         if (semanticSearchOpen) {
           closeSemanticSearchPalette();
@@ -1978,6 +2035,55 @@ export default function App() {
       focused: focusedPanelId === panel.id,
       actionsDisabled: Object.keys(drafts).length > 0,
       onFocus: () => setFocusedPanelId(panel.id),
+      onPointerIntent: (intent: PanelPointerIntent | null) => {
+        if (!intent) {
+          readerReturnFocusRef.current = null;
+          readerOpenPointerPositionRef.current = null;
+          return false;
+        }
+        if (
+          readerReturnFocusRef.current &&
+          !linkPreview &&
+          readerSurfacePresent &&
+          intent.trusted
+        ) {
+          // Le retrait de la vue native peut synthétiser des mouvements sur
+          // le DOM sous-jacent. Tant que sa destruction n’est pas confirmée,
+          // seul un clic (intent null ci-dessus) ou le clavier prime.
+          return true;
+        }
+        const nextPosition = { x: intent.clientX, y: intent.clientY };
+        const readerOpenPosition = readerOpenPointerPositionRef.current;
+        if (intent.trusted) lastDashboardPointerPositionRef.current = nextPosition;
+        if (
+          intent.trusted &&
+          readerReturnFocusRef.current &&
+          readerOpenPosition === null
+        ) {
+          // Les événements de teardown natif ont été absorbés tant que la
+          // surface existait. Sans position d’ouverture, le premier événement
+          // fiable qui suit est donc une intention utilisateur et doit gagner.
+          readerReturnFocusRef.current = null;
+          readerOpenPointerPositionRef.current = null;
+          return false;
+        }
+        // Chromium/Windows peut donner un movementX/Y non nul à l’enter créé
+        // par le retrait d’une WebContentsView : les coordonnées absolues sont
+        // le signal fiable pour un événement natif, `moved` sert aux tests forgés.
+        if (
+          readerReturnFocusRef.current &&
+          ((intent.moved && !intent.trusted) || (
+            intent.trusted &&
+            readerOpenPosition !== null &&
+            (readerOpenPosition.x !== nextPosition.x || readerOpenPosition.y !== nextPosition.y)
+          ))
+        ) {
+          readerReturnFocusRef.current = null;
+          readerOpenPointerPositionRef.current = null;
+          return false;
+        }
+        return readerReturnFocusRef.current !== null;
+      },
       onSplit: (direction: "row" | "column") => beginDraft(panel.id, direction),
       onClose: () => setModal({ kind: "close-panel", panelId: panel.id }),
       onRename: (name: string) => renamePanel(panel.id, name),
@@ -2802,6 +2908,7 @@ interface PanelFrameProps {
   actionsDisabled?: boolean;
   canRename?: boolean;
   onFocus: () => void;
+  onPointerIntent?: (intent: PanelPointerIntent | null) => boolean;
   onRename?: (name: string) => void | Promise<void>;
   onSplit?: (direction: "row" | "column") => void;
   onMove?: (offset: -1 | 1, identity: PanelFocusIdentity) => void;
@@ -3125,6 +3232,7 @@ function PanelFrame({
   actionsDisabled = false,
   canRename = true,
   onFocus,
+  onPointerIntent,
   onRename,
   onSplit,
   onMove,
@@ -3158,6 +3266,7 @@ function PanelFrame({
   }
 
   function canMoveFocusOnHover(panelElement: HTMLElement) {
+    if (kind === "FIL") return true;
     if (!document.hasFocus()) return false;
     const active = document.activeElement;
     if (!active || active === document.body || active === panelElement) return true;
@@ -3195,18 +3304,43 @@ function PanelFrame({
       }`}
       style={style}
       tabIndex={-1}
-      onMouseDown={(event) => focusFromPointer(event.currentTarget)}
+      onMouseDown={(event) => {
+        onPointerIntent?.(null);
+        onPointerIntent?.({
+          clientX: event.clientX,
+          clientY: event.clientY,
+          moved: false,
+          trusted: event.isTrusted,
+        });
+        focusFromPointer(event.currentTarget);
+      }}
       onPointerEnter={(event) => {
+        if (onPointerIntent?.({
+          clientX: event.clientX,
+          clientY: event.clientY,
+          moved: event.movementX !== 0 || event.movementY !== 0,
+          trusted: event.isTrusted,
+        })) return;
         if (
-          document.activeElement !== event.currentTarget &&
+          (kind === "FIL" ||
+            !document.hasFocus() ||
+            document.activeElement !== event.currentTarget) &&
           canMoveFocusOnHover(event.currentTarget)
         ) {
           focusFromPointer(event.currentTarget);
         }
       }}
       onPointerMove={(event) => {
+        if (onPointerIntent?.({
+          clientX: event.clientX,
+          clientY: event.clientY,
+          moved: event.movementX !== 0 || event.movementY !== 0,
+          trusted: event.isTrusted,
+        })) return;
         if (
-          document.activeElement !== event.currentTarget &&
+          (kind === "FIL"
+            ? event.movementX !== 0 || event.movementY !== 0
+            : !document.hasFocus() || document.activeElement !== event.currentTarget) &&
           canMoveFocusOnHover(event.currentTarget)
         ) {
           focusFromPointer(event.currentTarget);
@@ -3394,6 +3528,7 @@ interface StandardPanelActions {
   focused: boolean;
   actionsDisabled: boolean;
   onFocus: () => void;
+  onPointerIntent: (intent: PanelPointerIntent | null) => boolean;
   onSplit: (direction: "row" | "column") => void;
   onMove: (offset: -1 | 1, identity: PanelFocusIdentity) => void;
   onClose: () => void;
@@ -3415,6 +3550,7 @@ function FeedPanelView({
   textScale,
   textScaleOverride,
   onTextScale,
+  onPointerIntent,
   ...frame
 }: {
   panel: FeedPanel;
@@ -3664,7 +3800,13 @@ function FeedPanelView({
         onBlur={() => {
           if (!seen && !opened) onSeen([item.id]);
         }}
-        onPointerMove={() => {
+        onPointerMove={(event) => {
+          if (onPointerIntent({
+            clientX: event.clientX,
+            clientY: event.clientY,
+            moved: event.movementX !== 0 || event.movementY !== 0,
+            trusted: event.isTrusted,
+          })) return;
           if (ui.focusedItemId !== item.id) onUi({ focusedItemId: item.id });
           if (seen || opened) return;
           if (hoverSeenTimerRef.current?.id === item.id) return;
@@ -3836,6 +3978,7 @@ function FeedPanelView({
       kind="FIL"
       name={panel.name}
       {...frame}
+      onPointerIntent={onPointerIntent}
       style={
         textScaleOverride !== null
           ? ({ "--feed-text-scale": String(textScaleOverride) } as React.CSSProperties)
