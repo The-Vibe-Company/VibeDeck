@@ -98,6 +98,26 @@ const LINK_READER_ID = "reader:article";
 // Assez long pour qu'un simple passage de souris ne compte pas, assez court
 // pour rester réactif quand on s'arrête vraiment pour lire.
 const HOVER_SEEN_DELAY_MS = 1000;
+
+type PointerCoordinates = { x: number; y: number };
+
+let lastDashboardPointerPosition: PointerCoordinates | null = null;
+let suppressedReaderReturnPointerPosition: PointerCoordinates | null = null;
+
+function shouldSuppressReaderReturnHover(event: { clientX: number; clientY: number }) {
+  const nextPosition = { x: event.clientX, y: event.clientY };
+  const suppressedPosition = suppressedReaderReturnPointerPosition;
+  lastDashboardPointerPosition = nextPosition;
+  if (!suppressedPosition) return false;
+  if (
+    suppressedPosition.x === nextPosition.x &&
+    suppressedPosition.y === nextPosition.y
+  ) {
+    return true;
+  }
+  suppressedReaderReturnPointerPosition = null;
+  return false;
+}
 const MAX_DASHBOARD_WEB_PANELS = 6;
 const FEED_TEXT_SCALE_STORAGE_KEY = "vibedeck.feedTextScale";
 const FEED_TEXT_SCALE_OVERRIDES_STORAGE_KEY = "vibedeck.feedTextScale.overrides";
@@ -954,6 +974,7 @@ export default function App() {
     ) {
       return;
     }
+    suppressedReaderReturnPointerPosition = lastDashboardPointerPosition;
     restoreArticleFocus(target);
   }, [linkPreview]);
 
@@ -3174,6 +3195,7 @@ function PanelFrame({
       tabIndex={-1}
       onMouseDown={(event) => focusFromPointer(event.currentTarget)}
       onPointerEnter={(event) => {
+        if (shouldSuppressReaderReturnHover(event)) return;
         if (
           (kind === "FIL" ||
             !document.hasFocus() ||
@@ -3184,6 +3206,7 @@ function PanelFrame({
         }
       }}
       onPointerMove={(event) => {
+        if (shouldSuppressReaderReturnHover(event)) return;
         if (
           (kind === "FIL"
             ? event.movementX !== 0 || event.movementY !== 0
@@ -3656,7 +3679,8 @@ function FeedPanelView({
         onBlur={() => {
           if (!seen && !opened) onSeen([item.id]);
         }}
-        onPointerMove={() => {
+        onPointerMove={(event) => {
+          if (shouldSuppressReaderReturnHover(event)) return;
           if (ui.focusedItemId !== item.id) onUi({ focusedItemId: item.id });
           if (seen || opened) return;
           if (hoverSeenTimerRef.current?.id === item.id) return;
