@@ -1774,7 +1774,13 @@ try {
     panelId,
   );
   const secondaryAction = panelLeaf.getByLabel("Réduire le texte de ce fil", { exact: true });
+  await page.evaluate(() => window.vibedeck.focusDashboard());
   await secondaryAction.focus();
+  await waitForDomFocus(
+    page,
+    secondaryAction,
+    "le contrôle secondaire doit posséder le focus avant de devenir compact",
+  );
   await narrowWindow.evaluate((window) => window.setSize(1_000, 820));
   await page.waitForFunction(
     (targetPanelId) => {
