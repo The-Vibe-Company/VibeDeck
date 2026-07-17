@@ -535,6 +535,7 @@ export default function App() {
   } | null>(null);
   const pendingKeyboardPanelFocusRef = useRef<string | null>(null);
   const readerReturnFocusRef = useRef<ReaderReturnFocus | null>(null);
+  const readerNativeFocusHandoffRef = useRef(false);
   const lastDashboardPointerPositionRef = useRef<{ x: number; y: number } | null>(null);
   const readerOpenPointerPositionRef = useRef<{ x: number; y: number } | null>(null);
   const focusedPanelIdRef = useRef<string | null>(null);
@@ -962,8 +963,12 @@ export default function App() {
         !(event.target instanceof HTMLElement) ||
         !event.target.matches(".dashboard-panel")
       ) return;
+      readerNativeFocusHandoffRef.current = true;
       window.cancelAnimationFrame(panelRootFocusFrame);
-      panelRootFocusFrame = window.requestAnimationFrame(restorePendingFocus);
+      panelRootFocusFrame = window.requestAnimationFrame(() => {
+        restorePendingFocus();
+        readerNativeFocusHandoffRef.current = false;
+      });
     };
     document.addEventListener("focusin", restoreAfterPanelRootFocus, true);
     restorePendingFocus();
@@ -979,6 +984,7 @@ export default function App() {
       document.removeEventListener("focusin", restoreAfterPanelRootFocus, true);
       window.cancelAnimationFrame(frame);
       window.cancelAnimationFrame(panelRootFocusFrame);
+      readerNativeFocusHandoffRef.current = false;
       for (const retry of retries) window.clearTimeout(retry);
     };
   }, [linkPreview, readerSurfacePresent]);
@@ -2065,6 +2071,17 @@ export default function App() {
           readerReturnFocusRef.current = null;
           readerOpenPointerPositionRef.current = null;
           return false;
+        }
+        if (
+          readerReturnFocusRef.current &&
+          !linkPreview &&
+          readerNativeFocusHandoffRef.current
+        ) {
+          // Windows émet un enter/move sur le DOM sous la WebContentsView dans
+          // la même frame que son retour de focus natif. Un clic est déjà
+          // traité par la branche `intent === null` ; le mouvement réel reprend
+          // donc la priorité dès la frame suivante.
+          return true;
         }
         if (
           readerReturnFocusRef.current &&
