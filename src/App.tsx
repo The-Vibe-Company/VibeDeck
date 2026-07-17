@@ -2043,8 +2043,21 @@ export default function App() {
         const readerOpenPosition = readerOpenPointerPositionRef.current;
         if (intent.trusted) lastDashboardPointerPositionRef.current = nextPosition;
         if (
+          intent.trusted &&
           readerReturnFocusRef.current &&
-          (intent.moved || (
+          readerOpenPosition === null
+        ) {
+          // Session clavier pure : le premier événement est ambigu (teardown
+          // ou mouvement). Il devient la référence ; le suivant libère le hover.
+          readerOpenPointerPositionRef.current = nextPosition;
+          return true;
+        }
+        // Chromium/Windows peut donner un movementX/Y non nul à l’enter créé
+        // par le retrait d’une WebContentsView : les coordonnées absolues sont
+        // le signal fiable pour un événement natif, `moved` sert aux tests forgés.
+        if (
+          readerReturnFocusRef.current &&
+          ((intent.moved && !intent.trusted) || (
             intent.trusted &&
             readerOpenPosition !== null &&
             (readerOpenPosition.x !== nextPosition.x || readerOpenPosition.y !== nextPosition.y)
