@@ -2026,6 +2026,17 @@ export default function App() {
           readerOpenPointerPositionRef.current = null;
           return false;
         }
+        if (
+          readerReturnFocusRef.current &&
+          !linkPreview &&
+          readerSurfacePresent &&
+          intent.trusted
+        ) {
+          // Le retrait de la vue native peut synthétiser des mouvements sur
+          // le DOM sous-jacent. Tant que sa destruction n’est pas confirmée,
+          // seul un clic (intent null ci-dessus) ou le clavier prime.
+          return true;
+        }
         const nextPosition = { x: intent.clientX, y: intent.clientY };
         const readerOpenPosition = readerOpenPointerPositionRef.current;
         if (intent.trusted) lastDashboardPointerPositionRef.current = nextPosition;
