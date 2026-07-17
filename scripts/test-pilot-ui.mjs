@@ -1669,6 +1669,10 @@ try {
     readerSourceRow,
     "la ligne à ouvrir doit posséder le focus DOM après les scénarios de vues natives",
   );
+  await page.waitForFunction(
+    (articleId) => document.querySelector(".article-row--focused")?.id === articleId,
+    readerSourceId,
+  );
   const readerDecisionStartedAt = performance.now();
   await page.keyboard.press("Enter");
   const compactReader = page.locator(".link-reader");
