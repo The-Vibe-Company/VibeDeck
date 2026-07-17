@@ -356,6 +356,10 @@ export interface VibeDeckApi {
     previewId: string,
     url: string,
   ) => Promise<{ previewId: string; normalizedUrl: string }>;
+  startXPreview: (
+    previewId: string,
+    url: string,
+  ) => Promise<{ previewId: string; normalizedUrl: string }>;
   commitWebPreview: (
     previewId: string,
     name: string,

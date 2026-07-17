@@ -44,6 +44,7 @@ import {
   createLatestAbortOperationRegistry,
   createWebPreviewAuthorizationStore,
 } from "./transient-operations.mjs";
+import { cleanXPanelUrl } from "./x-panel-url.mjs";
 
 const { autoUpdater } = electronUpdater;
 
@@ -730,6 +731,38 @@ function runEngineOperation(operation) {
   return trackActiveOperation(task);
 }
 
+function startAuthorizedWebPreview(event, previewId, url, cleanUrl) {
+  const window = requireMainSender(event);
+  const controller = controllerForEvent(event);
+  if (resettingWebPanelControllers.has(controller)) {
+    throw new Error("Les données web sont en cours de réinitialisation.");
+  }
+  if (
+    engine.getRendererState().panels.filter((panel) => panel.kind === "web").length >=
+      MAX_DASHBOARD_WEB_PANELS
+  ) {
+    throw new RangeError(
+      `Le dashboard accepte jusqu’à ${MAX_DASHBOARD_WEB_PANELS} pages web simultanées.`,
+    );
+  }
+  const normalizedPreviewId = cleanWebPreviewId(previewId);
+  const normalizedUrl = cleanUrl(url);
+  webPreviewAuthorizations.start(
+    window,
+    { previewId: normalizedPreviewId, url: normalizedUrl },
+    (authorization) => {
+      controller.startPreview({
+        kind: "preview",
+        panelId: authorization.previewId,
+        url: authorization.url,
+        bounds: { x: 0, y: 0, width: 0, height: 0 },
+        visible: false,
+      });
+    },
+  );
+  return { previewId: normalizedPreviewId, normalizedUrl };
+}
+
 function registerIpcHandlers() {
   registerHandle("updates:get-state", (_event, ...args) => {
     assertNoArguments(args);
@@ -781,37 +814,10 @@ function registerIpcHandlers() {
     broadcastState(state);
     return state;
   }));
-  registerHandle("web-preview:start", (event, previewId, url) => {
-    const window = requireMainSender(event);
-    const controller = controllerForEvent(event);
-    if (resettingWebPanelControllers.has(controller)) {
-      throw new Error("Les données web sont en cours de réinitialisation.");
-    }
-    if (
-      engine.getRendererState().panels.filter((panel) => panel.kind === "web").length >=
-      MAX_DASHBOARD_WEB_PANELS
-    ) {
-      throw new RangeError(
-        `Le dashboard accepte jusqu’à ${MAX_DASHBOARD_WEB_PANELS} pages web simultanées.`,
-      );
-    }
-    const normalizedPreviewId = cleanWebPreviewId(previewId);
-    const normalizedUrl = cleanSourceUrl(url);
-    webPreviewAuthorizations.start(
-      window,
-      { previewId: normalizedPreviewId, url: normalizedUrl },
-      (authorization) => {
-        controller.startPreview({
-          kind: "preview",
-          panelId: authorization.previewId,
-          url: authorization.url,
-          bounds: { x: 0, y: 0, width: 0, height: 0 },
-          visible: false,
-        });
-      },
-    );
-    return { previewId: normalizedPreviewId, normalizedUrl };
-  });
+  registerHandle("web-preview:start", (event, previewId, url) =>
+    startAuthorizedWebPreview(event, previewId, url, cleanSourceUrl));
+  registerHandle("x-preview:start", (event, previewId, url) =>
+    startAuthorizedWebPreview(event, previewId, url, cleanXPanelUrl));
   registerHandle("web-preview:commit", (event, previewId, name, placement) =>
     runEngineOperation(async () => {
       const window = requireMainSender(event);

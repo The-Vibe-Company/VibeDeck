@@ -1,4 +1,5 @@
 import {
+  AtSign,
   ArrowLeft,
   ArrowRight,
   ArrowUpRight,
@@ -92,6 +93,8 @@ import type {
   WebPanelDescriptor,
   WebPanelRuntimeState,
 } from "./types";
+
+const MAX_PANEL_NAME_LENGTH = 80;
 
 const LINK_READER_ID = "reader:article";
 // Temps de survol immobile sur une ligne avant de la marquer « vue ».
@@ -1185,10 +1188,27 @@ export default function App() {
   }
 
   async function startWebPreview(draftId: string, url: string) {
+    return startPreview(draftId, url, (previewId, previewUrl) =>
+      window.vibedeck.startWebPreview(previewId, previewUrl));
+  }
+
+  async function startXPreview(draftId: string, url: string) {
+    return startPreview(draftId, url, (previewId, previewUrl) =>
+      window.vibedeck.startXPreview(previewId, previewUrl));
+  }
+
+  async function startPreview(
+    draftId: string,
+    url: string,
+    start: (
+      previewId: string,
+      previewUrl: string,
+    ) => Promise<{ previewId: string; normalizedUrl: string }>,
+  ) {
     if (!draftsRef.current[draftId]) {
       throw new Error("Ce nouveau panel n’est plus disponible.");
     }
-    const preview = await window.vibedeck.startWebPreview(draftId, url);
+    const preview = await start(draftId, url);
     if (!draftsRef.current[draftId]) {
       await window.vibedeck.cancelWebPreview(preview.previewId);
       throw new Error("Ce nouveau panel a été fermé pendant le chargement.");
@@ -1217,6 +1237,14 @@ export default function App() {
         return copy;
       });
     }
+  }
+
+  async function reloadWebPreview(draftId: string) {
+    const preview = webPreviewDraftsRef.current[draftId];
+    if (!preview) {
+      throw new Error("Cet aperçu web n’est plus disponible.");
+    }
+    await window.vibedeck.reloadWebPanel(preview.previewId);
   }
 
   async function startCompetitorTemplate() {
@@ -1957,6 +1985,8 @@ export default function App() {
           onFocus={() => setFocusedPanelId(panelId)}
           onClose={() => closeDraft(panelId)}
           onStartWebPreview={(url) => startWebPreview(panelId, url)}
+          onStartXPreview={(url) => startXPreview(panelId, url)}
+          onReloadWebPreview={() => reloadWebPreview(panelId)}
           onCancelWebPreview={() => cancelWebPreview(panelId)}
           onComplete={(input, catalogIds, customSources) =>
             completeDraft(panelId, input, catalogIds, customSources)
@@ -4908,6 +4938,8 @@ function DraftPanelView({
   onFocus,
   onClose,
   onStartWebPreview,
+  onStartXPreview,
+  onReloadWebPreview,
   onCancelWebPreview,
   onComplete,
 }: {
@@ -4919,6 +4951,8 @@ function DraftPanelView({
   onFocus: () => void;
   onClose: () => void;
   onStartWebPreview: (url: string) => Promise<void>;
+  onStartXPreview: (url: string) => Promise<void>;
+  onReloadWebPreview: () => Promise<void>;
   onCancelWebPreview: () => Promise<void>;
   onComplete: (
     input: CreatePanelInput,
@@ -4927,7 +4961,10 @@ function DraftPanelView({
   ) => Promise<void>;
 }) {
   const contentRef = useRef<HTMLDivElement>(null);
-  const [step, setStep] = useState<"type" | "web" | "feed">("type");
+  const webUrlInputRef = useRef<HTMLInputElement>(null);
+  const xUrlInputRef = useRef<HTMLInputElement>(null);
+  const previewErrorFocusRef = useRef<"web" | "x" | null>(null);
+  const [step, setStep] = useState<"type" | "web" | "x" | "feed">("type");
   const [pending, setPending] = useState(false);
   const [previewPending, setPreviewPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -4940,6 +4977,18 @@ function DraftPanelView({
   const [sourceResolutionPending, setSourceResolutionPending] = useState(false);
   const busy = pending || previewPending || draft.pending;
   const feedBusy = busy || sourceResolutionPending;
+
+  function openUrlStep(nextStep: "web" | "x") {
+    setError(null);
+    setWebName("");
+    setWebUrl("");
+    setStep(nextStep);
+  }
+
+  function returnToTypeStep() {
+    setError(null);
+    setStep("type");
+  }
 
   useLayoutEffect(() => {
     if (draft.pending) return;
@@ -4954,6 +5003,17 @@ function DraftPanelView({
     return () => window.cancelAnimationFrame(frame);
   }, [draft.pending, step, webPreview?.previewId]);
 
+  useLayoutEffect(() => {
+    if (previewPending || webPreview || !error) return;
+    const focusTarget = previewErrorFocusRef.current;
+    previewErrorFocusRef.current = null;
+    if (focusTarget === "web") {
+      webUrlInputRef.current?.focus({ preventScroll: true });
+    } else if (focusTarget === "x") {
+      xUrlInputRef.current?.focus({ preventScroll: true });
+    }
+  }, [error, previewPending, webPreview]);
+
   async function previewWeb(name: string, url: string) {
     if (!url.trim() || busy) return;
     setWebName(name.trim());
@@ -4963,6 +5023,23 @@ function DraftPanelView({
     try {
       await onStartWebPreview(url.trim());
     } catch (caught) {
+      previewErrorFocusRef.current = "web";
+      setError(cleanError(caught));
+    } finally {
+      setPreviewPending(false);
+    }
+  }
+
+  async function previewX(name: string, url: string) {
+    if (!url.trim() || busy) return;
+    setWebName(name.trim());
+    setWebUrl(url.trim());
+    setPreviewPending(true);
+    setError(null);
+    try {
+      await onStartXPreview(url.trim());
+    } catch (caught) {
+      previewErrorFocusRef.current = "x";
       setError(cleanError(caught));
     } finally {
       setPreviewPending(false);
@@ -4976,7 +5053,10 @@ function DraftPanelView({
     try {
       await onComplete({
         kind: "web",
-        name: webName.trim() || webPreviewRuntime?.title.trim() || hostLabel(webPreview.normalizedUrl),
+        name: webName.trim() || (
+          webPreviewRuntime?.title.trim() ||
+          (step === "x" ? "X" : hostLabel(webPreview.normalizedUrl))
+        ).slice(0, MAX_PANEL_NAME_LENGTH),
         url: webPreview.normalizedUrl,
       });
     } catch (caught) {
@@ -5029,7 +5109,13 @@ function DraftPanelView({
         {draft.pending && (
           <div className="panel-empty" role="status">
             <LoaderCircle className="is-spinning" size={20} />
-            <strong>{step === "web" ? "Création de la page web…" : "Création du fil…"}</strong>
+            <strong>
+              {step === "web"
+                ? "Création de la page web…"
+                : step === "x"
+                  ? "Création du panel X…"
+                  : "Création du fil…"}
+            </strong>
             <span>La configuration est vérifiée et enregistrée localement.</span>
           </div>
         )}
@@ -5038,15 +5124,23 @@ function DraftPanelView({
             <span className="step-kicker">Nouveau panel</span>
             <h2>Que voulez-vous afficher ici ?</h2>
             <div className="panel-type-grid">
-              <button type="button" data-autofocus onClick={() => setStep("web")}>
+              <button type="button" data-autofocus onClick={() => openUrlStep("web")}>
                 <Globe2 size={21} />
                 <strong>Page web</strong>
                 <span>Un site ou une chaîne d’information affiché directement dans l’app.</span>
               </button>
-              <button type="button" onClick={() => setStep("feed")}>
+              <button type="button" onClick={() => {
+                setError(null);
+                setStep("feed");
+              }}>
                 <Rss size={21} />
                 <strong>Fil agrégé</strong>
                 <span>Plusieurs sources fusionnées dans un même fil chronologique.</span>
+              </button>
+              <button type="button" onClick={() => openUrlStep("x")}>
+                <AtSign size={21} />
+                <strong>X (Twitter)</strong>
+                <span>Votre accueil, une liste, un profil, une recherche ou un post.</span>
               </button>
             </div>
           </div>
@@ -5054,7 +5148,7 @@ function DraftPanelView({
 
         {!draft.pending && step === "web" && !webPreview && (
           <div className="draft-step">
-            <button type="button" className="back-button" onClick={() => setStep("type")}>
+            <button type="button" className="back-button" onClick={returnToTypeStep}>
               ‹ Type de panel
             </button>
             <h2>Page web</h2>
@@ -5095,7 +5189,10 @@ function DraftPanelView({
               <div>
                 <input
                   id={`${draft.id}-web-url`}
+                  ref={webUrlInputRef}
                   aria-label="URL de la page web"
+                  aria-invalid={Boolean(error)}
+                  aria-describedby={error ? `${draft.id}-web-error` : undefined}
                   value={webUrl}
                   placeholder="bfmtv.com/en-direct"
                   inputMode="url"
@@ -5106,11 +5203,71 @@ function DraftPanelView({
                 </button>
               </div>
             </form>
-            {error && <p className="form-error" role="alert">{error}</p>}
+            {error && <p id={`${draft.id}-web-error`} className="form-error" role="alert">{error}</p>}
           </div>
         )}
 
-        {!draft.pending && step === "web" && webPreview && (
+        {!draft.pending && step === "x" && !webPreview && (
+          <div className="draft-step">
+            <button type="button" className="back-button" onClick={returnToTypeStep}>
+              ‹ Type de panel
+            </button>
+            <h2>X (Twitter)</h2>
+            <p className="draft-step__intro">
+              Connectez-vous dans l’aperçu. La session restera disponible pour tous vos panels X.
+            </p>
+            <span className="form-section-label">Connexion</span>
+            <div className="preset-list">
+              <button
+                type="button"
+                data-autofocus
+                onClick={() => void previewX("X", "https://x.com/home")}
+              >
+                <span>
+                  <strong>Ouvrir X et me connecter</strong>
+                  <small>https://x.com/home</small>
+                </span>
+              </button>
+            </div>
+            <span className="form-section-label">Ou ouvrir directement une adresse X</span>
+            <form
+              className="inline-url-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void previewX(webName, webUrl);
+              }}
+            >
+              <label htmlFor={`${draft.id}-x-name`}>Nom du panel</label>
+              <input
+                id={`${draft.id}-x-name`}
+                aria-label="Nom du panel X"
+                value={webName}
+                placeholder="Nom du panel (facultatif)"
+                onChange={(event) => setWebName(event.target.value)}
+              />
+              <label htmlFor={`${draft.id}-x-url`}>Adresse X</label>
+              <div>
+                <input
+                  id={`${draft.id}-x-url`}
+                  ref={xUrlInputRef}
+                  aria-label="Adresse X"
+                  aria-invalid={Boolean(error)}
+                  aria-describedby={error ? `${draft.id}-x-error` : undefined}
+                  value={webUrl}
+                  placeholder="https://x.com/i/lists/123456789"
+                  inputMode="url"
+                  onChange={(event) => setWebUrl(event.target.value)}
+                />
+                <button type="submit" className="primary-button" disabled={!webUrl.trim() || busy}>
+                  {previewPending && <LoaderCircle className="is-spinning" size={13} />} Prévisualiser
+                </button>
+              </div>
+            </form>
+            {error && <p id={`${draft.id}-x-error`} className="form-error" role="alert">{error}</p>}
+          </div>
+        )}
+
+        {!draft.pending && (step === "web" || step === "x") && webPreview && (
           <div className="draft-step web-preview-step">
             <div className="web-preview-step__heading" data-web-preview-controls={draft.id}>
               <button
@@ -5122,10 +5279,14 @@ function DraftPanelView({
               >
                 ‹ Modifier l’adresse
               </button>
-              <h2>{webPreviewRuntime?.title || webName || hostLabel(webPreview.normalizedUrl)}</h2>
+              <h2>
+                {webPreviewRuntime?.title || webName ||
+                  (step === "x" ? "X" : hostLabel(webPreview.normalizedUrl))}
+              </h2>
               <p>
-                Vérifiez le site et connectez-vous si nécessaire. Cookies et préférences resteront
-                disponibles pour les autres panels de ce domaine.
+                {step === "x"
+                  ? "Connectez-vous si nécessaire, puis actualisez X avant de créer le panel. La session restera partagée entre vos panels X."
+                  : "Vérifiez le site et connectez-vous si nécessaire. Cookies et préférences resteront disponibles pour les autres panels de ce domaine."}
               </p>
             </div>
             <div className="web-preview-frame">
@@ -5154,6 +5315,18 @@ function DraftPanelView({
             </div>
             {error && <p className="form-error" role="alert">{error}</p>}
             <div className="web-preview-step__footer" data-web-preview-controls={draft.id}>
+              {step === "x" && (
+                <button
+                  type="button"
+                  className="quiet-button"
+                  onClick={() => {
+                    setError(null);
+                    void onReloadWebPreview().catch((caught) => setError(cleanError(caught)));
+                  }}
+                >
+                  <RefreshCw size={13} /> Actualiser X
+                </button>
+              )}
               <button
                 type="button"
                 className="quiet-button"
@@ -5176,7 +5349,7 @@ function DraftPanelView({
 
         {!draft.pending && step === "feed" && (
           <form className="draft-step feed-builder" onSubmit={createFeed}>
-            <button type="button" className="back-button" onClick={() => setStep("type")}>
+            <button type="button" className="back-button" onClick={returnToTypeStep}>
               ‹ Type de panel
             </button>
             <h2>Fil agrégé</h2>
