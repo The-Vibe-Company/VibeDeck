@@ -3174,7 +3174,9 @@ function PanelFrame({
       onMouseDown={(event) => focusFromPointer(event.currentTarget)}
       onPointerEnter={(event) => {
         if (
-          (!document.hasFocus() || document.activeElement !== event.currentTarget) &&
+          (kind === "FIL" ||
+            !document.hasFocus() ||
+            document.activeElement !== event.currentTarget) &&
           canMoveFocusOnHover(event.currentTarget)
         ) {
           focusFromPointer(event.currentTarget);
@@ -3182,9 +3184,9 @@ function PanelFrame({
       }}
       onPointerMove={(event) => {
         if (
-          (kind === "FIL" ||
-            !document.hasFocus() ||
-            document.activeElement !== event.currentTarget) &&
+          (kind === "FIL"
+            ? event.movementX !== 0 || event.movementY !== 0
+            : !document.hasFocus() || document.activeElement !== event.currentTarget) &&
           canMoveFocusOnHover(event.currentTarget)
         ) {
           focusFromPointer(event.currentTarget);
