@@ -206,6 +206,31 @@ async function waitForDomFocus(page, locator, label, timeoutMs = 5_000) {
   }
 }
 
+async function focusDocumentBody(page) {
+  const result = await page.evaluate(() => {
+    const previousTabIndex = document.body.getAttribute("tabindex");
+    document.body.tabIndex = -1;
+    document.body.focus({ preventScroll: true });
+    return {
+      previousTabIndex,
+      focused: document.activeElement === document.body,
+    };
+  });
+  assert.equal(
+    result.focused,
+    true,
+    "Le test doit reproduire le retour transitoire du focus vers le document.",
+  );
+  return result.previousTabIndex;
+}
+
+async function restoreDocumentBodyTabIndex(page, previousTabIndex) {
+  await page.evaluate((previous) => {
+    if (previous === null) document.body.removeAttribute("tabindex");
+    else document.body.setAttribute("tabindex", previous);
+  }, previousTabIndex);
+}
+
 async function waitForResponsiveFocusEffects(page, panelLocator) {
   const handle = await panelLocator.elementHandle();
   assert.ok(handle, "Le panel responsive est introuvable.");
@@ -1692,13 +1717,7 @@ try {
     stablePrimaryAction,
     "un vrai contrôle voisin doit effacer le dernier focus secondaire mémorisé",
   );
-  await page.evaluate(() => {
-    const previousTabIndex = document.body.getAttribute("tabindex");
-    document.body.tabIndex = -1;
-    document.body.focus({ preventScroll: true });
-    if (previousTabIndex === null) document.body.removeAttribute("tabindex");
-    else document.body.setAttribute("tabindex", previousTabIndex);
-  });
+  const negativeBodyTabIndex = await focusDocumentBody(page);
   await narrowWindow.evaluate((window) => window.setSize(1_000, 820));
   await page.waitForFunction(
     (targetPanelId) => {
@@ -1717,6 +1736,7 @@ try {
     false,
     "Un vrai focus ailleurs doit empêcher tout transfert responsive ultérieur.",
   );
+  await restoreDocumentBodyTabIndex(page, negativeBodyTabIndex);
   await narrowWindow.evaluate((window) => window.setSize(1_600, 820));
   await page.waitForFunction(
     (targetPanelId) => {
@@ -1734,18 +1754,7 @@ try {
     secondaryAction,
     "le contrôle secondaire doit réellement recevoir le focus avant le passage en mode compact",
   );
-  await page.evaluate(() => {
-    const previousTabIndex = document.body.getAttribute("tabindex");
-    document.body.tabIndex = -1;
-    document.body.focus({ preventScroll: true });
-    if (previousTabIndex === null) document.body.removeAttribute("tabindex");
-    else document.body.setAttribute("tabindex", previousTabIndex);
-  });
-  assert.equal(
-    await page.evaluate(() => document.activeElement === document.body),
-    true,
-    "Le test doit reproduire le retour transitoire du focus vers le document observé sous Windows.",
-  );
+  const responsiveBodyTabIndex = await focusDocumentBody(page);
   await narrowWindow.evaluate((window) => window.setSize(1_000, 820));
   await page.waitForFunction(
     (targetPanelId) => {
@@ -1764,6 +1773,7 @@ try {
     panelLeaf.getByLabel("Plus d’actions", { exact: true }),
     "Masquer un contrôle secondaire focalisé doit transférer le vrai focus vers Plus d’actions",
   );
+  await restoreDocumentBodyTabIndex(page, responsiveBodyTabIndex);
   await page.keyboard.press("Enter");
   const thresholdMenu = page.getByRole("menu", { name: "Actions secondaires du panel" });
   await thresholdMenu.waitFor({ state: "visible" });
