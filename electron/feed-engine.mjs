@@ -174,7 +174,15 @@ function cleanText(value, limit = 500) {
 }
 
 function normalizeDate(value) {
-  const text = valueAsText(value);
+  const nestedTime = value && typeof value === "object" && !Array.isArray(value)
+    ? value.time
+    : null;
+  const text = firstText(
+    value,
+    value?.["@_datetime"],
+    nestedTime?.["@_datetime"],
+    nestedTime,
+  );
   if (!text) return null;
   const timestamp = Date.parse(text);
   return Number.isNaN(timestamp) ? null : new Date(timestamp).toISOString();

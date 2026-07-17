@@ -258,6 +258,23 @@ test("renders an explicit calendar context after sixty minutes", () => {
   );
 });
 
+test("shows the local detection time when an official feed omits its publication date", () => {
+  const now = new Date(2026, 6, 10, 14, 0, 0);
+
+  assert.equal(
+    formatItemTime(item({ firstSeenAt: new Date(2026, 6, 10, 13, 42).toISOString() }), now),
+    "reçu 13:42",
+  );
+  assert.equal(
+    formatItemTime(item({ firstSeenAt: new Date(2026, 6, 9, 18, 5).toISOString() }), now),
+    "reçu hier 18:05",
+  );
+  assert.equal(
+    formatItemTime(item({ firstSeenAt: "date-invalide", observedAt: "date-invalide" }), now),
+    "—",
+  );
+});
+
 test("derives a stable identity hue per source", () => {
   assert.equal(sourceHue("source-a"), sourceHue("source-a"));
   for (const seed of ["source-a", "source-b", "", "https://example.test/feed.xml"]) {

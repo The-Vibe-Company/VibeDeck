@@ -3921,7 +3921,9 @@ function FeedPanelView({
         </span>
         <time
           dateTime={item.publishedAt ?? item.updatedAt ?? item.firstSeenAt}
-          title={item.publishedAt || item.updatedAt ? undefined : "Heure indisponible"}
+          title={item.publishedAt || item.updatedAt
+            ? undefined
+            : "Date de publication non fournie · heure de détection locale"}
         >
           {formatItemTime(item)}
         </time>

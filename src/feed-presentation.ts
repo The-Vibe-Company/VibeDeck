@@ -95,7 +95,12 @@ function absoluteDateTime(value: Date, now: Date) {
 
 export function formatItemTime(item: FeedItem, now = new Date()) {
   const value = firstDate(item.publishedAt, item.updatedAt);
-  if (!value) return "—";
+  if (!value) {
+    const detectedAt = firstDate(item.firstSeenAt, item.observedAt);
+    if (!detectedAt) return "—";
+    const detectedLabel = absoluteDateTime(detectedAt, now).replace(/^auj\. /, "");
+    return `reçu ${detectedLabel}`;
+  }
   const minutes = Math.max(0, Math.floor((now.valueOf() - value.valueOf()) / 60_000));
   if (minutes < 1) return "maint.";
   if (minutes < 60) return `${minutes} min`;

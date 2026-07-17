@@ -736,6 +736,18 @@ test("parses RSS and deduplicates equivalent article links", () => {
   });
 });
 
+test("parses an RSS publication date wrapped in a semantic time element", () => {
+  const parsed = parseFeedDocument(
+    `<?xml version="1.0"?><rss version="2.0"><channel><title>Institution</title><item>
+      <title>Décision</title><link>https://example.test/decision</link>
+      <pubDate><time datetime="2026-07-09T16:47:15+02:00">Thu, 09 Jul 2026 16:47:15 +0200</time></pubDate>
+    </item></channel></rss>`,
+    "https://example.test/feed.xml",
+  );
+
+  assert.equal(parsed.items[0].publishedAt, "2026-07-09T14:47:15.000Z");
+});
+
 test("parses Atom links, summaries and dates", () => {
   const parsed = parseFeedDocument(ATOM_FIXTURE, "https://example.test/feed.atom");
   assert.equal(parsed.kind, "atom");
