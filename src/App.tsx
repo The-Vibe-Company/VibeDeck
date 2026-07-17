@@ -471,6 +471,7 @@ export default function App() {
   const [modal, setModal] = useState<ModalState | null>(null);
   const [interactionActive, setInteractionActive] = useState(false);
   const [structuralMutationPending, setStructuralMutationPending] = useState(false);
+  const [rendererFocused, setRendererFocused] = useState(() => document.hasFocus());
   const [openPanelActionMenuIds, setOpenPanelActionMenuIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -507,6 +508,17 @@ export default function App() {
     updateInstallConfirmationOpen ||
     interactionActive ||
     openPanelActionMenuIds.size > 0;
+
+  useEffect(() => {
+    const handleFocus = () => setRendererFocused(true);
+    const handleBlur = () => setRendererFocused(false);
+    window.addEventListener("focus", handleFocus);
+    window.addEventListener("blur", handleBlur);
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      window.removeEventListener("blur", handleBlur);
+    };
+  }, []);
 
   useEffect(() => {
     const handlePanelActionMenuChange = (event: Event) => {
@@ -2547,7 +2559,7 @@ export default function App() {
           catalog={state!.sourceCatalog}
           webPreview={webPreviewDrafts[panelId] ?? null}
           webPreviewRuntime={webStates[panelId]}
-          focused={focusedPanelId === panelId}
+          focused={rendererFocused && focusedPanelId === panelId}
           onFocus={() => setFocusedPanelId(panelId)}
           onClose={() => closeDraft(panelId)}
           onStartWebPreview={(url) => startWebPreview(panelId, url)}
@@ -2574,7 +2586,7 @@ export default function App() {
       </PanelPlacementTarget>
     ) : content;
     const common = {
-      focused: focusedPanelId === panel.id,
+      focused: rendererFocused && focusedPanelId === panel.id,
       actionsDisabled: structuralMutationPending || Object.keys(drafts).length > 0,
       onFocus: () => setFocusedPanelId(panel.id),
       onPointerIntent: (intent: PanelPointerIntent | null) => {

@@ -3238,6 +3238,32 @@ try {
     articleSelectionFrames.inactive,
     "Seul l’article sélectionné du fil focalisé doit utiliser le cadre ambre.",
   );
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  await page.waitForFunction(() => document.querySelectorAll(".dashboard-panel--focused").length === 0);
+  const nativeFocusSelectionFrames = await page.evaluate(({ panelId, narrowPanelId }) => {
+    const first = document.querySelector(
+      `.split-layout__leaf[data-panel-id="${panelId}"] .article-row--focused`,
+    );
+    const second = document.querySelector(
+      `.split-layout__leaf[data-panel-id="${narrowPanelId}"] .article-row--focused`,
+    );
+    return {
+      first: first ? getComputedStyle(first).boxShadow : null,
+      second: second ? getComputedStyle(second).boxShadow : null,
+    };
+  }, { panelId, narrowPanelId });
+  assert.equal(
+    nativeFocusSelectionFrames.first,
+    nativeFocusSelectionFrames.second,
+    "Quand une vue native prend le focus, tous les articles sélectionnés doivent redevenir gris.",
+  );
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page.waitForFunction(
+    (targetPanelId) => document
+      .querySelector(`.split-layout__leaf[data-panel-id="${targetPanelId}"] .dashboard-panel`)
+      ?.classList.contains("dashboard-panel--focused"),
+    narrowPanelId,
+  );
   const sharedReaderSourceId = await page.evaluate(() => document.activeElement?.id ?? null);
   assert.ok(sharedReaderSourceId, "Le panel partagé doit exposer un article actif.");
   await page.getByRole("button", { name: /^Réglages/ }).focus();
