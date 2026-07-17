@@ -425,6 +425,10 @@ test("cancellation of a pending save restores exact pre-existing state", async (
       }),
     );
     await slowFetchStarted;
+    await assert.rejects(
+      engine.createDashboardTab("Conflit", currentState.dashboard.revision),
+      /configuration de fil est déjà en cours/,
+    );
     assert.equal(
       engine.database.getSource(orphan.sourceId).refreshIntervalSeconds,
       30,

@@ -436,6 +436,9 @@ try {
   });
 
   page = await electronApp.firstWindow({ timeout: 30_000 });
+  page.on("pageerror", (error) => {
+    console.error(`Erreur renderer pilote : ${error.stack ?? error.message}`);
+  });
   page.setDefaultTimeout(20_000);
   if (showWindow) await page.bringToFront();
   await page.waitForFunction(() => Boolean(window.vibedeck?.getState));
@@ -448,6 +451,154 @@ try {
   const browserWindow = await electronApp.browserWindow(page);
   await browserWindow.evaluate((window) => window.setSize(1280, 820));
   await browserWindow.dispose();
+
+  const initialDashboard = await page.evaluate(() => window.vibedeck.getState());
+  const initialTabId = initialDashboard.dashboard.activeTabId;
+  const tablist = page.getByRole("tablist", { name: "Onglets du dashboard" });
+  assert.equal(await tablist.count(), 1, "La barre d’onglets doit exposer un tablist ARIA unique.");
+  assert.equal(await tablist.getByRole("tab").count(), 1, "La migration doit produire un onglet.");
+  await page.getByRole("button", { name: "Nouvel onglet" }).click();
+  const renameNewTab = page.getByRole("textbox", { name: /Renommer Onglet 2/ });
+  await renameNewTab.waitFor({ state: "visible" });
+  assert.equal(
+    await tablist.locator('[role="tab"]').count(),
+    2,
+    "Le tab ARIA stable doit rester présent pendant le renommage en ligne.",
+  );
+  const renamedTabPanelLabel = await page.getByRole("tabpanel").getAttribute("aria-labelledby");
+  assert.equal(
+    await page.locator(`[id="${renamedTabPanelLabel}"]`).count(),
+    1,
+    "Le tabpanel doit rester relié à un tab existant pendant le renommage.",
+  );
+  await renameNewTab.fill("Listes X");
+  await renameNewTab.press("Enter");
+  await page.waitForFunction(() => window.vibedeck && document.querySelectorAll('[role="tab"]').length === 2);
+  const secondTabState = await page.evaluate(() => window.vibedeck.getState());
+  const secondTabId = secondTabState.dashboard.activeTabId;
+  assert.notEqual(secondTabId, initialTabId, "Le nouvel onglet doit être sélectionné.");
+  assert.equal(
+    await tablist.getByRole("tab", { name: /Listes X/ }).getAttribute("aria-selected"),
+    "true",
+    "Le renommage en ligne doit conserver le nouvel onglet actif.",
+  );
+  await page.waitForFunction(
+    (tabId) => document.activeElement?.id === `dashboard-tab-${tabId}`,
+    secondTabId,
+  );
+  await tablist.getByRole("tab", { name: /Listes X/ }).dblclick();
+  const cancelRename = page.getByRole("textbox", { name: /Renommer Listes X/ });
+  await cancelRename.fill("Nom non conservé");
+  await cancelRename.press("Escape");
+  await page.waitForFunction(
+    (tabId) => document.activeElement?.id === `dashboard-tab-${tabId}`,
+    secondTabId,
+  );
+  assert.equal(
+    await tablist.getByRole("tab", { name: /Listes X/ }).count(),
+    1,
+    "Échap doit annuler le renommage et restaurer le focus sur l’onglet.",
+  );
+  assert.equal(
+    await page.getByRole("button", { name: /Déplacer l’onglet à/ }).count(),
+    0,
+    "La barre ne doit pas afficher de flèches de réorganisation.",
+  );
+  const firstTabContainer = tablist.locator(".dashboard-tab").filter({ hasText: "Onglet 1" });
+  const secondTabContainer = tablist.locator(".dashboard-tab").filter({ hasText: "Listes X" });
+  const forgedTabDrop = await page.evaluate(({ sourceTabId, targetTabId }) => {
+    const target = document.getElementById(`dashboard-tab-${targetTabId}`)?.closest(".dashboard-tab");
+    if (!(target instanceof HTMLElement)) throw new Error("Onglet cible introuvable.");
+    const transfer = new DataTransfer();
+    transfer.setData("application/x-vibedeck-tab", sourceTabId);
+    const over = new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer: transfer });
+    const drop = new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer });
+    target.dispatchEvent(over);
+    target.dispatchEvent(drop);
+    return { overPrevented: over.defaultPrevented, dropPrevented: drop.defaultPrevented };
+  }, { sourceTabId: secondTabId, targetTabId: initialTabId });
+  assert.deepEqual(
+    forgedTabDrop,
+    { overPrevented: false, dropPrevented: false },
+    "Un MIME d’onglet forgé sans drag interne actif doit être ignoré.",
+  );
+  await secondTabContainer.dragTo(firstTabContainer);
+  await page.waitForFunction(
+    ([firstId, secondId]) => [...document.querySelectorAll('[role="tab"]')]
+      .map(({ id }) => id)
+      .join(",") === `dashboard-tab-${firstId},dashboard-tab-${secondId}`,
+    [secondTabId, initialTabId],
+  );
+  await page.waitForFunction(() => window.vibedeck.getState().then(
+    (state) => state.dashboard.tabs[0]?.name === "Listes X",
+  ));
+  await firstTabContainer.dragTo(secondTabContainer);
+  await page.waitForFunction(
+    ([firstId, secondId]) => [...document.querySelectorAll('[role="tab"]')]
+      .map(({ id }) => id)
+      .join(",") === `dashboard-tab-${firstId},dashboard-tab-${secondId}`,
+    [initialTabId, secondTabId],
+  );
+  await page.waitForFunction(() => window.vibedeck.getState().then(
+    (state) => state.dashboard.tabs[0]?.name === "Onglet 1",
+  ));
+  await page.screenshot({ path: path.join(projectRoot, ".context", "dashboard-tabs.png") });
+  const newPanelButton = page.getByRole("button", { name: "Nouveau panel", exact: true });
+  await newPanelButton.waitFor({ state: "visible" });
+  await page.waitForFunction(() => {
+    const button = document.querySelector('button[aria-label="Nouveau panel"]');
+    return button instanceof HTMLButtonElement && !button.disabled;
+  });
+  await newPanelButton.click();
+  await page.locator(".draft-panel").waitFor({ state: "visible" });
+  const draftPanelId = await page.locator('.split-layout__leaf[data-panel-id^="draft:"]')
+    .getAttribute("data-panel-id");
+  const forgedPanelTabDrop = await page.evaluate(({ panelId, targetTabId }) => {
+    const target = document.getElementById(`dashboard-tab-${targetTabId}`)?.closest(".dashboard-tab");
+    if (!(target instanceof HTMLElement) || !panelId) throw new Error("Cible de drop introuvable.");
+    const transfer = new DataTransfer();
+    transfer.setData("application/x-vibedeck-panel", panelId);
+    const over = new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer: transfer });
+    const drop = new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer });
+    target.dispatchEvent(over);
+    target.dispatchEvent(drop);
+    return { overPrevented: over.defaultPrevented, dropPrevented: drop.defaultPrevented };
+  }, { panelId: draftPanelId, targetTabId: initialTabId });
+  assert.deepEqual(
+    forgedPanelTabDrop,
+    { overPrevented: false, dropPrevented: false },
+    "Un MIME de panel forgé sans drag interne actif ne doit pas lancer de placement.",
+  );
+  await page.evaluate((macOS) => {
+    window.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "&",
+      code: "Digit1",
+      metaKey: macOS,
+      ctrlKey: !macOS,
+      bubbles: true,
+    }));
+  }, process.platform === "darwin");
+  await page.waitForFunction(
+    (tabId) => document.querySelector(`[role="tab"][id="dashboard-tab-${tabId}"]`)?.getAttribute("aria-selected") === "true",
+    initialTabId,
+  );
+  assert.equal(
+    (await page.evaluate(() => window.vibedeck.getState())).dashboard.activeTabId,
+    initialTabId,
+    "Digit1 doit fonctionner quand event.key vaut & sur AZERTY.",
+  );
+  await tablist.getByRole("tab", { name: /Listes X/ }).click();
+  await page.locator(".draft-panel").waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "Fermer l’onglet Listes X" }).click();
+  const closeEmptyTab = page.getByRole("alertdialog", { name: "Fermer « Listes X » ?" });
+  await closeEmptyTab.getByText(/1 brouillon annulé/).waitFor();
+  await closeEmptyTab.getByRole("button", { name: "Fermer l’onglet" }).click();
+  await page.waitForFunction(() => document.querySelectorAll('[role="tab"]').length === 1);
+  assert.equal(
+    (await page.evaluate(() => window.vibedeck.getState())).dashboard.activeTabId,
+    initialTabId,
+    "Fermer l’onglet doit restaurer l’onglet restant.",
+  );
 
   async function publishUpdateState(status, overrides = {}) {
     await electronApp.evaluate(({ BrowserWindow }, nextState) => {
@@ -713,6 +864,50 @@ try {
     if (!panel || panel.kind !== "feed") throw new Error("Le fil de test n’a pas été créé.");
     return panel.id;
   });
+
+  await page.getByRole("button", { name: "Nouvel onglet" }).click();
+  const renameTransferTab = page.getByRole("textbox", { name: /Renommer Onglet 2/ });
+  await renameTransferTab.fill("Transfert");
+  await renameTransferTab.press("Enter");
+  await tablist.getByRole("tab", { name: /Onglet 1/ }).click();
+  const transferPanelLeaf = page.locator(`.split-layout__leaf[data-panel-id="${panelId}"]`);
+  await clickPanelAction(page, transferPanelLeaf, "Déplacer vers Transfert");
+  await page.waitForFunction(() =>
+    document.activeElement instanceof HTMLButtonElement &&
+    document.activeElement.textContent?.includes("Placer ici"),
+  );
+  assert.equal(
+    await page.getByRole("button", { name: "Placer ici" }).evaluate(
+      (button) => document.activeElement === button,
+    ),
+    true,
+    "Le placement clavier doit focaliser immédiatement la première destination valide.",
+  );
+  await page.getByRole("button", { name: "Annuler" }).click();
+  assert.equal(
+    (await page.evaluate(() => window.vibedeck.getState())).dashboard.tabs[0].layout?.type,
+    "panel",
+    "Annuler un placement inter-onglets ne doit pas muter la base.",
+  );
+  await clickPanelAction(page, transferPanelLeaf, "Déplacer vers Transfert");
+  await page.getByRole("button", { name: "Placer ici" }).click();
+  await transferPanelLeaf.waitFor({ state: "visible" });
+  assert.equal(
+    (await page.evaluate((id) => window.vibedeck.getState().then((state) =>
+      state.dashboard.tabs.find((tab) => tab.name === "Transfert")?.layout?.type === "panel" &&
+      state.dashboard.tabs.find((tab) => tab.name === "Transfert")?.layout?.panelId === id,
+    ), panelId)),
+    true,
+    "Le dépôt explicite doit déplacer le panel dans la transaction inter-layouts.",
+  );
+  await clickPanelAction(page, transferPanelLeaf, "Déplacer vers Onglet 1");
+  await page.getByRole("button", { name: "Placer ici" }).click();
+  await tablist.getByRole("tab", { name: /Transfert/ }).click();
+  await page.getByRole("button", { name: "Fermer l’onglet Transfert" }).click();
+  await page.getByRole("alertdialog", { name: "Fermer « Transfert » ?" })
+    .getByRole("button", { name: "Fermer l’onglet" })
+    .click();
+  await transferPanelLeaf.waitFor({ state: "visible" });
 
   const sourceId = await page.evaluate(
     async ({ targetPanelId, feedUrl }) => {
@@ -1107,6 +1302,18 @@ try {
   await page.keyboard.press("ControlOrMeta+N");
   const draftLeaf = page.locator('.split-layout__leaf[data-panel-id^="draft:"]');
   await draftLeaf.waitFor({ state: "visible" });
+  const disabledDraftDivider = page.getByRole("separator", { name: "Redimensionner les panels" }).first();
+  assert.equal(
+    await disabledDraftDivider.getAttribute("aria-disabled"),
+    "true",
+    "Un brouillon doit désactiver les mutations de ratio qui ne pourraient pas être persistées.",
+  );
+  assert.equal(await disabledDraftDivider.getAttribute("tabindex"), "-1");
+  assert.equal(
+    await page.locator('.panel-header[data-split-panel-drag-handle]').first().getAttribute("draggable"),
+    "false",
+    "Un brouillon doit aussi désactiver le drag structurel des panels.",
+  );
   await draftLeaf.getByRole("button", { name: /Fil agrégé/ }).click();
   const draftFeedName = draftLeaf.getByLabel("Nom du fil");
   await waitForDomFocus(
@@ -2059,6 +2266,7 @@ try {
 
   const narrowPanelId = await page.evaluate(async (targetPanelId) => {
     const before = await window.vibedeck.getState();
+    const tabId = before.dashboard.activeTabId;
     const existingIds = new Set(before.panels.map(({ id }) => id));
     const next = await window.vibedeck.createPanel(
       {
@@ -2066,7 +2274,7 @@ try {
         name: "Panel étroit témoin",
         defaultRefreshIntervalSeconds: 1_800,
       },
-      { targetPanelId, side: "right" },
+      { tabId, targetPanelId, side: "right" },
     );
     return next.panels.find(({ id }) => !existingIds.has(id))?.id ?? null;
   }, panelId);
@@ -2247,6 +2455,26 @@ try {
 
   const divider = page.getByRole("separator", { name: "Redimensionner les panels" }).first();
   await divider.focus();
+  await divider.evaluate((separator) => {
+    separator.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "ArrowLeft",
+      bubbles: true,
+      cancelable: true,
+    }));
+  });
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll('[role="tab"]')].every(
+      (tab) => tab instanceof HTMLButtonElement && tab.disabled,
+    ),
+  );
+  await divider.evaluate((separator) => {
+    separator.dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowLeft", bubbles: true }));
+  });
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll('[role="tab"]')].every(
+      (tab) => tab instanceof HTMLButtonElement && !tab.disabled,
+    ),
+  );
   await page.keyboard.press("End");
   await page.waitForFunction(() => {
     const separator = document.querySelector('[role="separator"]');
@@ -2370,11 +2598,13 @@ try {
 
   await page.evaluate(async () => {
     const state = await window.vibedeck.getState();
-    if (state.dashboard.layout?.type !== "split") {
+    const tab = state.dashboard.tabs.find(({ id }) => id === state.dashboard.activeTabId);
+    if (tab?.layout?.type !== "split") {
       throw new Error("Le layout pilote doit avoir une racine divisée.");
     }
     await window.vibedeck.saveDashboardLayout(
-      { ...state.dashboard.layout, direction: "column", ratio: 0.5 },
+      tab.id,
+      { ...tab.layout, direction: "column", ratio: 0.5 },
       state.dashboard.revision,
     );
   });
@@ -2390,11 +2620,13 @@ try {
   );
   await page.evaluate(async () => {
     const state = await window.vibedeck.getState();
-    if (state.dashboard.layout?.type !== "split") {
+    const tab = state.dashboard.tabs.find(({ id }) => id === state.dashboard.activeTabId);
+    if (tab?.layout?.type !== "split") {
       throw new Error("Le layout pilote doit avoir une racine divisée.");
     }
     await window.vibedeck.saveDashboardLayout(
-      { ...state.dashboard.layout, direction: "row", ratio: 0.5 },
+      tab.id,
+      { ...tab.layout, direction: "row", ratio: 0.5 },
       state.dashboard.revision,
     );
   });
@@ -2404,6 +2636,7 @@ try {
 
   const thirdPanelId = await page.evaluate(async ({ targetPanelId, url }) => {
     const before = await window.vibedeck.getState();
+    const tabId = before.dashboard.activeTabId;
     const existingIds = new Set(before.panels.map(({ id }) => id));
     const next = await window.vibedeck.createPanel(
       {
@@ -2411,7 +2644,7 @@ try {
         name: "Page web compacte",
         url,
       },
-      { targetPanelId, side: "left" },
+      { tabId, targetPanelId, side: "left" },
     );
     return next.panels.find(({ id }) => !existingIds.has(id))?.id ?? null;
   }, { targetPanelId: panelId, url: previewUrl });
@@ -2489,9 +2722,11 @@ try {
       ratio: 0.5,
       children: node.children.map(toColumn),
     };
-    if (!state.dashboard.layout) throw new Error("Le layout compact doit exister.");
+    const tab = state.dashboard.tabs.find(({ id }) => id === state.dashboard.activeTabId);
+    if (!tab?.layout) throw new Error("Le layout compact doit exister.");
     await window.vibedeck.saveDashboardLayout(
-      toColumn(state.dashboard.layout),
+      tab.id,
+      toColumn(tab.layout),
       state.dashboard.revision,
     );
   });
@@ -2582,11 +2817,13 @@ try {
 
   await page.evaluate(async () => {
     const state = await window.vibedeck.getState();
-    const layout = state.dashboard.layout;
+    const tab = state.dashboard.tabs.find(({ id }) => id === state.dashboard.activeTabId);
+    const layout = tab?.layout;
     if (layout?.type !== "split" || !layout.children.some((child) => child.type === "split")) {
       throw new Error("Le layout compact imbriqué attendu est introuvable.");
     }
     await window.vibedeck.saveDashboardLayout(
+      tab.id,
       {
         ...layout,
         direction: "row",
@@ -2924,6 +3161,31 @@ try {
       ?.classList.contains("dashboard-panel--focused"),
     panelId,
   );
+  const focusedPanelPresentation = await page.evaluate(({ panelId, narrowPanelId }) => {
+    const focusedPanel = document.querySelector(
+      `.split-layout__leaf[data-panel-id="${panelId}"] .dashboard-panel`,
+    );
+    const inactivePanel = document.querySelector(
+      `.split-layout__leaf[data-panel-id="${narrowPanelId}"] .dashboard-panel`,
+    );
+    const focusedTitle = focusedPanel?.querySelector(".panel-title");
+    const inactiveTitle = inactivePanel?.querySelector(".panel-title");
+    return {
+      outlineStyle: focusedPanel ? getComputedStyle(focusedPanel).outlineStyle : null,
+      focusedTitleColor: focusedTitle ? getComputedStyle(focusedTitle).color : null,
+      inactiveTitleColor: inactiveTitle ? getComputedStyle(inactiveTitle).color : null,
+    };
+  }, { panelId, narrowPanelId });
+  assert.equal(
+    focusedPanelPresentation.outlineStyle,
+    "none",
+    "Le panel focalisé ne doit pas afficher le contour natif Chromium.",
+  );
+  assert.notEqual(
+    focusedPanelPresentation.focusedTitleColor,
+    focusedPanelPresentation.inactiveTitleColor,
+    "Le titre doit rester le repère visuel discret du panel focalisé.",
+  );
   // Les deux événements doivent partager le même tour du renderer : deux
   // appels CDP successifs peuvent dépasser le seuil produit de 360 ms sous
   // charge en CI, sans reproduire la cadence réelle d'une double-flèche.
@@ -2957,8 +3219,70 @@ try {
     },
     narrowPanelId,
   );
+  const articleSelectionFrames = await page.evaluate(({ panelId, narrowPanelId }) => {
+    const inactiveSelection = document.querySelector(
+      `.split-layout__leaf[data-panel-id="${panelId}"] .article-row--focused`,
+    );
+    const activeSelection = document.querySelector(
+      `.split-layout__leaf[data-panel-id="${narrowPanelId}"] .article-row--focused`,
+    );
+    return {
+      inactive: inactiveSelection ? getComputedStyle(inactiveSelection).boxShadow : null,
+      active: activeSelection ? getComputedStyle(activeSelection).boxShadow : null,
+    };
+  }, { panelId, narrowPanelId });
+  assert.ok(articleSelectionFrames.inactive, "Le fil inactif doit conserver son article sélectionné.");
+  assert.ok(articleSelectionFrames.active, "Le fil actif doit exposer son article sélectionné.");
+  assert.notEqual(
+    articleSelectionFrames.active,
+    articleSelectionFrames.inactive,
+    "Seul l’article sélectionné du fil focalisé doit utiliser le cadre ambre.",
+  );
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  await page.waitForFunction(() => !document.documentElement.classList.contains("renderer-has-focus"));
+  const nativeFocusSelectionFrames = await page.evaluate(({ panelId, narrowPanelId }) => {
+    const first = document.querySelector(
+      `.split-layout__leaf[data-panel-id="${panelId}"] .article-row--focused`,
+    );
+    const second = document.querySelector(
+      `.split-layout__leaf[data-panel-id="${narrowPanelId}"] .article-row--focused`,
+    );
+    return {
+      first: first ? getComputedStyle(first).boxShadow : null,
+      second: second ? getComputedStyle(second).boxShadow : null,
+    };
+  }, { panelId, narrowPanelId });
+  assert.equal(
+    nativeFocusSelectionFrames.first,
+    nativeFocusSelectionFrames.second,
+    "Quand une vue native prend le focus, tous les articles sélectionnés doivent redevenir gris.",
+  );
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page.waitForFunction(
+    () => document.documentElement.classList.contains("renderer-has-focus"),
+  );
   const sharedReaderSourceId = await page.evaluate(() => document.activeElement?.id ?? null);
   assert.ok(sharedReaderSourceId, "Le panel partagé doit exposer un article actif.");
+  await page.getByRole("button", { name: /^Réglages/ }).focus();
+  await page.waitForFunction(() => document.querySelectorAll(".dashboard-panel--focused").length === 0);
+  const unfocusedSelectionFrames = await page.evaluate(({ panelId, narrowPanelId }) => {
+    const first = document.querySelector(
+      `.split-layout__leaf[data-panel-id="${panelId}"] .article-row--focused`,
+    );
+    const second = document.querySelector(
+      `.split-layout__leaf[data-panel-id="${narrowPanelId}"] .article-row--focused`,
+    );
+    return {
+      first: first ? getComputedStyle(first).boxShadow : null,
+      second: second ? getComputedStyle(second).boxShadow : null,
+    };
+  }, { panelId, narrowPanelId });
+  assert.equal(
+    unfocusedSelectionFrames.first,
+    unfocusedSelectionFrames.second,
+    "Quand aucun fil n’a le focus, les articles sélectionnés doivent tous redevenir gris.",
+  );
+  await page.locator(`[id="${sharedReaderSourceId}"]`).focus();
   await page.keyboard.press("Enter");
   await page.locator(".link-reader").waitFor({ state: "visible" });
   await electronApp.evaluate(async ({ webContents }, articlePrefix) => {
@@ -3140,12 +3464,16 @@ try {
     true,
     "Déplacer depuis le menu adaptatif doit fermer le menu et rendre le focus au titre durable.",
   );
+  await page.waitForFunction(() => [...document.querySelectorAll('[role="tab"]')]
+    .every((tab) => tab instanceof HTMLButtonElement && !tab.disabled));
   await page.keyboard.press("Alt+ArrowLeft");
   await page.waitForFunction(
     (targetPanelId) =>
       document.querySelector(".split-layout__leaf")?.getAttribute("data-panel-id") === targetPanelId,
     panelId,
   );
+  await page.waitForFunction(() => [...document.querySelectorAll('[role="tab"]')]
+    .every((tab) => tab instanceof HTMLButtonElement && !tab.disabled));
   await primaryTitle.focus();
   await page.keyboard.press("Alt+ArrowRight");
   await page.waitForFunction(
@@ -3158,6 +3486,8 @@ try {
     true,
     "Le titre déplacé doit conserver le focus clavier.",
   );
+  await page.waitForFunction(() => [...document.querySelectorAll('[role="tab"]')]
+    .every((tab) => tab instanceof HTMLButtonElement && !tab.disabled));
   await page.keyboard.press("Alt+ArrowLeft");
   await page.waitForFunction(
     (targetPanelId) =>
@@ -3312,10 +3642,11 @@ try {
 
   const temporaryPanelId = await page.evaluate(async (targetPanelId) => {
     const before = await window.vibedeck.getState();
+    const tabId = before.dashboard.activeTabId;
     const knownIds = new Set(before.panels.map(({ id }) => id));
     const next = await window.vibedeck.createPanel(
       { kind: "feed", name: "Panel temporaire", defaultRefreshIntervalSeconds: 1_800 },
-      { targetPanelId, side: "bottom" },
+      { tabId, targetPanelId, side: "bottom" },
     );
     return next.panels.find(({ id }) => !knownIds.has(id))?.id ?? null;
   }, panelId);
@@ -3341,6 +3672,8 @@ try {
     "Le panel voisin doit révéler à la demande l’état global déjà ouvert.",
   );
 
+  await page.waitForFunction(() => [...document.querySelectorAll('[role="tab"]')]
+    .every((tab) => tab instanceof HTMLButtonElement && !tab.disabled));
   const panelOrderBeforeDrag = await page.locator(".split-layout__leaf").evaluateAll((leaves) =>
     leaves.map((leaf) => leaf.getAttribute("data-panel-id")),
   );
@@ -3389,38 +3722,29 @@ try {
     "Un texte externe ne doit jamais remplacer un identifiant de panel.",
   );
 
-  await page.evaluate(async ({ sourcePanelId, targetPanelId }) => {
-    const source = document.querySelector(
+  await page.waitForFunction((sourcePanelId) => {
+    const header = document.querySelector(
       `.split-layout__leaf[data-panel-id="${sourcePanelId}"] .panel-header`,
     );
-    if (!(source instanceof HTMLElement)) throw new Error("En-tête source introuvable.");
-    const transfer = new DataTransfer();
-    source.dispatchEvent(new DragEvent("dragstart", {
-      bubbles: true,
-      cancelable: true,
-      dataTransfer: transfer,
-    }));
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-    const target = document.querySelector(
-      `.split-layout__leaf[data-panel-id="${targetPanelId}"]`,
-    );
-    if (!(target instanceof HTMLElement)) throw new Error("Panel cible introuvable.");
-    target.dispatchEvent(new DragEvent("dragover", {
-      bubbles: true,
-      cancelable: true,
-      dataTransfer: transfer,
-    }));
-    target.dispatchEvent(new DragEvent("drop", {
-      bubbles: true,
-      cancelable: true,
-      dataTransfer: transfer,
-    }));
-  }, { sourcePanelId: panelId, targetPanelId: narrowPanelId });
-  await page.waitForFunction(
-    (expectedFirstPanelId) =>
-      document.querySelector(".split-layout__leaf")?.getAttribute("data-panel-id") ===
-      expectedFirstPanelId,
-    narrowPanelId,
+    return header instanceof HTMLElement && header.draggable;
+  }, panelId);
+  const expectedFirstPanelIdAfterDrag = panelOrderBeforeDrag[1];
+  assert.ok(expectedFirstPanelIdAfterDrag, "Le second panel avant drag doit être identifiable.");
+  let panelDragCompleted = false;
+  for (let attempt = 0; attempt < 3 && !panelDragCompleted; attempt += 1) {
+    await panelLeaf.locator(".panel-header").dragTo(narrowLeaf);
+    panelDragCompleted = await page.waitForFunction(
+      (expectedFirstPanelId) =>
+        document.querySelector(".split-layout__leaf")?.getAttribute("data-panel-id") ===
+        expectedFirstPanelId,
+      expectedFirstPanelIdAfterDrag,
+      { timeout: 3_000 },
+    ).then(() => true, () => false);
+  }
+  assert.equal(
+    panelDragCompleted,
+    true,
+    "Le drag réel du panel doit finir par être reçu malgré les variations de synthèse Electron.",
   );
   assert.deepEqual(
     await page.locator(".split-layout__leaf").evaluateAll((leaves) =>
@@ -3505,10 +3829,11 @@ try {
   const loadPanelIds = await page.evaluate(async ({ firstPanelId, secondPanelId, feedUrl }) => {
     const createAttachedPanel = async (targetPanelId, name) => {
       const before = await window.vibedeck.getState();
+      const tabId = before.dashboard.activeTabId;
       const knownIds = new Set(before.panels.map(({ id }) => id));
       const next = await window.vibedeck.createPanel(
         { kind: "feed", name, defaultRefreshIntervalSeconds: 1_800 },
-        { targetPanelId, side: "bottom" },
+        { tabId, targetPanelId, side: "bottom" },
       );
       const panel = next.panels.find(({ id }) => !knownIds.has(id));
       if (!panel || panel.kind !== "feed") throw new Error(`Création impossible : ${name}`);
@@ -3612,6 +3937,7 @@ try {
   );
 
   console.log(`✓ baseline: ${baselineArticleCount} articles interclassés, roving tabindex actif`);
+  console.log("✓ onglets: rôles ARIA, renommage, raccourci AZERTY, placement atomique/annulable et fermeture");
   console.log("✓ échelle de texte: défaut global 14px, override par fil (clavier, en-tête, pastille), plafond annoncé, menu sans rôles zoom");
   console.log(`✓ viewport initial: scrollTop ${beforeArrival.scrollTop.toFixed(1)}px`);
   console.log(`✓ arrivée automatique: même article à ${revealed.selectedTop.toFixed(1)}px, compensation ${(revealed.scrollTop - beforeArrival.scrollTop).toFixed(1)}px`);

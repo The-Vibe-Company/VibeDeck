@@ -8,7 +8,7 @@ Application locale de veille pour journalistes. À la création, chaque panel re
 
 ## Ce qui fonctionne
 
-- dashboard composé de panneaux redimensionnables et réorganisables ;
+- jusqu’à neuf onglets persistants, chacun avec ses panneaux redimensionnables et réorganisables ;
 - palette sombre à surfaces neutres, avec contrastes renforcés et amber réservé au focus, aux sélections et aux actions principales ;
 - panels « Fil » pour fusionner plusieurs médias dans une chronologie unique ;
 - pack de démarrage « Veille concurrents » avec Le Monde, Le Figaro et Le Parisien ;
@@ -48,7 +48,9 @@ Une URL explicitement liée à un RSS de rubrique ou à un sitemap reste priorit
 
 Les rafraîchissements passent tous par la même file bornée : six téléchargements simultanés au maximum dans l’application, dont deux par domaine. Ajouter un grand pack de sources ne déclenche donc pas une rafale réseau incontrôlée, et deux demandes simultanées pour une même source mutualisent le téléchargement.
 
-Un dashboard peut disposer jusqu’à trois panels sur un même axe horizontal ou vertical. Si le panel ciblé est trop étroit, l’application choisit l’autre orientation ou demande de le redimensionner. Les séparateurs appliquent ensuite une taille minimale réelle de 256 × 176 px à chaque branche, y compris dans un layout imbriqué ou importé. Cette limite maintient les commandes, les états de lecture et les titres utilisables sur l’écran minimal du pilote.
+Chaque onglet possède son propre layout et jusqu’à six pages web. Les panels peuvent être déplacés vers une zone explicite d’un autre onglet ; les sources et leur cache restent globaux et réutilisables. Les vues web de l’onglet quitté sont masquées et rendues muettes immédiatement, conservées pendant une grâce de 30 secondes, puis déchargées.
+
+Un onglet peut disposer jusqu’à trois panels sur un même axe horizontal ou vertical. Si le panel ciblé est trop étroit, l’application choisit l’autre orientation ou demande de le redimensionner. Les séparateurs appliquent ensuite une taille minimale réelle de 256 × 176 px à chaque branche, y compris dans un layout imbriqué ou importé. Cette limite maintient les commandes, les états de lecture et les titres utilisables sur l’écran minimal du pilote.
 
 ## Lancer l’application
 
@@ -60,6 +62,7 @@ npm run dev
 Raccourcis principaux :
 
 - `Cmd/Ctrl + N` : créer un panel ;
+- `Cmd + 1…9` sur macOS ou `Ctrl + 1…9` sur Windows : ouvrir l’onglet à cette position, y compris avec un clavier AZERTY et depuis une page web ;
 - `Cmd/Ctrl + K` : ouvrir la recherche globale et placer le focus dans la requête ;
 - dans la recherche, `↑` / `↓` sélectionnent un résultat ; `Entrée` filtre les fils depuis le champ ou ouvre le résultat sélectionné ;
 - `↑` / `↓` : parcourir le fil sous la souris, avec un défilement fluide et continu quand la touche reste enfoncée ;

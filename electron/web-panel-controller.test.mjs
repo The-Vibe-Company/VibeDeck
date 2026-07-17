@@ -150,6 +150,7 @@ function createHarness({
   sharedWebSession = null,
   readerExtractionResult = null,
   viewCreationError = null,
+  activateTab = null,
 } = {}) {
   const views = [];
   const addedViews = [];
@@ -159,6 +160,7 @@ function createHarness({
   const escapeCalls = [];
   const readerExtractionCalls = [];
   const searchCalls = [];
+  const tabCalls = [];
   const creationEvents = [];
   const windowEvents = new Map();
 
@@ -228,6 +230,10 @@ function createHarness({
     },
     onEscape: (panelId) => escapeCalls.push(panelId),
     onOpenSearch: (panelId) => searchCalls.push(panelId),
+    onActivateTab: (index) => {
+      tabCalls.push(index);
+      return activateTab ? activateTab(index) : true;
+    },
     WebContentsViewClass: FakeWebContentsView,
   });
 
@@ -240,6 +246,7 @@ function createHarness({
     removedViews,
     readerExtractionCalls,
     searchCalls,
+    tabCalls,
     states,
     views,
     window,
@@ -325,7 +332,7 @@ test("creates and syncs native views with clipped bounds and effective visibilit
   );
 });
 
-test("rejects duplicate descriptors and enforces the migration-safe view limit", () => {
+test("rejects duplicate descriptors and enforces the active-plus-grace view limit", () => {
   const duplicateHarness = createHarness();
   assert.throws(
     () => duplicateHarness.controller.sync([descriptor("same"), descriptor("same")]),
@@ -337,9 +344,9 @@ test("rejects duplicate descriptors and enforces the migration-safe view limit",
   assert.throws(
     () =>
       limitHarness.controller.sync(
-        Array.from({ length: 17 }, (_, index) => descriptor(`panel-${index}`)),
+        Array.from({ length: 13 }, (_, index) => descriptor(`panel-${index}`)),
       ),
-    /maximum de 16 panels web/,
+    /maximum de 12 panels web/,
   );
   assert.equal(limitHarness.views.length, 0);
 });
@@ -383,6 +390,21 @@ test("starts muted and updates audio state explicitly", () => {
   const unmuted = controller.setMuted("news", false);
   assert.equal(unmuted.muted, false);
   assert.equal(views[0].webContents.audioMuted, false);
+  controller.sync([{ ...descriptor("news"), visible: false }]);
+  assert.equal(views[0].webContents.audioMuted, true, "une vue masquée doit être muette");
+  const hiddenPreference = controller.setMuted("news", false);
+  assert.equal(hiddenPreference.muted, true, "l’état publié reflète le silence effectif");
+  assert.equal(
+    views[0].webContents.audioMuted,
+    true,
+    "modifier la préférence ne doit jamais réactiver l’audio d’une vue masquée",
+  );
+  controller.sync([descriptor("news")]);
+  assert.equal(
+    views[0].webContents.audioMuted,
+    false,
+    "le choix audio doit être restauré quand la vue redevient visible",
+  );
   assert.throws(() => controller.setMuted("news", "false"), /booléen/);
 });
 
@@ -444,11 +466,11 @@ test("publishes an original-reader decision before allocating its native view", 
   views[0].webContents.emit("before-input-event", { preventDefault() {} }, {
     type: "keyDown", key: "k", meta: true,
   });
-  assert.equal(views[0].visible, false);
+  assert.equal(views[0].visible, true);
   assert.deepEqual(searchCalls, ["reader:article"]);
-  const hiddenFocusCalls = views[0].webContents.focusCalls;
+  const acknowledgedFocusCalls = views[0].webContents.focusCalls;
   views[0].webContents.emit("dom-ready");
-  assert.equal(views[0].webContents.focusCalls, hiddenFocusCalls);
+  assert.equal(views[0].webContents.focusCalls, acknowledgedFocusCalls + 1);
   views[0].webContents.emit("before-input-event", {}, {
     type: "keyDown", key: "Escape",
   });
@@ -765,6 +787,7 @@ test("denies permissions, downloads and popups while opening safe popup links in
   contents.emit("before-input-event", {}, { type: "keyDown", key: "Escape" });
   contents.emit("before-input-event", {}, { type: "keyDown", key: "Escape", isAutoRepeat: true });
   assert.deepEqual(escapeCalls, ["locked-down"]);
+  controller.setMuted("locked-down", false);
   let searchPrevented = false;
   contents.emit("before-input-event", { preventDefault: () => { searchPrevented = true; } }, {
     type: "keyDown", key: "k", meta: true,
@@ -774,8 +797,12 @@ test("denies permissions, downloads and popups while opening safe popup links in
   });
   assert.equal(searchPrevented, true);
   assert.deepEqual(searchCalls, ["locked-down"]);
-  assert.equal(view.visible, false);
-  controller.sync([descriptor("locked-down")]);
+  assert.equal(
+    view.visible,
+    true,
+    "la vue reste autoritaire tant que le renderer n’a pas confirmé l’ouverture",
+  );
+  assert.equal(contents.audioMuted, false);
   assert.equal(controller.focus("locked-down"), true);
   assert.equal(contents.focusCalls, 1);
 });
@@ -818,6 +845,58 @@ test("zooms the embedded page with Cmd/Ctrl +, -, 0 now that the menu roles are 
   contents.zoomLevel = ZOOM_LIMIT_PROBE;
   contents.emit("before-input-event", event, { type: "keyDown", key: "+", meta: true });
   assert.equal(contents.zoomCalls.at(-1), ZOOM_LIMIT_PROBE, "le plafond de zoom doit tenir");
+});
+
+test("forwards Cmd/Ctrl plus an AZERTY digit without hiding before renderer confirmation", () => {
+  const { controller, tabCalls, views } = createHarness();
+  controller.sync([descriptor("lists")]);
+  const event = { prevented: false, preventDefault() { this.prevented = true; } };
+  const modifier = process.platform === "darwin" ? { meta: true } : { control: true };
+  views[0].webContents.emit("before-input-event", event, {
+    type: "keyDown",
+    key: "&",
+    code: "Digit1",
+    ...modifier,
+  });
+  assert.equal(event.prevented, true);
+  assert.deepEqual(tabCalls, [0]);
+  assert.equal(
+    views[0].visible,
+    true,
+    "la synchronisation autoritaire du renderer masque la vue après activation",
+  );
+
+  views[0].webContents.emit("before-input-event", event, {
+    type: "keyDown",
+    key: "é",
+    code: "Digit2",
+    alt: true,
+    ...modifier,
+  });
+  assert.deepEqual(tabCalls, [0], "AltGr et les combinaisons avec Alt restent à la page");
+});
+
+test("consumes an unavailable native tab shortcut without hiding the current page", () => {
+  const { controller, views } = createHarness({ activateTab: () => false });
+  controller.sync([descriptor("news")]);
+  let prevented = false;
+  views[0].webContents.emit("before-input-event", {
+    preventDefault() {
+      prevented = true;
+    },
+  }, {
+    type: "keyDown",
+    code: "Digit9",
+    key: "ç",
+    meta: process.platform === "darwin",
+    control: process.platform !== "darwin",
+    alt: false,
+    shift: false,
+    isAutoRepeat: false,
+  });
+
+  assert.equal(prevented, true);
+  assert.equal(views[0].visible, true);
 });
 
 test("documents the persistent web session while clearing background workers on shutdown", async () => {
@@ -942,6 +1021,61 @@ test("updates and navigates an existing preview while enforcing a one-preview li
     /startPreview/,
   );
   assert.equal(views.length, 1);
+});
+
+test("refuses a preview when the global native-view budget is already full", () => {
+  const { controller, views } = createHarness();
+  controller.sync(
+    Array.from({ length: 12 }, (_, index) => descriptor(`panel-${index}`)),
+  );
+
+  assert.throws(
+    () => controller.startPreview(descriptor("preview:over-budget")),
+    /maximum de 12 vues web/,
+  );
+  assert.equal(views.length, 12);
+
+  const reverseHarness = createHarness();
+  reverseHarness.controller.startPreview(descriptor("preview:first"));
+  assert.throws(
+    () => reverseHarness.controller.sync(
+      Array.from({ length: 12 }, (_, index) => descriptor(`persistent-${index}`)),
+    ),
+    /maximum de 12 vues web/,
+  );
+  assert.equal(
+    reverseHarness.views.length,
+    1,
+    "le refus doit précéder toute allocation persistante partielle",
+  );
+
+  const graceHarness = createHarness();
+  graceHarness.controller.sync(
+    Array.from({ length: 12 }, (_, index) => descriptor(`grace-${index}`, {
+      visible: index > 0 && index < 6,
+    })),
+  );
+  const preview = graceHarness.controller.startPreview(
+    descriptor("preview:with-grace"),
+    {
+      protectedPanelIds: new Set(
+        Array.from({ length: 6 }, (_, index) => `grace-${index}`),
+      ),
+    },
+  );
+  assert.equal(preview.panelId, "preview:with-grace");
+  assert.equal(graceHarness.removedViews.length, 1);
+  assert.equal(
+    graceHarness.views[0].webContents.destroyed,
+    false,
+    "un panel actif masqué ou clipsé doit rester protégé",
+  );
+  assert.equal(graceHarness.views[6].webContents.destroyed, true);
+  assert.equal(
+    graceHarness.controller.getDescriptors().length,
+    11,
+    "l’aperçu doit remplacer une vue de grâce masquée sans dépasser la borne globale",
+  );
 });
 
 test("cancels a preview while retaining login data and clearing only service workers", async () => {

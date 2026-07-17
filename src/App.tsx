@@ -77,6 +77,8 @@ import type {
   ConnectorKind,
   ConnectorPreference,
   CreatePanelInput,
+  CrossTabPanelPlacement,
+  DashboardTab,
   FeedItem,
   FeedPanel,
   LayoutNode,
@@ -103,6 +105,7 @@ const LINK_READER_ID = "reader:article";
 // pour rester réactif quand on s'arrête vraiment pour lire.
 const HOVER_SEEN_DELAY_MS = 1000;
 const MAX_DASHBOARD_WEB_PANELS = 6;
+const MAX_NATIVE_WEB_VIEWS = 12;
 const FEED_TEXT_SCALE_STORAGE_KEY = "vibedeck.feedTextScale";
 const FEED_TEXT_SCALE_OVERRIDES_STORAGE_KEY = "vibedeck.feedTextScale.overrides";
 const FEED_TEXT_SCALE_MIN = 0.8;
@@ -166,6 +169,7 @@ const WEB_PRESETS = [
 
 type DraftPanel = {
   id: string;
+  tabId: string;
   targetPanelId: string | null;
   side: PanelPlacement["side"] | null;
   pending: boolean;
@@ -175,6 +179,41 @@ type WebPreviewDraft = {
   previewId: string;
   normalizedUrl: string;
 };
+
+type TabRuntimeState = {
+  focusedPanelId: string | null;
+  focusedControl: { panelId: string; elementId: string | null; ariaLabel: string | null } | null;
+  transientLayout: LayoutNode | null;
+  scrollByPanelId: Map<string, {
+    scrollTop: number;
+    anchorItemId: string | null;
+    anchorViewportTop: number | null;
+  }>;
+};
+
+type PanelMovePlacement = {
+  panelId: string;
+  sourceTabId: string;
+  destinationTabId: string;
+};
+
+function dashboardGridSpanWithPlacement(
+  layout: LayoutNode,
+  targetPanelId: string,
+  direction: "row" | "column",
+): { columns: number; rows: number } {
+  if (layout.type === "panel") {
+    if (layout.panelId !== targetPanelId) return { columns: 1, rows: 1 };
+    return direction === "row"
+      ? { columns: 2, rows: 1 }
+      : { columns: 1, rows: 2 };
+  }
+  const first = dashboardGridSpanWithPlacement(layout.children[0], targetPanelId, direction);
+  const second = dashboardGridSpanWithPlacement(layout.children[1], targetPanelId, direction);
+  return layout.direction === "row"
+    ? { columns: first.columns + second.columns, rows: Math.max(first.rows, second.rows) }
+    : { columns: Math.max(first.columns, second.columns), rows: first.rows + second.rows };
+}
 
 type AutomaticInsertionMetrics = {
   scrollTop: number;
@@ -241,6 +280,7 @@ type SettingsPendingOperation = "import" | "export" | "diagnostics" | "update" |
 type ModalState =
   | { kind: "configure-feed"; panelId: string }
   | { kind: "close-panel"; panelId: string }
+  | { kind: "close-tab"; tabId: string }
   | { kind: "clear-dashboard" }
   | { kind: "settings-confirm"; action: "web-data" | "semantic-search" };
 
@@ -313,8 +353,12 @@ function isKeyboardShortcutBlockedTarget(target: EventTarget | null) {
 }
 
 function panelPlacementForDraft(draft: DraftPanel): PanelPlacement | undefined {
-  if (!draft.targetPanelId || !draft.side) return undefined;
-  return { targetPanelId: draft.targetPanelId, side: draft.side };
+  if (!draft.targetPanelId || !draft.side) return { tabId: draft.tabId };
+  return { tabId: draft.tabId, targetPanelId: draft.targetPanelId, side: draft.side };
+}
+
+function tabForPanel(tabs: DashboardTab[], panelId: string) {
+  return tabs.find((tab) => layoutPanelIds(tab.layout).includes(panelId)) ?? null;
 }
 
 function panelItems(
@@ -413,14 +457,20 @@ function restoreSemanticSearchControl(restore: SemanticSearchRestoreState | null
 export default function App() {
   const [state, setState] = useState<AppState | null>(null);
   const [layout, setLayout] = useState<LayoutNode | null>(null);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
+  const [panelMovePlacement, setPanelMovePlacement] = useState<PanelMovePlacement | null>(null);
+  const [retainedWebTabId, setRetainedWebTabId] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, DraftPanel>>({});
   const [webPreviewDrafts, setWebPreviewDrafts] = useState<Record<string, WebPreviewDraft>>({});
   const [focusedPanelId, setFocusedPanelId] = useState<string | null>(null);
+  const [draggedPanelId, setDraggedPanelId] = useState<string | null>(null);
   const [feedUi, setFeedUi] = useState<Record<string, FeedPanelUi>>({});
   const [webStates, setWebStates] = useState<Record<string, WebPanelRuntimeState>>({});
   const [linkPreview, setLinkPreview] = useState<LinkPreview | null>(null);
   const [modal, setModal] = useState<ModalState | null>(null);
   const [interactionActive, setInteractionActive] = useState(false);
+  const [structuralMutationPending, setStructuralMutationPending] = useState(false);
   const [openPanelActionMenuIds, setOpenPanelActionMenuIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -458,6 +508,20 @@ export default function App() {
     interactionActive ||
     openPanelActionMenuIds.size > 0;
 
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    const handleFocus = () => root.classList.add("renderer-has-focus");
+    const handleBlur = () => root.classList.remove("renderer-has-focus");
+    root.classList.toggle("renderer-has-focus", document.hasFocus());
+    window.addEventListener("focus", handleFocus);
+    window.addEventListener("blur", handleBlur);
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      window.removeEventListener("blur", handleBlur);
+      root.classList.remove("renderer-has-focus");
+    };
+  }, []);
+
   useEffect(() => {
     const handlePanelActionMenuChange = (event: Event) => {
       const detail = (event as CustomEvent<{ id?: string; open?: boolean }>).detail;
@@ -486,6 +550,12 @@ export default function App() {
   }, [readyUpdateVersion, restoreSettingsUpdateFocus, updateInstallConfirmationOpen]);
 
   const layoutRef = useRef<LayoutNode | null>(null);
+  const stateRef = useRef<AppState | null>(null);
+  const activeTabIdRef = useRef<string | null>(null);
+  const activateTabRef = useRef<(tabId: string, options?: { focusContent?: boolean; persist?: boolean }) => boolean>(() => false);
+  const openSemanticSearchRef = useRef<(scope: SemanticSearchScope, nativeOrigin?: boolean) => boolean>(() => false);
+  const tabRuntimeRef = useRef(new Map<string, TabRuntimeState>());
+  const retainedWebTimerRef = useRef<number | null>(null);
   const settingsUpdateActionRef = useRef<HTMLButtonElement>(null);
   const globalSettingsButtonRef = useRef<HTMLButtonElement>(null);
   const settingsBackButtonRef = useRef<HTMLButtonElement>(null);
@@ -500,6 +570,11 @@ export default function App() {
   const panelSourceKeysRef = useRef(new Map<string, string>());
   const hydratedRef = useRef(false);
   const serverLayoutMutationRef = useRef(false);
+
+  function markStructuralMutation(pending: boolean) {
+    serverLayoutMutationRef.current = pending;
+    setStructuralMutationPending(pending);
+  }
 
   useEffect(() => {
     if (
@@ -535,10 +610,12 @@ export default function App() {
   } | null>(null);
   const pendingKeyboardPanelFocusRef = useRef<string | null>(null);
   const readerReturnFocusRef = useRef<ReaderReturnFocus | null>(null);
+  const readerEscapeRestoreRef = useRef<ReaderReturnFocus | null>(null);
   const readerNativeFocusHandoffRef = useRef(false);
   const lastDashboardPointerPositionRef = useRef<{ x: number; y: number } | null>(null);
   const readerOpenPointerPositionRef = useRef<{ x: number; y: number } | null>(null);
   const focusedPanelIdRef = useRef<string | null>(null);
+  const preCapturedTabIdRef = useRef<string | null>(null);
   const semanticResultItemsRef = useRef<FeedItem[]>([]);
   const semanticBaseItemIdsRef = useRef(new Set<string>());
   const semanticSearchRestoreRef = useRef<SemanticSearchRestoreState | null>(null);
@@ -549,11 +626,50 @@ export default function App() {
   const seenFlushChainRef = useRef<Promise<void>>(Promise.resolve());
 
   layoutRef.current = layout;
+  stateRef.current = state;
+  activeTabIdRef.current = activeTabId;
   linkPreviewRef.current = linkPreview;
   feedUiRef.current = feedUi;
   draftsRef.current = drafts;
   focusedPanelIdRef.current = focusedPanelId;
   activeSemanticSearchRef.current = activeSemanticSearch;
+
+  useEffect(() => {
+    const clearPanelFocusOutsideWorkspace = (event: FocusEvent) => {
+      if (!(event.target instanceof Element)) return;
+      if (event.target.closest(".dashboard-panel")) {
+        preCapturedTabIdRef.current = null;
+        return;
+      }
+      setFocusedPanelId(null);
+    };
+    document.addEventListener("focusin", clearPanelFocusOutsideWorkspace);
+    return () => document.removeEventListener("focusin", clearPanelFocusOutsideWorkspace);
+  }, []);
+
+  useEffect(() => {
+    if (!panelMovePlacement) return;
+    let secondFrame = 0;
+    const focusFirstPlacement = () => {
+      if (document.activeElement?.closest(".panel-placement-zones, .empty-placement-target")) {
+        return;
+      }
+      document.querySelector<HTMLElement>(
+        ".panel-placement-zone:not(:disabled), .panel-placement-cancel, .empty-placement-target .primary-button",
+      )?.focus({ preventScroll: true });
+    };
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        focusFirstPlacement();
+      });
+    });
+    const focusRetry = window.setTimeout(focusFirstPlacement, 80);
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame) window.cancelAnimationFrame(secondFrame);
+      window.clearTimeout(focusRetry);
+    };
+  }, [panelMovePlacement]);
 
   useLayoutEffect(() => {
     const pending = pendingPanelFocusRef.current;
@@ -847,12 +963,16 @@ export default function App() {
     );
     const previousRevision = revisionRef.current;
     revisionRef.current = nextState.dashboard.revision;
+    const nextActiveTab = nextState.dashboard.tabs.find(
+      ({ id }) => id === nextState.dashboard.activeTabId,
+    ) ?? nextState.dashboard.tabs[0];
 
     if (!hydratedRef.current) {
       hydratedRef.current = true;
-      setLayout(nextState.dashboard.layout);
-      layoutRef.current = nextState.dashboard.layout;
-      setFocusedPanelId(layoutPanelIds(nextState.dashboard.layout)[0] ?? null);
+      setActiveTabId(nextActiveTab.id);
+      setLayout(nextActiveTab.layout);
+      layoutRef.current = nextActiveTab.layout;
+      setFocusedPanelId(layoutPanelIds(nextActiveTab.layout)[0] ?? null);
       return;
     }
 
@@ -862,8 +982,9 @@ export default function App() {
         !serverLayoutMutationRef.current &&
         Object.keys(draftsRef.current).length === 0)
     ) {
-      setLayout(nextState.dashboard.layout);
-      layoutRef.current = nextState.dashboard.layout;
+      setActiveTabId(nextActiveTab.id);
+      setLayout(nextActiveTab.layout);
+      layoutRef.current = nextActiveTab.layout;
     }
   }, []);
 
@@ -913,6 +1034,10 @@ export default function App() {
         });
         return;
       }
+      if (panelId === LINK_READER_ID) {
+        readerEscapeRestoreRef.current = readerReturnFocusRef.current;
+        window.vibedeck.focusDashboard();
+      }
       setLinkPreview((current) => {
         if (current) return null;
         return current;
@@ -923,7 +1048,15 @@ export default function App() {
     });
     const unsubscribeGlobalSearch = window.vibedeck.onOpenGlobalSearch((nativeOrigin) => {
       if (!live) return;
-      openSemanticSearch({ kind: "all" }, nativeOrigin);
+      if (openSemanticSearchRef.current({ kind: "all" }, nativeOrigin)) {
+        window.vibedeck.focusDashboard();
+      }
+    });
+    const unsubscribeTabShortcut = window.vibedeck.onActivateDashboardTab((index) => {
+      const tab = stateRef.current?.dashboard.tabs[index];
+      if (tab && activateTabRef.current(tab.id, { focusContent: true })) {
+        window.vibedeck.focusDashboard();
+      }
     });
     void window.vibedeck.getSemanticSearchStatus().then((nextStatus) => {
       if (live) setSemanticSearchStatus(nextStatus);
@@ -937,6 +1070,7 @@ export default function App() {
       unsubscribeWebEscape();
       unsubscribeSemanticStatus();
       unsubscribeGlobalSearch();
+      unsubscribeTabShortcut();
     };
   }, [applyServerState]);
 
@@ -980,12 +1114,18 @@ export default function App() {
     const retries = [50, 150, 300, 600, 1_000].map((delay) =>
       window.setTimeout(restorePendingFocus, delay)
     );
+    const releaseEscapeRestore = window.setTimeout(() => {
+      if (readerEscapeRestoreRef.current === target) {
+        readerEscapeRestoreRef.current = null;
+      }
+    }, 1_050);
     return () => {
       document.removeEventListener("focusin", restoreAfterPanelRootFocus, true);
       window.cancelAnimationFrame(frame);
       window.cancelAnimationFrame(panelRootFocusFrame);
       readerNativeFocusHandoffRef.current = false;
       for (const retry of retries) window.clearTimeout(retry);
+      window.clearTimeout(releaseEscapeRestore);
     };
   }, [linkPreview, readerSurfacePresent]);
 
@@ -1004,6 +1144,7 @@ export default function App() {
         return;
       }
       readerReturnFocusRef.current = null;
+      readerEscapeRestoreRef.current = null;
       readerOpenPointerPositionRef.current = null;
     };
     document.addEventListener("pointerdown", cancelReaderReturnForPointerDown, true);
@@ -1059,14 +1200,20 @@ export default function App() {
     const failedPanelIds = new Set(
       failedWebPanelKey ? failedWebPanelKey.split("\u0000") : [],
     );
-    const descriptors: WebPanelDescriptor[] = state.panels
+    const overlayCount = Object.keys(webPreviewDrafts).length + (linkPreview ? 1 : 0);
+    const persistentDescriptors: WebPanelDescriptor[] = state.panels
       .filter((panel): panel is WebPanel => panel.kind === "web")
+      .filter((panel) => {
+        const tabId = tabForPanel(state.dashboard.tabs, panel.id)?.id;
+        return tabId === activeTabId || tabId === retainedWebTabId;
+      })
       .map((panel) => {
         const surface = document.querySelector<HTMLElement>(
           `[data-web-panel-surface="${panel.id}"]`,
         );
         const canDisplay =
           Boolean(surface) &&
+          tabForPanel(state.dashboard.tabs, panel.id)?.id === activeTabId &&
           !nativeWebSurfacesBlocked &&
           !linkPreview &&
           !failedPanelIds.has(panel.id);
@@ -1079,6 +1226,15 @@ export default function App() {
           visible: canDisplay && measured.fullyInViewport,
         };
       });
+    persistentDescriptors.sort((first, second) => {
+      const firstIsActive = tabForPanel(state.dashboard.tabs, first.panelId)?.id === activeTabId;
+      const secondIsActive = tabForPanel(state.dashboard.tabs, second.panelId)?.id === activeTabId;
+      return Number(secondIsActive) - Number(firstIsActive);
+    });
+    const descriptors = persistentDescriptors.slice(
+      0,
+      Math.max(0, MAX_NATIVE_WEB_VIEWS - overlayCount),
+    );
     for (const preview of Object.values(webPreviewDrafts)) {
       const surface = document.querySelector<HTMLElement>(
         `[data-web-preview-surface="${CSS.escape(preview.previewId)}"]`,
@@ -1120,6 +1276,8 @@ export default function App() {
     failedWebPanelKey,
     linkPreview,
     nativeWebSurfacesBlocked,
+    activeTabId,
+    retainedWebTabId,
     state,
     webPreviewDrafts,
   ]);
@@ -1146,13 +1304,183 @@ export default function App() {
     };
   }, [layout, syncWebPanels]);
 
+  useEffect(() => () => {
+    if (retainedWebTimerRef.current !== null) {
+      window.clearTimeout(retainedWebTimerRef.current);
+    }
+  }, []);
+
+  const captureTabRuntime = useCallback((tabId: string, focusedElement?: HTMLElement | null) => {
+    const scrollByPanelId = new Map<string, {
+      scrollTop: number;
+      anchorItemId: string | null;
+      anchorViewportTop: number | null;
+    }>();
+    document.querySelectorAll<HTMLElement>(".split-layout__leaf[data-panel-id]").forEach((leaf) => {
+      const panelId = leaf.dataset.panelId;
+      const list = leaf.querySelector<HTMLElement>(".article-list");
+      if (!panelId || !list) return;
+      const listBounds = list.getBoundingClientRect();
+      const anchor = [...leaf.querySelectorAll<HTMLElement>(".article-row[data-feed-item-id]")]
+        .find((row) => row.getBoundingClientRect().bottom > listBounds.top + 1) ?? null;
+      scrollByPanelId.set(panelId, {
+        scrollTop: list.scrollTop,
+        anchorItemId: anchor?.dataset.feedItemId ?? null,
+        anchorViewportTop: anchor?.getBoundingClientRect().top ?? null,
+      });
+    });
+    const activeElement = focusedElement ?? (document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null);
+    const activeLeaf = activeElement?.closest<HTMLElement>(".split-layout__leaf[data-panel-id]");
+    const activePanelId = activeLeaf?.dataset.panelId ?? null;
+    tabRuntimeRef.current.set(tabId, {
+      focusedPanelId: activePanelId ?? focusedPanelIdRef.current,
+      focusedControl: activePanelId && activeElement
+        ? {
+            panelId: activePanelId,
+            elementId: activeElement.id || null,
+            ariaLabel: activeElement.getAttribute("aria-label"),
+          }
+        : null,
+      transientLayout: layoutRef.current,
+      scrollByPanelId,
+    });
+  }, []);
+
+  useEffect(() => {
+    const captureBeforeLeavingPanels = (event: FocusEvent) => {
+      const source = event.target instanceof HTMLElement ? event.target : null;
+      if (!source?.closest(".dashboard-panel")) return;
+      if (event.relatedTarget instanceof Element && event.relatedTarget.closest(".dashboard-panel")) {
+        return;
+      }
+      const currentTabId = activeTabIdRef.current;
+      if (!currentTabId) return;
+      captureTabRuntime(currentTabId, source);
+      preCapturedTabIdRef.current = currentTabId;
+    };
+    document.addEventListener("focusout", captureBeforeLeavingPanels);
+    return () => document.removeEventListener("focusout", captureBeforeLeavingPanels);
+  }, [captureTabRuntime]);
+
+  const restoreTabRuntime = useCallback((
+    tabId: string,
+    focusContent: boolean,
+    fallbackPanelId: string | null = null,
+  ) => {
+    const runtime = tabRuntimeRef.current.get(tabId);
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        for (const [panelId, saved] of runtime?.scrollByPanelId ?? []) {
+          const list = document.querySelector<HTMLElement>(
+            `.split-layout__leaf[data-panel-id="${CSS.escape(panelId)}"] .article-list`,
+          );
+          if (list) list.scrollTop = saved.scrollTop;
+        }
+        window.requestAnimationFrame(() => {
+          for (const [panelId, saved] of runtime?.scrollByPanelId ?? []) {
+            if (!saved.anchorItemId || saved.anchorViewportTop === null) continue;
+            const leaf = document.querySelector<HTMLElement>(
+              `.split-layout__leaf[data-panel-id="${CSS.escape(panelId)}"]`,
+            );
+            const list = leaf?.querySelector<HTMLElement>(".article-list");
+            const anchor = leaf?.querySelector<HTMLElement>(
+              `.article-row[data-feed-item-id="${CSS.escape(saved.anchorItemId)}"]`,
+            );
+            if (list && anchor) {
+              list.scrollTop += anchor.getBoundingClientRect().top - saved.anchorViewportTop;
+            }
+          }
+        });
+        if (focusContent) {
+          const panelId = runtime?.focusedControl?.panelId ?? runtime?.focusedPanelId ?? fallbackPanelId;
+          const leaf = panelId
+            ? document.querySelector<HTMLElement>(
+                `.split-layout__leaf[data-panel-id="${CSS.escape(panelId)}"]`,
+              )
+            : null;
+          const savedControl = runtime?.focusedControl;
+          const controlById = savedControl?.elementId
+            ? document.getElementById(savedControl.elementId)
+            : null;
+          const controlByLabel = !controlById && savedControl?.ariaLabel && leaf
+            ? leaf.querySelector<HTMLElement>(
+                `[aria-label="${CSS.escape(savedControl.ariaLabel)}"]`,
+              )
+            : null;
+          const control = controlById instanceof HTMLElement && leaf?.contains(controlById)
+            ? controlById
+            : controlByLabel;
+          if (control) control.focus({ preventScroll: true });
+          else if (panelId) focusDashboardPanelRoot(panelId, true);
+        }
+      });
+    });
+  }, []);
+
+  const activateTab = useCallback((
+    tabId: string,
+    { focusContent = true, persist = true }: { focusContent?: boolean; persist?: boolean } = {},
+  ) => {
+    if (
+      !state ||
+      modal ||
+      interactionActive ||
+      settingsPendingOperation ||
+      serverLayoutMutationRef.current
+    ) return false;
+    const tab = state.dashboard.tabs.find(({ id }) => id === tabId);
+    if (!tab) return false;
+    const previousTabId = activeTabIdRef.current;
+    if (previousTabId && previousTabId !== tabId) {
+      if (preCapturedTabIdRef.current !== previousTabId) {
+        captureTabRuntime(previousTabId);
+      }
+      setRetainedWebTabId(previousTabId);
+      if (retainedWebTimerRef.current !== null) {
+        window.clearTimeout(retainedWebTimerRef.current);
+      }
+      retainedWebTimerRef.current = window.setTimeout(() => {
+        retainedWebTimerRef.current = null;
+        setRetainedWebTabId((current) => current === previousTabId ? null : current);
+      }, 30_000);
+    }
+    const runtime = tabRuntimeRef.current.get(tabId);
+    const hasDraft = Object.values(draftsRef.current).some((draft) => draft.tabId === tabId);
+    const destinationLayout = hasDraft ? runtime?.transientLayout ?? tab.layout : tab.layout;
+    setLinkPreview(null);
+    readerReturnFocusRef.current = null;
+    readerEscapeRestoreRef.current = null;
+    setActiveTabId(tabId);
+    setLayout(destinationLayout);
+    layoutRef.current = destinationLayout;
+    const destinationPanelId = runtime?.focusedPanelId ?? layoutPanelIds(destinationLayout)[0] ?? null;
+    preCapturedTabIdRef.current = null;
+    setFocusedPanelId(focusContent ? destinationPanelId : null);
+    restoreTabRuntime(tabId, focusContent, destinationPanelId);
+    if (persist) {
+      void window.vibedeck.selectDashboardTab(tabId)
+        .then((nextState) => applyServerState(nextState))
+        .catch(async (error) => {
+          showToast(cleanError(error));
+          applyServerState(await window.vibedeck.getState(), true);
+        });
+    }
+    return true;
+  }, [applyServerState, captureTabRuntime, interactionActive, modal, restoreTabRuntime, settingsPendingOperation, showToast, state]);
+  activateTabRef.current = activateTab;
+
   const persistLayout = useCallback(
     (nextLayout: LayoutNode | null) => {
       if (Object.keys(draftsRef.current).length > 0) return Promise.resolve();
+      const targetTabId = activeTabIdRef.current;
+      if (!targetTabId) return Promise.resolve();
       const job = saveChainRef.current.then(async () => {
-        serverLayoutMutationRef.current = true;
+        markStructuralMutation(true);
         try {
           const nextState = await window.vibedeck.saveDashboardLayout(
+            targetTabId,
             nextLayout,
             revisionRef.current,
           );
@@ -1162,7 +1490,7 @@ export default function App() {
           const recovered = await window.vibedeck.getState();
           applyServerState(recovered, true);
         } finally {
-          serverLayoutMutationRef.current = false;
+          markStructuralMutation(false);
         }
       });
       saveChainRef.current = job.catch(() => undefined);
@@ -1175,7 +1503,7 @@ export default function App() {
     targetPanelId: string | null = null,
     direction: "row" | "column" = "row",
   ) {
-    if (settingsOpen && settingsPendingOperation) return null;
+    if (serverLayoutMutationRef.current || (settingsOpen && settingsPendingOperation)) return null;
     setSettingsOpen(false);
     setLinkPreview(null);
     const existingDraftId = Object.keys(draftsRef.current)[0];
@@ -1215,6 +1543,7 @@ export default function App() {
       : null;
     const nextDraft: DraftPanel = {
       id: draftId,
+      tabId: activeTabIdRef.current!,
       targetPanelId: target,
       side,
       pending: false,
@@ -1360,17 +1689,19 @@ export default function App() {
     if (draftCompletionRef.current.has(draftId)) return;
     if (
       input.kind === "web" &&
-      state.panels.filter((panel) => panel.kind === "web").length >=
+      state.panels.filter((panel) =>
+        panel.kind === "web" &&
+        tabForPanel(state.dashboard.tabs, panel.id)?.id === draft.tabId).length >=
         MAX_DASHBOARD_WEB_PANELS
     ) {
       throw new Error(
-        `Le dashboard accepte jusqu’à ${MAX_DASHBOARD_WEB_PANELS} pages web simultanées.`,
+        `Un onglet accepte jusqu’à ${MAX_DASHBOARD_WEB_PANELS} pages web.`,
       );
     }
     draftCompletionRef.current.add(draftId);
     setDraftPending(draftId, true);
     const previousIds = new Set(state.panels.map(({ id }) => id));
-    serverLayoutMutationRef.current = true;
+    markStructuralMutation(true);
     try {
       const webPreview = webPreviewDraftsRef.current[draftId];
       let nextState = input.kind === "web" && webPreview
@@ -1434,6 +1765,7 @@ export default function App() {
       if (desiredLayout) {
         try {
           nextState = await window.vibedeck.saveDashboardLayout(
+            draft.tabId,
             desiredLayout,
             nextState.dashboard.revision,
           );
@@ -1462,33 +1794,33 @@ export default function App() {
     } finally {
       draftCompletionRef.current.delete(draftId);
       setDraftPending(draftId, false);
-      serverLayoutMutationRef.current = false;
+      markStructuralMutation(false);
     }
   }
 
   async function closePanel(panelId: string) {
-    serverLayoutMutationRef.current = true;
+    markStructuralMutation(true);
     try {
       const nextState = await window.vibedeck.deletePanel(panelId);
       applyServerState(nextState, true);
       setModal(null);
-      setFocusedPanelId(layoutPanelIds(nextState.dashboard.layout)[0] ?? null);
+      const activeTab = nextState.dashboard.tabs.find(
+        ({ id }) => id === nextState.dashboard.activeTabId,
+      );
+      setFocusedPanelId(layoutPanelIds(activeTab?.layout ?? null)[0] ?? null);
       showToast("Panel fermé");
     } catch (error) {
       showToast(cleanError(error));
     } finally {
-      serverLayoutMutationRef.current = false;
+      markStructuralMutation(false);
     }
   }
 
   async function clearDashboard() {
     if (!state) return;
-    serverLayoutMutationRef.current = true;
+    markStructuralMutation(true);
     try {
-      let nextState = state;
-      for (const panel of [...state.panels]) {
-        nextState = await window.vibedeck.deletePanel(panel.id);
-      }
+      const nextState = await window.vibedeck.resetDashboard(state.dashboard.revision);
       applyServerState(nextState, true);
       setDrafts({});
       setModal(null);
@@ -1498,7 +1830,147 @@ export default function App() {
     } catch (error) {
       showToast(cleanError(error));
     } finally {
-      serverLayoutMutationRef.current = false;
+      markStructuralMutation(false);
+    }
+  }
+
+  async function createDashboardTab() {
+    if (!state || state.dashboard.tabs.length >= 9) return;
+    markStructuralMutation(true);
+    try {
+      const nextState = await window.vibedeck.createDashboardTab(
+        `Onglet ${state.dashboard.tabs.length + 1}`,
+        state.dashboard.revision,
+      );
+      const created = nextState.dashboard.tabs.find(
+        (tab) => !state.dashboard.tabs.some(({ id }) => id === tab.id),
+      );
+      applyServerState(nextState, true);
+      if (created) setRenamingTabId(created.id);
+      setFocusedPanelId(null);
+    } catch (error) {
+      showToast(cleanError(error));
+    } finally {
+      markStructuralMutation(false);
+    }
+  }
+
+  async function renameDashboardTab(tabId: string, name: string) {
+    if (!state) return;
+    markStructuralMutation(true);
+    try {
+      const nextState = await window.vibedeck.renameDashboardTab(
+        tabId,
+        name,
+        state.dashboard.revision,
+      );
+      applyServerState(nextState, true);
+    } catch (error) {
+      showToast(cleanError(error));
+    } finally {
+      markStructuralMutation(false);
+      setRenamingTabId(null);
+    }
+  }
+
+  async function reorderDashboardTabs(tabIds: string[]) {
+    if (!state) return;
+    markStructuralMutation(true);
+    try {
+      applyServerState(await window.vibedeck.reorderDashboardTabs(
+        tabIds,
+        state.dashboard.revision,
+      ), true);
+    } catch (error) {
+      showToast(cleanError(error));
+    } finally {
+      markStructuralMutation(false);
+    }
+  }
+
+  async function closeDashboardTab(tabId: string) {
+    if (!state) return;
+    const draftIds = Object.values(draftsRef.current)
+      .filter((draft) => draft.tabId === tabId)
+      .map(({ id }) => id);
+    markStructuralMutation(true);
+    try {
+      const nextState = await window.vibedeck.deleteDashboardTab(
+        tabId,
+        state.dashboard.revision,
+      );
+      await Promise.all(draftIds.map((draftId) => cancelWebPreview(draftId)));
+      if (draftIds.length > 0) {
+        const nextDrafts = { ...draftsRef.current };
+        for (const draftId of draftIds) delete nextDrafts[draftId];
+        draftsRef.current = nextDrafts;
+        setDrafts(nextDrafts);
+      }
+      tabRuntimeRef.current.delete(tabId);
+      setModal(null);
+      setPanelMovePlacement(null);
+      applyServerState(nextState, true);
+      const active = nextState.dashboard.tabs.find(
+        ({ id }) => id === nextState.dashboard.activeTabId,
+      );
+      setFocusedPanelId(null);
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          const activeTabButton = document.getElementById(
+            `dashboard-tab-${nextState.dashboard.activeTabId}`,
+          );
+          if (activeTabButton instanceof HTMLElement) {
+            activeTabButton.focus({ preventScroll: true });
+          } else {
+            const fallbackPanelId = layoutPanelIds(active?.layout ?? null)[0];
+            if (fallbackPanelId) focusDashboardPanelRoot(fallbackPanelId, true);
+          }
+        });
+      });
+      showToast("Onglet fermé");
+    } catch (error) {
+      showToast(cleanError(error));
+    } finally {
+      markStructuralMutation(false);
+    }
+  }
+
+  function beginPanelMove(panelId: string, destinationTabId: string) {
+    if (!state || Object.keys(draftsRef.current).length > 0) return;
+    const sourceTab = tabForPanel(state.dashboard.tabs, panelId);
+    if (!sourceTab || sourceTab.id === destinationTabId) return;
+    setDraggedPanelId(null);
+    setPanelMovePlacement({ panelId, sourceTabId: sourceTab.id, destinationTabId });
+    activateTab(destinationTabId, { focusContent: false, persist: false });
+  }
+
+  function cancelPanelMove() {
+    const pending = panelMovePlacement;
+    setPanelMovePlacement(null);
+    if (pending) activateTab(pending.sourceTabId, { focusContent: true, persist: false });
+  }
+
+  async function commitPanelMove(placement: CrossTabPanelPlacement) {
+    if (!state || !panelMovePlacement) return;
+    markStructuralMutation(true);
+    try {
+      const nextState = await window.vibedeck.movePanelToTab(
+        panelMovePlacement.panelId,
+        panelMovePlacement.destinationTabId,
+        placement,
+        state.dashboard.revision,
+      );
+      setPanelMovePlacement(null);
+      applyServerState(nextState, true);
+      setFocusedPanelId(panelMovePlacement.panelId);
+      restoreTabRuntime(panelMovePlacement.destinationTabId, true, panelMovePlacement.panelId);
+      showToast("Panel déplacé");
+    } catch (error) {
+      showToast(cleanError(error));
+      applyServerState(await window.vibedeck.getState(), true);
+      setPanelMovePlacement(null);
+    } finally {
+      markStructuralMutation(false);
     }
   }
 
@@ -1544,6 +2016,7 @@ export default function App() {
 
   function openItem(item: FeedItem, returnFocus: ReaderReturnFocus) {
     readerReturnFocusRef.current = returnFocus;
+    readerEscapeRestoreRef.current = null;
     readerOpenPointerPositionRef.current = lastDashboardPointerPositionRef.current;
     setWebStates((current) => {
       if (!(LINK_READER_ID in current)) return current;
@@ -1727,16 +2200,24 @@ export default function App() {
   }
 
   function openSemanticSearch(scope: SemanticSearchScope, nativeOrigin = false) {
-    if (settingsOpen && settingsPendingOperation) return;
+    if (settingsOpen && settingsPendingOperation) return false;
     setSettingsOpen(false);
     captureSemanticSearchOrigin();
+    const currentTabId = activeTabIdRef.current;
+    if (currentTabId && preCapturedTabIdRef.current !== currentTabId) {
+      captureTabRuntime(currentTabId);
+      preCapturedTabIdRef.current = currentTabId;
+    }
     semanticSearchNativeOriginRef.current = nativeOrigin;
     setSemanticSearchScope(scope);
     setSemanticSearchOpen(true);
+    return true;
   }
+  openSemanticSearchRef.current = openSemanticSearch;
 
   function closeSemanticSearchPalette() {
     setSemanticSearchOpen(false);
+    preCapturedTabIdRef.current = null;
     const restoreNative = semanticSearchNativeOriginRef.current;
     semanticSearchNativeOriginRef.current = false;
     window.vibedeck.finishSemanticSearchFocus(restoreNative);
@@ -1790,6 +2271,14 @@ export default function App() {
       ? scope.panelId
       : semanticSearchRestoreRef.current?.focusedPanelId ??
         state?.panels.find((panel): panel is FeedPanel => panel.kind === "feed")?.id ?? null;
+    const destinationTab = destinationPanelId && state
+      ? tabForPanel(state.dashboard.tabs, destinationPanelId)
+      : null;
+    if (destinationTab && destinationTab.id !== activeTabIdRef.current) {
+      activateTab(destinationTab.id, { focusContent: false });
+    } else {
+      preCapturedTabIdRef.current = null;
+    }
     if (destinationPanelId) setFocusedPanelId(destinationPanelId);
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
@@ -1811,10 +2300,15 @@ export default function App() {
         event.key !== "Escape"
       ) {
         readerReturnFocusRef.current = null;
+        readerEscapeRestoreRef.current = null;
         readerOpenPointerPositionRef.current = null;
       }
       if (event.key === "Escape") {
-        if (semanticSearchOpen) {
+        if (panelMovePlacement) {
+          event.preventDefault();
+          cancelPanelMove();
+        }
+        else if (semanticSearchOpen) {
           closeSemanticSearchPalette();
         }
         else if (isTypingTarget(event.target)) return;
@@ -1828,6 +2322,26 @@ export default function App() {
         return;
       }
       if (modal) return;
+      const primaryTabModifier = isMac
+        ? event.metaKey && !event.ctrlKey
+        : event.ctrlKey && !event.metaKey;
+      if (
+        primaryTabModifier &&
+        !event.altKey &&
+        !event.shiftKey &&
+        !event.repeat &&
+        /^Digit[1-9]$/.test(event.code)
+      ) {
+        event.preventDefault();
+        if (settingsPendingOperation || serverLayoutMutationRef.current) return;
+        const tab = state?.dashboard.tabs[Number(event.code.slice(-1)) - 1];
+        if (tab) {
+          setSettingsOpen(false);
+          setSemanticSearchOpen(false);
+          activateTab(tab.id, { focusContent: true });
+        }
+        return;
+      }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
         openSemanticSearch({ kind: "all" });
@@ -2062,15 +2576,38 @@ export default function App() {
     }
     const panel = panelById.get(panelId);
     if (!panel) return <MissingPanel panelId={panelId} />;
+    const withPlacementZones = (content: React.ReactNode) => panelMovePlacement && layout ? (
+      <PanelPlacementTarget
+        layout={layout}
+        movingPanelName={panelById.get(panelMovePlacement.panelId)?.name ?? "le panel"}
+        targetPanel={panel}
+        onPlace={(placement) => void commitPanelMove(placement)}
+        onCancel={cancelPanelMove}
+      >
+        {content}
+      </PanelPlacementTarget>
+    ) : content;
     const common = {
       focused: focusedPanelId === panel.id,
-      actionsDisabled: Object.keys(drafts).length > 0,
+      actionsDisabled: structuralMutationPending || Object.keys(drafts).length > 0,
       onFocus: () => setFocusedPanelId(panel.id),
       onPointerIntent: (intent: PanelPointerIntent | null) => {
         if (!intent) {
           readerReturnFocusRef.current = null;
+          readerEscapeRestoreRef.current = null;
           readerOpenPointerPositionRef.current = null;
           return false;
+        }
+        if (
+          intent.trusted &&
+          readerReturnFocusRef.current &&
+          readerEscapeRestoreRef.current === readerReturnFocusRef.current
+        ) {
+          // La destruction d’une WebContentsView peut produire un pointerenter
+          // synthétique sous Windows. Un vrai clic ou une touche annule ce
+          // verrou via les gestionnaires dédiés ; le simple teardown ne doit
+          // pas voler le retour de focus demandé par Échap.
+          return true;
         }
         if (
           readerReturnFocusRef.current &&
@@ -2131,10 +2668,14 @@ export default function App() {
       onRename: (name: string) => renamePanel(panel.id, name),
       onMove: (offset: -1 | 1, identity: PanelFocusIdentity) =>
         movePanelByOffset(panel.id, offset, identity),
+      moveTargets: state!.dashboard.tabs
+        .filter((tab) => tab.id !== activeTabId)
+        .map(({ id, name }) => ({ id, name })),
+      onMoveToTab: (tabId: string) => beginPanelMove(panel.id, tabId),
     };
     if (panel.kind === "feed") {
       const ui = feedUi[panel.id] ?? initialFeedUi(panel, state!);
-      return (
+      return withPlacementZones(
         <FeedPanelView
           key={panel.id}
           panel={panel}
@@ -2154,17 +2695,17 @@ export default function App() {
           textScaleOverride={feedTextScaleOverrides[panel.id] ?? null}
           onTextScale={(direction) => adjustFeedTextScale(direction, panel.id)}
           {...common}
-        />
+        />,
       );
     }
-    return (
+    return withPlacementZones(
       <WebPanelView
         key={panel.id}
         panel={panel}
         runtime={webStates[panel.id]}
         onSetUrl={(url) => updateWebPanelUrl(panel.id, url)}
         {...common}
-      />
+      />,
     );
   }
 
@@ -2272,14 +2813,47 @@ export default function App() {
           className="primary-button global-add"
           aria-label="Nouveau panel"
           title="Nouveau panel"
-          disabled={Boolean(settingsPendingOperation)}
+          disabled={Boolean(settingsPendingOperation) || structuralMutationPending}
           onClick={() => beginDraft()}
         >
           <Plus size={14} /> <span className="global-action-label">Nouveau panel</span>
         </button>
       </header>
 
+      <DashboardTabs
+        tabs={state.dashboard.tabs}
+        activeTabId={activeTabId ?? state.dashboard.activeTabId}
+        renamingTabId={renamingTabId}
+        draggedPanelId={draggedPanelId}
+        disabled={
+          Boolean(settingsPendingOperation) ||
+          structuralMutationPending ||
+          Boolean(modal) ||
+          interactionActive ||
+          Boolean(panelMovePlacement) ||
+          Object.values(drafts).some(({ pending }) => pending)
+        }
+        onActivate={(tabId, focusContent) => {
+          activateTab(tabId, { focusContent });
+        }}
+        onPrepareActivate={(tabId) => {
+          const currentTabId = activeTabIdRef.current;
+          if (!currentTabId || currentTabId === tabId) return;
+          captureTabRuntime(currentTabId);
+          preCapturedTabIdRef.current = currentTabId;
+        }}
+        onCreate={() => void createDashboardTab()}
+        onRename={renameDashboardTab}
+        onRenameStart={setRenamingTabId}
+        onReorder={(tabIds) => void reorderDashboardTabs(tabIds)}
+        onClose={(tabId) => setModal({ kind: "close-tab", tabId })}
+        onMovePanel={beginPanelMove}
+      />
+
       <main
+        id="dashboard-active-tabpanel"
+        role="tabpanel"
+        aria-labelledby={`dashboard-tab-${activeTabId ?? state.dashboard.activeTabId}`}
         className={`dashboard-stage${settingsOpen ? " dashboard-stage--settings-hidden" : ""}`}
         aria-label="Dashboard de veille"
         aria-hidden={settingsOpen || modal || semanticSearchOpen || updateInstallConfirmationOpen ? true : undefined}
@@ -2293,7 +2867,9 @@ export default function App() {
           {layout ? (
             <SplitLayout
               layout={layout}
+              disabled={structuralMutationPending || Object.keys(drafts).length > 0}
               renderPanel={renderPanel}
+              onPanelDragStateChange={setDraggedPanelId}
               onRatioChange={(splitId, ratio) => {
                 const next = updateSplitRatio(layoutRef.current, splitId, ratio);
                 setLayout(next);
@@ -2316,10 +2892,24 @@ export default function App() {
               }}
             />
           ) : (
-            <EmptyDashboard
-              onCreate={() => beginDraft()}
-              onStartTemplate={() => void startCompetitorTemplate()}
-            />
+            panelMovePlacement ? (
+              <div
+                className="empty-placement-target"
+                role="group"
+                aria-label={`Placer ${panelById.get(panelMovePlacement.panelId)?.name ?? "le panel"} dans cet onglet vide`}
+              >
+                <strong>Placer le panel dans cet onglet vide</strong>
+                <button type="button" className="primary-button" onClick={() => void commitPanelMove({})}>
+                  Placer ici
+                </button>
+                <button type="button" className="quiet-button" onClick={cancelPanelMove}>Annuler</button>
+              </div>
+            ) : (
+              <EmptyDashboard
+                onCreate={() => beginDraft()}
+                onStartTemplate={() => void startCompetitorTemplate()}
+              />
+            )
           )}
         </div>
         {linkPreview && (
@@ -2357,7 +2947,10 @@ export default function App() {
           onRequestRemoveSemanticData={() =>
             setModal({ kind: "settings-confirm", action: "semantic-search" })}
           onImported={(nextState, backupCreated) => {
-            const destinationPanelId = layoutPanelIds(nextState.dashboard.layout)[0] ?? null;
+            const importedActiveTab = nextState.dashboard.tabs.find(
+              ({ id }) => id === nextState.dashboard.activeTabId,
+            );
+            const destinationPanelId = layoutPanelIds(importedActiveTab?.layout ?? null)[0] ?? null;
             applyServerState(nextState, true, true);
             setSettingsPendingOperation(null);
             setSettingsOpen(false);
@@ -2408,6 +3001,24 @@ export default function App() {
             onConfirm={() => closePanel(panel.id)}
           />
         ) : null;
+      })()}
+
+      {modal?.kind === "close-tab" && (() => {
+        const tab = state.dashboard.tabs.find(({ id }) => id === modal.tabId);
+        if (!tab) return null;
+        const panelCount = layoutPanelIds(tab.layout).length;
+        const draftCount = Object.values(drafts).filter((draft) => draft.tabId === tab.id).length;
+        return (
+          <ConfirmModal
+            title={`Fermer « ${tab.name} » ?`}
+            body={panelCount === 0 && draftCount === 0
+              ? "L’onglet vide sera supprimé."
+              : `${panelCount} panel${panelCount > 1 ? "s" : ""} seront supprimés${draftCount > 0 ? ` et ${draftCount} brouillon${draftCount > 1 ? "s" : ""} annulé${draftCount > 1 ? "s" : ""}` : ""}. Les sources et articles en cache resteront réutilisables.`}
+            confirmLabel="Fermer l’onglet"
+            onCancel={() => setModal(null)}
+            onConfirm={() => closeDashboardTab(tab.id)}
+          />
+        );
       })()}
 
       {modal?.kind === "clear-dashboard" && (
@@ -2472,6 +3083,7 @@ export default function App() {
               : null
           }
           panels={state.panels.filter((panel): panel is FeedPanel => panel.kind === "feed")}
+          tabs={state.dashboard.tabs}
           sources={state.sources}
           onScopeChange={setSemanticSearchScope}
           onPrepare={() => void window.vibedeck.prepareSemanticSearch().catch((error) => showToast(cleanError(error)))}
@@ -2486,7 +3098,13 @@ export default function App() {
             );
             const originPanel =
               candidatePanels.find(({ id }) => id === preferredPanelId) ?? candidatePanels[0];
+            const originTab = originPanel
+              ? tabForPanel(state.dashboard.tabs, originPanel.id)
+              : null;
             closeSemanticSearchPalette();
+            if (originTab && originTab.id !== activeTabIdRef.current) {
+              activateTab(originTab.id, { focusContent: false });
+            }
             void openItem(item, {
               panelId: originPanel?.id ?? preferredPanelId ?? "",
               rowId: originPanel ? `article-${originPanel.id}-${item.id}` : "",
@@ -2523,6 +3141,7 @@ function SearchPalette({
   initialQuery,
   initialResult,
   panels,
+  tabs,
   sources,
   onScopeChange,
   onPrepare,
@@ -2536,6 +3155,7 @@ function SearchPalette({
   initialQuery: string;
   initialResult: SemanticSearchResult | null;
   panels: FeedPanel[];
+  tabs: DashboardTab[];
   sources: Source[];
   onScopeChange: (scope: SemanticSearchScope) => void;
   onPrepare: () => void;
@@ -2853,7 +3473,10 @@ function SearchPalette({
               )}
             >
               <option value="all">Tous les fils</option>
-              {panels.map((panel) => <option key={panel.id} value={panel.id}>{panel.name}</option>)}
+              {panels.map((panel) => {
+                const tab = tabForPanel(tabs, panel.id);
+                return <option key={panel.id} value={panel.id}>{tab?.name ?? "Onglet"} — {panel.name}</option>;
+              })}
             </select>
             <button
               type="submit"
@@ -2891,7 +3514,7 @@ function SearchPalette({
                 const source = sourceById.get(item.sourceId);
                 const panelNames = panels
                   .filter((panel) => panel.sourceIds.includes(item.sourceId))
-                  .map((panel) => panel.name);
+                  .map((panel) => `${tabForPanel(tabs, panel.id)?.name ?? "Onglet"} — ${panel.name}`);
                 const selected = activeItemId === item.id;
                 return (
                   <button
@@ -2942,6 +3565,298 @@ function Brand({ vertical = false }: { vertical?: boolean }) {
   );
 }
 
+const TAB_DRAG_MIME = "application/x-vibedeck-tab";
+const PANEL_DRAG_MIME = "application/x-vibedeck-panel";
+
+function DashboardTabs({
+  tabs,
+  activeTabId,
+  renamingTabId,
+  draggedPanelId,
+  disabled,
+  onActivate,
+  onPrepareActivate,
+  onCreate,
+  onRename,
+  onRenameStart,
+  onReorder,
+  onClose,
+  onMovePanel,
+}: {
+  tabs: DashboardTab[];
+  activeTabId: string;
+  renamingTabId: string | null;
+  draggedPanelId: string | null;
+  disabled: boolean;
+  onActivate: (tabId: string, focusContent: boolean) => void;
+  onPrepareActivate: (tabId: string) => void;
+  onCreate: () => void;
+  onRename: (tabId: string, name: string) => Promise<void>;
+  onRenameStart: (tabId: string | null) => void;
+  onReorder: (tabIds: string[]) => void;
+  onClose: (tabId: string) => void;
+  onMovePanel: (panelId: string, tabId: string) => void;
+}) {
+  const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
+  const [dropTargetTabId, setDropTargetTabId] = useState<string | null>(null);
+  const [dropTargetKind, setDropTargetKind] = useState<"tab" | "panel" | null>(null);
+
+  const restoreTabButtonFocus = (tabId: string) => {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        document.getElementById(`dashboard-tab-${tabId}`)?.focus({ preventScroll: true });
+      });
+    });
+  };
+
+  return (
+    <nav className="dashboard-tabs" aria-label="Espaces de veille">
+      <div className="dashboard-tabs__list" role="tablist" aria-label="Onglets du dashboard">
+        {tabs.map((tab, index) => {
+          const active = tab.id === activeTabId;
+          const renaming = tab.id === renamingTabId;
+          return (
+            <div
+              className={`dashboard-tab${active ? " is-active" : ""}${
+                draggedTabId === tab.id ? " is-dragging" : ""
+              }${renaming ? " is-renaming" : ""}${
+                dropTargetTabId === tab.id && draggedTabId !== tab.id
+                ? dropTargetKind === "panel" ? " is-panel-drop-target" : " is-tab-drop-target"
+                : ""}`}
+              key={tab.id}
+              draggable={!renaming && !disabled}
+              onDragStart={(event) => {
+                setDraggedTabId(tab.id);
+                setDropTargetTabId(null);
+                setDropTargetKind(null);
+                event.dataTransfer.setData(TAB_DRAG_MIME, tab.id);
+                event.dataTransfer.effectAllowed = "move";
+              }}
+              onDragEnd={() => {
+                setDraggedTabId(null);
+                setDropTargetTabId(null);
+                setDropTargetKind(null);
+              }}
+              onDragOver={(event) => {
+                const isPanelDrag = Boolean(draggedPanelId) &&
+                  event.dataTransfer.types.includes(PANEL_DRAG_MIME);
+                const isTabDrag = Boolean(draggedTabId) &&
+                  event.dataTransfer.types.includes(TAB_DRAG_MIME);
+                if (!isPanelDrag && !isTabDrag) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "move";
+                setDropTargetTabId(tab.id);
+                setDropTargetKind(isPanelDrag ? "panel" : "tab");
+              }}
+              onDragLeave={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                  setDropTargetTabId((current) => current === tab.id ? null : current);
+                  setDropTargetKind(null);
+                }
+              }}
+              onDrop={(event) => {
+                setDropTargetTabId(null);
+                setDropTargetKind(null);
+                const panelId = event.dataTransfer.getData(PANEL_DRAG_MIME);
+                if (panelId && draggedPanelId && panelId === draggedPanelId) {
+                  event.preventDefault();
+                  onMovePanel(panelId, tab.id);
+                  return;
+                }
+                const sourceId = event.dataTransfer.getData(TAB_DRAG_MIME);
+                if (!sourceId || sourceId !== draggedTabId || sourceId === tab.id) return;
+                event.preventDefault();
+                const ids = tabs.map(({ id }) => id).filter((id) => id !== sourceId);
+                ids.splice(index, 0, sourceId);
+                onReorder(ids);
+              }}
+            >
+              {renaming ? (
+                <>
+                  <button
+                    type="button"
+                    role="tab"
+                    id={`dashboard-tab-${tab.id}`}
+                    aria-controls="dashboard-active-tabpanel"
+                    aria-selected={active}
+                    tabIndex={-1}
+                  >
+                    <kbd>{index + 1}</kbd><span>{tab.name}</span>
+                  </button>
+                  <input
+                    className="dashboard-tab__input"
+                    aria-label={`Renommer ${tab.name}`}
+                    defaultValue={tab.name}
+                    maxLength={80}
+                    autoFocus
+                    onFocus={(event) => event.currentTarget.select()}
+                    onBlur={(event) => {
+                      if (event.currentTarget.dataset.renameHandled === "true") return;
+                      void onRename(tab.id, event.currentTarget.value.trim() || tab.name);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        event.currentTarget.dataset.renameHandled = "true";
+                        void onRename(
+                          tab.id,
+                          event.currentTarget.value.trim() || tab.name,
+                        ).finally(() => restoreTabButtonFocus(tab.id));
+                      }
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        event.currentTarget.dataset.renameHandled = "true";
+                        onRenameStart(null);
+                        restoreTabButtonFocus(tab.id);
+                      }
+                    }}
+                  />
+                </>
+              ) : (
+                <button
+                  type="button"
+                  role="tab"
+                  id={`dashboard-tab-${tab.id}`}
+                  aria-controls="dashboard-active-tabpanel"
+                  aria-selected={active}
+                  aria-keyshortcuts={`${navigator.platform.includes("Mac") ? "Meta" : "Control"}+${index + 1}`}
+                  tabIndex={active ? 0 : -1}
+                  title={`${tab.name} · ${navigator.platform.includes("Mac") ? "⌘" : "Ctrl+"}${index + 1} · Glisser pour réordonner`}
+                  disabled={disabled}
+                  onPointerDown={(event) => {
+                    if (event.button === 0) onPrepareActivate(tab.id);
+                  }}
+                  onClick={() => onActivate(tab.id, false)}
+                  onDoubleClick={() => onRenameStart(tab.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === "F2") {
+                      event.preventDefault();
+                      onRenameStart(tab.id);
+                      return;
+                    }
+                    const nextIndex = event.key === "Home" ? 0
+                      : event.key === "End" ? tabs.length - 1
+                      : event.key === "ArrowLeft" ? (index - 1 + tabs.length) % tabs.length
+                      : event.key === "ArrowRight" ? (index + 1) % tabs.length
+                      : null;
+                    if (nextIndex === null) return;
+                    event.preventDefault();
+                    onActivate(tabs[nextIndex].id, false);
+                    window.requestAnimationFrame(() => {
+                      document.getElementById(`dashboard-tab-${tabs[nextIndex].id}`)?.focus();
+                    });
+                  }}
+                >
+                  <kbd>{index + 1}</kbd><span>{tab.name}</span>
+                </button>
+              )}
+              {!renaming && tabs.length > 1 && (
+                <button
+                  type="button"
+                  className="dashboard-tab__close"
+                  disabled={disabled}
+                  tabIndex={active ? 0 : -1}
+                  aria-label={`Fermer l’onglet ${tab.name}`}
+                  onClick={() => onClose(tab.id)}
+                >
+                  <X size={11} />
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <button
+        type="button"
+        className="dashboard-tabs__add"
+        aria-label="Nouvel onglet"
+        title="Nouvel onglet"
+        disabled={disabled || tabs.length >= 9}
+        onClick={onCreate}
+      >
+        <Plus size={13} />
+      </button>
+    </nav>
+  );
+}
+
+function PanelPlacementTarget({
+  children,
+  layout,
+  movingPanelName,
+  targetPanel,
+  onPlace,
+  onCancel,
+}: {
+  children: React.ReactNode;
+  layout: LayoutNode;
+  movingPanelName: string;
+  targetPanel: Panel;
+  onPlace: (placement: CrossTabPanelPlacement) => void;
+  onCancel: () => void;
+}) {
+  const targetRef = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState({ width: 0, height: 0 });
+
+  useLayoutEffect(() => {
+    const target = targetRef.current;
+    if (!target) return undefined;
+    const measure = () => {
+      const bounds = target.getBoundingClientRect();
+      setSize({ width: bounds.width, height: bounds.height });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <div
+      className="panel-placement-target"
+      ref={targetRef}
+      role="group"
+      aria-label={`Placer ${movingPanelName} autour de ${targetPanel.name}`}
+    >
+      {children}
+      <div className="panel-placement-zones">
+        {([
+          ["top", "Haut", "column", <ArrowLeft key="top" size={12} className="is-up" />],
+          ["left", "Gauche", "row", <ArrowLeft key="left" size={12} />],
+          ["right", "Droite", "row", <ArrowRight key="right" size={12} />],
+          ["bottom", "Bas", "column", <ArrowRight key="bottom" size={12} className="is-down" />],
+        ] as const).map(([side, label, direction, icon]) => {
+          const span = dashboardGridSpanWithPlacement(layout, targetPanel.id, direction);
+          const hasPhysicalSpace = direction === "row"
+            ? size.width >= MIN_HORIZONTAL_SPLIT_WIDTH
+            : size.height >= MIN_VERTICAL_SPLIT_HEIGHT;
+          const disabled = !hasPhysicalSpace || span.columns > 3 || span.rows > 3;
+          return (
+            <button
+              type="button"
+              className={`panel-placement-zone panel-placement-zone--${side}`}
+              key={side}
+              aria-label={`Placer ${movingPanelName} ${label.toLowerCase()} de ${targetPanel.name}`}
+              disabled={disabled}
+              title={disabled ? "Cette zone ne préserverait pas la taille minimale des panels." : undefined}
+              onClick={() => onPlace({ targetPanelId: targetPanel.id, side })}
+            >
+              {icon}<span>{label}</span>
+            </button>
+          );
+        })}
+        <button
+          type="button"
+          className="panel-placement-cancel quiet-button"
+          onClick={onCancel}
+        >
+          Annuler
+        </button>
+      </div>
+    </div>
+  );
+}
+
 interface PanelFrameProps {
   panelId: string;
   kind: "FIL" | "PAGE WEB" | "NOUVEAU";
@@ -2954,6 +3869,8 @@ interface PanelFrameProps {
   onRename?: (name: string) => void | Promise<void>;
   onSplit?: (direction: "row" | "column") => void;
   onMove?: (offset: -1 | 1, identity: PanelFocusIdentity) => void;
+  moveTargets?: Array<{ id: string; name: string }>;
+  onMoveToTab?: (tabId: string) => void;
   onClose: () => void;
   closeDisabled?: boolean;
   headerContext?: React.ReactNode;
@@ -3278,6 +4195,8 @@ function PanelFrame({
   onRename,
   onSplit,
   onMove,
+  moveTargets = [],
+  onMoveToTab,
   onClose,
   closeDisabled = false,
   headerContext,
@@ -3350,6 +4269,16 @@ function PanelFrame({
             group: "panel" as const,
           },
         ]
+      : []),
+    ...(onMoveToTab
+      ? moveTargets.map((tab) => ({
+          id: `move-tab:${tab.id}`,
+          label: `Déplacer vers ${tab.name}`,
+          icon: <ArrowRight size={13} />,
+          onSelect: () => onMoveToTab(tab.id),
+          disabled: actionsDisabled,
+          group: "panel" as const,
+        }))
       : []),
   ];
 
@@ -3599,6 +4528,8 @@ interface StandardPanelActions {
   onPointerIntent: (intent: PanelPointerIntent | null) => boolean;
   onSplit: (direction: "row" | "column") => void;
   onMove: (offset: -1 | 1, identity: PanelFocusIdentity) => void;
+  moveTargets: Array<{ id: string; name: string }>;
+  onMoveToTab: (tabId: string) => void;
   onClose: () => void;
   onRename: (name: string) => void | Promise<void>;
 }

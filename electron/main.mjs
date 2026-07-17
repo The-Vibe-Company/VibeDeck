@@ -53,7 +53,6 @@ const REFRESH_TICK_MS = 15_000;
 const PILOT_HEARTBEAT_MS = 60_000;
 const MAX_LAYOUT_DEPTH = 32;
 const MAX_LAYOUT_NODES = 1_023;
-const MAX_DASHBOARD_WEB_PANELS = 6;
 const MIN_REFRESH_INTERVAL_SECONDS = 30;
 const MAX_REFRESH_INTERVAL_SECONDS = 3_600;
 const CONNECTOR_PREFERENCES = new Set(["auto", "rss", "atom", "news-sitemap"]);
@@ -378,13 +377,41 @@ function cleanPanelPlacement(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new TypeError("Emplacement de panel invalide.");
   }
-  if (!PANEL_SIDES.has(value.side)) {
-    throw new TypeError("Côté de panel invalide.");
+  const keys = Object.keys(value);
+  if (keys.some((key) => !["tabId", "targetPanelId", "side"].includes(key))) {
+    throw new TypeError("Emplacement de panel invalide.");
   }
-  return {
-    targetPanelId: cleanId(value.targetPanelId),
-    side: value.side,
-  };
+  const placement = { tabId: cleanId(value.tabId) };
+  if (value.targetPanelId == null && value.side == null) return placement;
+  if (value.targetPanelId == null || !PANEL_SIDES.has(value.side)) {
+    throw new TypeError("Zone de panel invalide.");
+  }
+  return { ...placement, targetPanelId: cleanId(value.targetPanelId), side: value.side };
+}
+
+function cleanCrossTabPlacement(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Placement de panel invalide.");
+  }
+  const keys = Object.keys(value);
+  if (keys.length === 0) return {};
+  if (
+    keys.some((key) => !["targetPanelId", "side"].includes(key)) ||
+    value.targetPanelId == null ||
+    !PANEL_SIDES.has(value.side)
+  ) {
+    throw new TypeError("Zone de panel invalide.");
+  }
+  return { targetPanelId: cleanId(value.targetPanelId), side: value.side };
+}
+
+function cleanTabOrder(value) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 9) {
+    throw new TypeError("Ordre des onglets invalide.");
+  }
+  const ids = value.map(cleanId);
+  if (new Set(ids).size !== ids.length) throw new Error("Ordre des onglets dupliqué.");
+  return ids;
 }
 
 function cleanDashboardRevision(value) {
@@ -731,19 +758,28 @@ function runEngineOperation(operation) {
   return trackActiveOperation(task);
 }
 
+function activeDashboardPanelIds() {
+  const dashboard = engine.getRendererState().dashboard;
+  const activeTab = dashboard.tabs.find(({ id }) => id === dashboard.activeTabId);
+  const panelIds = new Set();
+  const visit = (node) => {
+    if (!node) return;
+    if (node.type === "panel") {
+      panelIds.add(node.panelId);
+      return;
+    }
+    visit(node.children[0]);
+    visit(node.children[1]);
+  };
+  visit(activeTab?.layout ?? null);
+  return panelIds;
+}
+
 function startAuthorizedWebPreview(event, previewId, url, cleanUrl) {
   const window = requireMainSender(event);
   const controller = controllerForEvent(event);
   if (resettingWebPanelControllers.has(controller)) {
     throw new Error("Les données web sont en cours de réinitialisation.");
-  }
-  if (
-    engine.getRendererState().panels.filter((panel) => panel.kind === "web").length >=
-      MAX_DASHBOARD_WEB_PANELS
-  ) {
-    throw new RangeError(
-      `Le dashboard accepte jusqu’à ${MAX_DASHBOARD_WEB_PANELS} pages web simultanées.`,
-    );
   }
   const normalizedPreviewId = cleanWebPreviewId(previewId);
   const normalizedUrl = cleanUrl(url);
@@ -751,13 +787,16 @@ function startAuthorizedWebPreview(event, previewId, url, cleanUrl) {
     window,
     { previewId: normalizedPreviewId, url: normalizedUrl },
     (authorization) => {
-      controller.startPreview({
-        kind: "preview",
-        panelId: authorization.previewId,
-        url: authorization.url,
-        bounds: { x: 0, y: 0, width: 0, height: 0 },
-        visible: false,
-      });
+      controller.startPreview(
+        {
+          kind: "preview",
+          panelId: authorization.previewId,
+          url: authorization.url,
+          bounds: { x: 0, y: 0, width: 0, height: 0 },
+          visible: false,
+        },
+        { protectedPanelIds: activeDashboardPanelIds() },
+      );
     },
   );
   return { previewId: normalizedPreviewId, normalizedUrl };
@@ -797,16 +836,6 @@ function registerIpcHandlers() {
   registerHandle("semantic-search:remove-data", () => runEngineOperation(() => semanticSearch.removeData()));
   registerHandle("aggregator:create-panel", (_event, input, placement) => runEngineOperation(async () => {
     const cleanedInput = cleanPanelInput(input);
-    if (
-      typeof cleanedInput === "object" &&
-      cleanedInput.kind === "web" &&
-      engine.getRendererState().panels.filter((panel) => panel.kind === "web").length >=
-        MAX_DASHBOARD_WEB_PANELS
-    ) {
-      throw new RangeError(
-        `Le dashboard accepte jusqu’à ${MAX_DASHBOARD_WEB_PANELS} pages web simultanées.`,
-      );
-    }
     const state = await engine.createPanel(
       cleanedInput,
       cleanPanelPlacement(placement),
@@ -823,14 +852,6 @@ function registerIpcHandlers() {
       const window = requireMainSender(event);
       const controller = controllerForEvent(event);
       const normalizedPreviewId = cleanWebPreviewId(previewId);
-      if (
-        engine.getRendererState().panels.filter((panel) => panel.kind === "web").length >=
-        MAX_DASHBOARD_WEB_PANELS
-      ) {
-        throw new RangeError(
-          `Le dashboard accepte jusqu’à ${MAX_DASHBOARD_WEB_PANELS} pages web simultanées.`,
-        );
-      }
       const state = await webPreviewAuthorizations.commit(
         window,
         normalizedPreviewId,
@@ -899,8 +920,9 @@ function registerIpcHandlers() {
   }));
   registerHandle(
     "aggregator:save-dashboard-layout",
-    (_event, layout, expectedRevision) => runEngineOperation(async () => {
+    (_event, tabId, layout, expectedRevision) => runEngineOperation(async () => {
       const state = await engine.saveDashboardLayout(
+        cleanId(tabId),
         cleanDashboardLayout(layout),
         cleanDashboardRevision(expectedRevision),
       );
@@ -908,6 +930,69 @@ function registerIpcHandlers() {
       return state;
     }),
   );
+  registerHandle("dashboard-tabs:create", (_event, name, expectedRevision) =>
+    runEngineOperation(async () => {
+      const state = await engine.createDashboardTab(
+        cleanName(name),
+        cleanDashboardRevision(expectedRevision),
+      );
+      broadcastState(state);
+      return state;
+    }));
+  registerHandle("dashboard-tabs:rename", (_event, tabId, name, expectedRevision) =>
+    runEngineOperation(async () => {
+      const state = await engine.renameDashboardTab(
+        cleanId(tabId),
+        cleanName(name),
+        cleanDashboardRevision(expectedRevision),
+      );
+      broadcastState(state);
+      return state;
+    }));
+  registerHandle("dashboard-tabs:reorder", (_event, tabIds, expectedRevision) =>
+    runEngineOperation(async () => {
+      const state = await engine.reorderDashboardTabs(
+        cleanTabOrder(tabIds),
+        cleanDashboardRevision(expectedRevision),
+      );
+      broadcastState(state);
+      return state;
+    }));
+  registerHandle("dashboard-tabs:select", (_event, tabId) =>
+    runEngineOperation(async () => {
+      const state = await engine.selectDashboardTab(cleanId(tabId));
+      broadcastState(state);
+      return state;
+    }));
+  registerHandle("dashboard-tabs:delete", (_event, tabId, expectedRevision) =>
+    runEngineOperation(async () => {
+      const state = await engine.deleteDashboardTab(
+        cleanId(tabId),
+        cleanDashboardRevision(expectedRevision),
+      );
+      broadcastState(state, { syncSemantic: true });
+      return state;
+    }));
+  registerHandle(
+    "dashboard-tabs:move-panel",
+    (_event, panelId, destinationTabId, placement, expectedRevision) =>
+      runEngineOperation(async () => {
+        const state = await engine.movePanelToTab(
+          cleanId(panelId),
+          cleanId(destinationTabId),
+          cleanCrossTabPlacement(placement),
+          cleanDashboardRevision(expectedRevision),
+        );
+        broadcastState(state);
+        return state;
+      }),
+  );
+  registerHandle("dashboard-tabs:reset", (_event, expectedRevision) =>
+    runEngineOperation(async () => {
+      const state = await engine.resetDashboard(cleanDashboardRevision(expectedRevision));
+      broadcastState(state, { syncSemantic: true });
+      return state;
+    }));
   registerHandle("aggregator:add-catalog-source", (_event, panelId, catalogId, options) => runEngineOperation(async () => {
     const result = await engine.addCatalogSource(
       cleanId(panelId),
@@ -1190,6 +1275,7 @@ function registerIpcHandlers() {
               bounds: { x: 0, y: 0, width: 0, height: 0 },
               visible: false,
             },
+            { protectedPanelIds: activeDashboardPanelIds() },
           );
         }
         const panelId = semanticSearchNativeFocus.get(window);
@@ -1272,8 +1358,15 @@ function createWindow() {
       if (!window.isDestroyed()) {
         semanticSearchNativeFocus.set(window, panelId);
         sendToWindow(window, "semantic-search:open-global", true);
-        window.webContents.focus();
       }
+    },
+    onActivateTab: (index) => {
+      const tabs = engine.getRendererState().dashboard.tabs;
+      if (!window.isDestroyed() && tabs[index] && !engine.feedConfigurationSaveActive) {
+        sendToWindow(window, "dashboard-tabs:activate-index", index);
+        return true;
+      }
+      return false;
     },
   });
   webPanelControllers.set(window, webPanelController);

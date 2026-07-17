@@ -25,12 +25,33 @@ contextBridge.exposeInMainWorld("vibedeck", {
       draft,
     ),
   deletePanel: (panelId) => ipcRenderer.invoke("aggregator:delete-panel", panelId),
-  saveDashboardLayout: (layout, expectedRevision) =>
+  saveDashboardLayout: (tabId, layout, expectedRevision) =>
     ipcRenderer.invoke(
       "aggregator:save-dashboard-layout",
+      tabId,
       layout,
       expectedRevision,
     ),
+  createDashboardTab: (name, expectedRevision) =>
+    ipcRenderer.invoke("dashboard-tabs:create", name, expectedRevision),
+  renameDashboardTab: (tabId, name, expectedRevision) =>
+    ipcRenderer.invoke("dashboard-tabs:rename", tabId, name, expectedRevision),
+  reorderDashboardTabs: (tabIds, expectedRevision) =>
+    ipcRenderer.invoke("dashboard-tabs:reorder", tabIds, expectedRevision),
+  selectDashboardTab: (tabId) =>
+    ipcRenderer.invoke("dashboard-tabs:select", tabId),
+  deleteDashboardTab: (tabId, expectedRevision) =>
+    ipcRenderer.invoke("dashboard-tabs:delete", tabId, expectedRevision),
+  movePanelToTab: (panelId, destinationTabId, placement, expectedRevision) =>
+    ipcRenderer.invoke(
+      "dashboard-tabs:move-panel",
+      panelId,
+      destinationTabId,
+      placement,
+      expectedRevision,
+    ),
+  resetDashboard: (expectedRevision) =>
+    ipcRenderer.invoke("dashboard-tabs:reset", expectedRevision),
   addCatalogSource: (panelId, catalogId, options) =>
     ipcRenderer.invoke("aggregator:add-catalog-source", panelId, catalogId, options),
   probeSource: (probeId, source) =>
@@ -129,5 +150,11 @@ contextBridge.exposeInMainWorld("vibedeck", {
     const listener = (_event, nativeOrigin) => callback(nativeOrigin === true);
     ipcRenderer.on("semantic-search:open-global", listener);
     return () => ipcRenderer.removeListener("semantic-search:open-global", listener);
+  },
+  onActivateDashboardTab: (callback) => {
+    if (typeof callback !== "function") throw new TypeError("Callback invalide.");
+    const listener = (_event, index) => callback(index);
+    ipcRenderer.on("dashboard-tabs:activate-index", listener);
+    return () => ipcRenderer.removeListener("dashboard-tabs:activate-index", listener);
   },
 });
