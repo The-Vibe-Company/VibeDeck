@@ -1,0 +1,31 @@
+README.md
+  s_71574823845472::t_8ab3ed17bc575d 95,97
+site/index.html
+  s_71574823845472::t_bb5755e4609eb2 73,208,210-211
+  s_71574823845472::t_fa1f5c7c5a6efd 33
+WINDOWS_RELEASE_TODO.md
+  s_71574823845472::t_8ab3ed17bc575d 1,5,7,46
+scripts/verify-release-config.mjs
+  s_71574823845472::t_e4fe374f7978d7 24-32,46,458,461-478,566-568,571-573,576-578,581-585,587-588,597-598,645-664,669
+.github/workflows/pilot-release.yml
+  s_71574823845472::t_43b40d44ced399 137-180,213-216,218,232,237-240,264-266
+PILOT_RELEASE.md
+  s_71574823845472::t_bc9fc5d0531564 115,147
+  s_71574823845472::t_3767f39998ce6a 85,99,101,107,113,122-124,128
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "8cf2c5efe18f9e6f56c51d8a3f603b388cdd7508",
+  "prompts": {},
+  "sessions": {
+    "s_71574823845472": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6e9e-e95b-7060-95dc-8cd2f8652e3a",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
