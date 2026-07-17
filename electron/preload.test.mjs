@@ -108,6 +108,10 @@ test("controls a web preview through a temporary id and commits only its name an
     "draft:123e4567-e89b-42d3-a456-426614174000",
     "https://example.test/",
   );
+  await api.startXPreview(
+    "draft:123e4567-e89b-42d3-a456-426614174000",
+    "x.com/i/lists/123456789",
+  );
   await api.commitWebPreview(
     "draft:123e4567-e89b-42d3-a456-426614174000",
     "Exemple",
@@ -125,6 +129,11 @@ test("controls a web preview through a temporary id and commits only its name an
       "https://example.test/",
     ],
     [
+      "x-preview:start",
+      "draft:123e4567-e89b-42d3-a456-426614174000",
+      "x.com/i/lists/123456789",
+    ],
+    [
       "web-preview:commit",
       "draft:123e4567-e89b-42d3-a456-426614174000",
       "Exemple",
@@ -132,6 +141,8 @@ test("controls a web preview through a temporary id and commits only its name an
     ],
     ["web-preview:cancel", "draft:123e4567-e89b-42d3-a456-426614174000"],
   ]);
+  assert.equal(api.xSession, undefined);
+  assert.equal(api.xCredentials, undefined);
 });
 
 test("saves a feed configuration through one main-owned IPC operation", async () => {
