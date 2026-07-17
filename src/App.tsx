@@ -960,26 +960,13 @@ export default function App() {
       !readerReturnFocusRef.current
     ) return;
     const target = readerReturnFocusRef.current;
-    const shouldPreserveCurrentFocus = () => {
-      const activeElement = document.activeElement;
-      return activeElement instanceof HTMLElement &&
-        activeElement !== document.body &&
-        activeElement.isConnected &&
-        activeElement.id !== target.rowId &&
-        !activeElement.matches(".dashboard-panel, .article-row");
-    };
     // Le focus DOM interne n’active pas la fenêtre native : on peut donc
     // restaurer la ligne même quand le pilote (ou VibeDeck) reste en arrière-plan.
-    if (shouldPreserveCurrentFocus()) {
-      if (readerReturnFocusRef.current === target) {
-        readerReturnFocusRef.current = null;
-        readerOpenPointerPositionRef.current = null;
-      }
-      return;
-    }
+    // Toute intention clavier ou pointeur explicite annule déjà la cible en
+    // amont ; l’activeElement observé pendant le teardown natif est transitoire.
     const frame = window.requestAnimationFrame(() => {
       if (readerReturnFocusRef.current !== target) return;
-      if (!shouldPreserveCurrentFocus()) restoreArticleFocus(target);
+      restoreArticleFocus(target);
     });
     return () => window.cancelAnimationFrame(frame);
   }, [linkPreview, readerSurfacePresent]);
