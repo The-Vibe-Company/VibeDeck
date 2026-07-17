@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.10.0](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.9.0...v0.10.0) (2026-07-17)
+
+
+### Features
+
+* **app:** réduire la taille minimale de la fenêtre ([#57](https://github.com/The-Vibe-Company/VibeDeck/issues/57)) ([82202a0](https://github.com/The-Vibe-Company/VibeDeck/commit/82202a04ea7be72e18c7053199077d87a899ce74))
+* **fils:** titres à mesure calibrée 56ch centrés (design « 2a ») et retrait du mode confort ([#53](https://github.com/The-Vibe-Company/VibeDeck/issues/53)) ([2c6d5f8](https://github.com/The-Vibe-Company/VibeDeck/commit/2c6d5f867d22697605c5c1e0973994ed1b6379bf))
+
+
+### Bug Fixes
+
+* **recherche:** stabiliser le modèle d’embedding ([#56](https://github.com/The-Vibe-Company/VibeDeck/issues/56)) ([8de541c](https://github.com/The-Vibe-Company/VibeDeck/commit/8de541c3d87a0d2a708b4a6d06450ec820d6a7a3))
+* **sources:** stabiliser l’attente de vérification ([#55](https://github.com/The-Vibe-Company/VibeDeck/issues/55)) ([22d3b7a](https://github.com/The-Vibe-Company/VibeDeck/commit/22d3b7a3bebc121be951cd6583a7798629a2ed31))
+
 ## [0.9.0](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.8.1...v0.9.0) (2026-07-16)
 
 
