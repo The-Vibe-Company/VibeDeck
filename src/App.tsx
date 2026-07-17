@@ -384,7 +384,10 @@ function restoreArticleFocus(target: ReaderReturnFocus) {
   focusDashboardPanelRoot(target.panelId);
 }
 
-function restoreSemanticSearchControl(restore: SemanticSearchRestoreState | null) {
+function restoreSemanticSearchControl(
+  restore: SemanticSearchRestoreState | null,
+  fallbackToPanel = true,
+) {
   const control = restore?.focusedControl;
   if (control) {
     const leaf = document.querySelector<HTMLElement>(
@@ -410,7 +413,24 @@ function restoreSemanticSearchControl(restore: SemanticSearchRestoreState | null
       if (document.activeElement === target) return true;
     }
   }
-  return restore?.focusedPanelId ? focusDashboardPanelRoot(restore.focusedPanelId) : false;
+  return fallbackToPanel && restore?.focusedPanelId
+    ? focusDashboardPanelRoot(restore.focusedPanelId)
+    : false;
+}
+
+function restoreSemanticSearchControlAfterRender(
+  restore: SemanticSearchRestoreState | null,
+  remainingFrames = 12,
+) {
+  if (!restore) return;
+  if (restoreSemanticSearchControl(restore, false)) return;
+  if (restore.focusedControl && remainingFrames > 0) {
+    window.requestAnimationFrame(() => {
+      restoreSemanticSearchControlAfterRender(restore, remainingFrames - 1);
+    });
+    return;
+  }
+  if (restore.focusedPanelId) focusDashboardPanelRoot(restore.focusedPanelId);
 }
 
 export default function App() {
@@ -1619,7 +1639,10 @@ export default function App() {
             list.scrollTop = anchorRow.offsetTop - anchor.viewportTop;
           } else if (list) list.scrollTop = scrollTop;
         }
-        restoreSemanticSearchControl(restore);
+        // La ligne ciblée peut être remontée une frame plus tard par la liste
+        // virtualisée, notamment sur Windows. Réessayer brièvement préserve le
+        // vrai focus DOM au lieu de figer prématurément le focus sur le panel.
+        restoreSemanticSearchControlAfterRender(restore);
       });
     });
   }
