@@ -1,0 +1,36 @@
+src/App.tsx
+  s_71e5097d0a1ae3::t_aa006f1da85060 2915
+scripts/test-pilot-ui.mjs
+  s_71e5097d0a1ae3::t_aa006f1da85060 2,397,421,3098-3101,3103-3106
+  s_71e5097d0a1ae3::t_3b49af7c4d7858 399-400,3102
+.github/workflows/pilot-build.yml
+  s_71e5097d0a1ae3::t_8cc6c2d99d2237 12-15,17-33,37-38,41-45,48-50,52,63-78,83-115,120,122-127,129-130,132-136
+  s_71e5097d0a1ae3::t_3b49af7c4d7858 39-40,46-47,117-118
+.github/workflows/release-please.yml
+  s_71e5097d0a1ae3::t_8cc6c2d99d2237 4-6,16-18,20
+scripts/verify-release-config.mjs
+  s_71e5097d0a1ae3::t_5461f7c81415b5 468
+  s_71e5097d0a1ae3::t_2ff0a77056e948 348-362,369-393,399-413,487-491,559-560,569-570,574-580
+.github/workflows/pilot-release.yml
+  s_71e5097d0a1ae3::t_8cc6c2d99d2237 23,49-50,66,141,195
+PILOT_RELEASE.md
+  s_71e5097d0a1ae3::t_14a7835b36dc0a 28-29,83-85,99
+README.md
+  s_71e5097d0a1ae3::t_14a7835b36dc0a 86-87,93,97
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "554cba0e41a0301784946b411e908e7863c08701",
+  "prompts": {},
+  "sessions": {
+    "s_71e5097d0a1ae3": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6e77-b555-7da0-8ab0-2a73fc3c5249",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
