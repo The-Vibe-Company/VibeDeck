@@ -40,17 +40,15 @@ Les étapes suivantes sont terminées :
 
 3. Le profil est actif et son Common Name exact est `Quivr SAS`.
 4. Les variables Azure et `WIN_PUBLISHER_NAME=Quivr SAS` sont définies dans l’environnement GitHub `signed-release`.
+5. Le smoke test Windows signé du 17 juillet 2026 est vert : application et installateur Authenticode `Valid`, sujet `Quivr SAS`, fuses, lancement du paquet, blockmap et `latest.yml` vérifiés.
+6. La variable de dépôt `ENABLE_WINDOWS_SIGNING=true` sélectionne désormais la branche Azure ; l’ancien interrupteur `ENABLE_WINDOWS_RELEASE` a été supprimé.
 
-Avant l’activation en production :
+## Première release signée
 
-1. Déclencher manuellement `pilot-build` avec l’option `windows_signing_smoke=true`. Ce job utilise l’environnement protégé, mais ne crée ni ne modifie aucune release.
-2. Vérifier dans ce job :
-   - signature Authenticode de l’application et de l’installateur NSIS ;
-   - fuses Electron x64 ;
-   - lancement du paquet réel et protocole `vibedeck-app://` ;
-   - installation, mise à jour vers une version supérieure et conservation exacte des données locales ;
-   - `latest.yml`, blockmap et sommes SHA-256.
-3. Mettre la variable GitHub de dépôt `ENABLE_WINDOWS_SIGNING` à `true` uniquement après le smoke test vert et avant de fusionner la Release PR de la prochaine version.
-4. Vérifier que cette release contient exactement un EXE, sa blockmap et `latest.yml`, en plus des artefacts macOS.
+1. Laisser la release en brouillon jusqu’à la fin des jobs macOS et Windows signés.
+2. Vérifier l’installation, puis la mise à jour vers une version supérieure et la conservation exacte des données locales.
+3. Vérifier que la release contient exactement un EXE, sa blockmap et `latest.yml`, en plus des artefacts macOS, et que les sommes SHA-256 sont valides.
+
+Le mode manuel `pilot-build` avec `windows_signing_smoke=true` reste disponible pour revalider Azure sans créer ni modifier de release.
 
 Si la validation Azure passe à `Action Required`, répondre avec les documents demandés. Si elle reste bloquée au-delà de 20 jours ouvrés, ouvrir un ticket Azure Support avec l’identifiant de validation. Ne pas créer plusieurs validations concurrentes pour la même entité.
