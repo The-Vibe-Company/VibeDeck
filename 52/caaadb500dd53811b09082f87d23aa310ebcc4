@@ -1,0 +1,54 @@
+electron/preload.cjs
+  s_b9dbc8db6e1717::t_cc6d534e55059b 68-69
+electron/x-panel-url.mjs
+  s_b9dbc8db6e1717::t_cc6d534e55059b 1-51
+scripts/test-pilot-ui.mjs
+  s_b9dbc8db6e1717::t_24b04802d3ffeb 1209-1211,1225-1226
+  s_b9dbc8db6e1717::t_fd25c86a475f77 1148-1172,1197-1199,1201-1208,1236-1238
+  s_b9dbc8db6e1717::t_9947353d4e72fa 30,333,1265,1267-1270,1272-1278
+  s_b9dbc8db6e1717::t_e31c25969ecc65 1173-1196,1200,1212-1224,1227-1235
+src/styles.css
+  s_b9dbc8db6e1717::t_2987096bad3e00 1409,3109-3111
+  s_b9dbc8db6e1717::t_e31c25969ecc65 1399-1406,3113
+  s_b9dbc8db6e1717::t_3e9ee4a3469074 3112
+  s_b9dbc8db6e1717::t_fb29167b8ce7e7 3114
+electron/preload.test.mjs
+  s_b9dbc8db6e1717::t_dba4c0b68476b5 111-114,131-135,144-145
+electron/main.mjs
+  s_b9dbc8db6e1717::t_cc6d534e55059b 47,734-765,817-820
+src/App.tsx
+  s_b9dbc8db6e1717::t_9947353d4e72fa 97-98,5056,5058-5059
+  s_b9dbc8db6e1717::t_866178fc3bfd6a 4988-4992,5132-5135,5151,5212,5352
+  s_b9dbc8db6e1717::t_2987096bad3e00 2,1191-1207,1211,1988,4941,4954,4967,5027-5040,5057,5112-5118,5141-5144,5207-5211,5213-5215,5220,5226,5228-5231,5233-5251,5253,5256-5257,5270,5282-5285
+  s_b9dbc8db6e1717::t_e31c25969ecc65 1242-1249,1989,4942,4955,4964-4966,5006-5016,5026,5042,5192,5194-5195,5206,5216-5219,5227,5232,5252,5254-5255,5263,5266,5287-5289,5318-5329
+  s_b9dbc8db6e1717::t_fd25c86a475f77 4981-4987,5127,5140,5221-5225
+  s_b0ff9c66f583cd::t_679c201135d00f 5041,5258-5262,5264-5265
+electron/x-panel-url.test.mjs
+  s_b9dbc8db6e1717::t_dba4c0b68476b5 1-36
+src/types.ts
+  s_b9dbc8db6e1717::t_cc6d534e55059b 359-362
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "52caaadb500dd53811b09082f87d23aa310ebcc4",
+  "prompts": {},
+  "sessions": {
+    "s_b0ff9c66f583cd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6f1d-1b2d-7202-aa7d-14776dcd3680",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    },
+    "s_b9dbc8db6e1717": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6ebb-7b7e-77a0-ac3c-1135648c9ffc",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
