@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.11.0](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.10.0...v0.11.0) (2026-07-17)
+
+
+### Features
+
+* **panels:** ajouter un panel X ([#61](https://github.com/The-Vibe-Company/VibeDeck/issues/61)) ([abf2f71](https://github.com/The-Vibe-Company/VibeDeck/commit/abf2f710af9c0d2e3dcf9a3a46d77d709c49e9d3))
+* **release:** publier Windows sans signature Azure ([#59](https://github.com/The-Vibe-Company/VibeDeck/issues/59)) ([cdd5fb8](https://github.com/The-Vibe-Company/VibeDeck/commit/cdd5fb88805fea0b39ea02e3fb9c464d5702704e))
+* **settings:** refondre la page de réglages ([#64](https://github.com/The-Vibe-Company/VibeDeck/issues/64)) ([9a864ee](https://github.com/The-Vibe-Company/VibeDeck/commit/9a864ee23f34a63ded134aaa4c4f545684c8083d))
+
+
+### Bug Fixes
+
+* **ci:** stabiliser les invariants UI du pilote ([#63](https://github.com/The-Vibe-Company/VibeDeck/issues/63)) ([44b7f8e](https://github.com/The-Vibe-Company/VibeDeck/commit/44b7f8e52a8a2e88a5925be4693ed8766a0ca232))
+
 ## [0.10.0](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.9.0...v0.10.0) (2026-07-17)
 
 
