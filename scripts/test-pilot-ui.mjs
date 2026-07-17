@@ -238,7 +238,7 @@ async function waitForResponsiveFocusEffects(page, panelLocator) {
     await page.evaluate((panel) => new Promise((resolve) => {
       const observer = new ResizeObserver(() => {
         observer.disconnect();
-        requestAnimationFrame(() => requestAnimationFrame(resolve));
+        requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       });
       observer.observe(panel);
     }), handle);

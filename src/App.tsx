@@ -2937,11 +2937,18 @@ function AdaptiveActionMenu({ actions }: { actions: PanelMenuAction[] }) {
         active instanceof HTMLElement &&
         panel.contains(active) &&
         active.closest(".panel-action--secondary");
-      if (secondaryStillFocused || (
-        active === document.body && rememberedSecondaryStillMounted
-      )) {
-        window.requestAnimationFrame(() => trigger.focus({ preventScroll: true }));
-      }
+      if (!secondaryStillFocused && !rememberedSecondaryStillMounted) return;
+      window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+        const current = lastSecondaryFocusRef.current;
+        const canTransfer = Boolean(
+          trigger.isConnected &&
+          trigger.getClientRects().length > 0 &&
+          current?.isConnected &&
+          panel.contains(current) &&
+          current.closest(".panel-action--secondary"),
+        );
+        if (canTransfer) trigger.focus({ preventScroll: true });
+      }));
     });
     observer.observe(panel);
     return () => {
