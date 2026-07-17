@@ -166,6 +166,29 @@ async function waitForNativeWebView(electronApp, expectedUrl, visible, label, ti
   throw new Error(`Délai dépassé : ${label}. Vues observées : ${JSON.stringify(snapshots)}`);
 }
 
+async function waitForNativeWebViewPrefix(
+  electronApp,
+  expectedUrlPrefix,
+  visible,
+  label,
+  timeoutMs = 5_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  let snapshots = [];
+  do {
+    snapshots = await electronApp.evaluate(({ BrowserWindow }, urlPrefix) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      if (!window) throw new Error("La fenêtre pilote est introuvable.");
+      return window.contentView.children
+        .filter((view) => "webContents" in view && view.webContents.getURL().startsWith(urlPrefix))
+        .map((view) => ({ url: view.webContents.getURL(), visible: view.getVisible() }));
+    }, expectedUrlPrefix);
+    if (snapshots.length === 1 && snapshots[0].visible === visible) return snapshots[0];
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  } while (Date.now() < deadline);
+  throw new Error(`Délai dépassé : ${label}. Vues observées : ${JSON.stringify(snapshots)}`);
+}
+
 async function waitForDomFocus(page, locator, label, timeoutMs = 5_000) {
   const handle = await locator.elementHandle();
   assert.ok(handle, `${label} : élément introuvable.`);
@@ -2033,6 +2056,20 @@ try {
     { ...fullNativeGeometry, visible: false },
     "Le défilement maximal ne doit ni afficher hors canvas, ni redimensionner la page native.",
   );
+  const readerWithScrollbarRow = narrowLeaf.locator(".article-row").first();
+  await readerWithScrollbarRow.waitFor({ state: "visible" });
+  await readerWithScrollbarRow.focus();
+  await page.keyboard.press("Enter");
+  const readerOverScrollableLayout = page.locator(".link-reader");
+  await readerOverScrollableLayout.waitFor({ state: "visible" });
+  await waitForNativeWebViewPrefix(
+    electronApp,
+    `${origin}/articles/`,
+    true,
+    "le lecteur doit rester visible au-dessus d’un layout avec scrollbars",
+  );
+  await readerOverScrollableLayout.getByLabel("Retour au fil").click();
+  await readerOverScrollableLayout.waitFor({ state: "detached" });
 
   await page.evaluate(async () => {
     const state = await window.vibedeck.getState();

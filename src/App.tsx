@@ -986,11 +986,13 @@ export default function App() {
       if (!rect || !workspaceBounds) {
         return {
           bounds: { x: 0, y: 0, width: 0, height: 0 },
+          hasArea: false,
           fullyInViewport: false,
         };
       }
       return {
         bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        hasArea: rect.width > 0 && rect.height > 0,
         fullyInViewport:
           rect.left + 0.5 >= workspaceBounds.left &&
           rect.top + 0.5 >= workspaceBounds.top &&
@@ -1050,7 +1052,9 @@ export default function App() {
         bounds: measured.bounds,
         visible:
           Boolean(surface) &&
-          measured.fullyInViewport &&
+          // Le lecteur recouvre le workspace et reste borné par dashboard-stage ;
+          // les éventuelles scrollbars du layout sous-jacent ne doivent pas le masquer.
+          measured.hasArea &&
           !nativeWebSurfacesBlocked &&
           !failedPanelIds.has(LINK_READER_ID),
       });
