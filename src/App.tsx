@@ -1634,11 +1634,13 @@ export default function App() {
             list.scrollTop = anchorRow.offsetTop - anchor.viewportTop;
           } else if (list) list.scrollTop = scrollTop;
         }
-        const restorePendingFocus = (fallbackToPanel = false) => {
+        const restorePendingFocus = (fallbackToPanel = false, finalAttempt = false) => {
           if (semanticSearchReturnFocusRef.current !== restore) return;
-          if (restoreSemanticSearchControl(restore, false)) return;
-          if (fallbackToPanel && restore?.focusedPanelId) {
+          const restored = restoreSemanticSearchControl(restore, false);
+          if (!restored && fallbackToPanel && restore?.focusedPanelId) {
             focusDashboardPanelRoot(restore.focusedPanelId);
+          }
+          if (finalAttempt) {
             semanticSearchReturnFocusRef.current = null;
             semanticSearchReturnPointerPositionRef.current = null;
           }
@@ -1651,7 +1653,7 @@ export default function App() {
         for (const delay of [50, 150, 300, 600]) {
           window.setTimeout(() => restorePendingFocus(), delay);
         }
-        window.setTimeout(() => restorePendingFocus(true), 1_000);
+        window.setTimeout(() => restorePendingFocus(true, true), 1_000);
       });
     });
   }
@@ -2095,6 +2097,10 @@ export default function App() {
           } else {
             if (intent.trusted && semanticReturnPosition === null) {
               semanticSearchReturnPointerPositionRef.current = nextScreenPosition;
+            }
+            if (intent.trusted) {
+              lastDashboardPointerPositionRef.current = nextPosition;
+              lastDashboardPointerScreenPositionRef.current = nextScreenPosition;
             }
             return true;
           }
