@@ -212,6 +212,8 @@ type ReaderReturnFocus = {
 type PanelPointerIntent = {
   clientX: number;
   clientY: number;
+  screenX: number;
+  screenY: number;
   moved: boolean;
   trusted: boolean;
 };
@@ -544,6 +546,7 @@ export default function App() {
   const pendingKeyboardPanelFocusRef = useRef<string | null>(null);
   const readerReturnFocusRef = useRef<ReaderReturnFocus | null>(null);
   const lastDashboardPointerPositionRef = useRef<{ x: number; y: number } | null>(null);
+  const lastDashboardPointerScreenPositionRef = useRef<{ x: number; y: number } | null>(null);
   const readerOpenPointerPositionRef = useRef<{ x: number; y: number } | null>(null);
   const focusedPanelIdRef = useRef<string | null>(null);
   const semanticResultItemsRef = useRef<FeedItem[]>([]);
@@ -1614,7 +1617,8 @@ export default function App() {
     ])));
     semanticSearchRestoreRef.current = null;
     semanticSearchReturnFocusRef.current = restore;
-    semanticSearchReturnPointerPositionRef.current = lastDashboardPointerPositionRef.current;
+    semanticSearchReturnPointerPositionRef.current =
+      lastDashboardPointerScreenPositionRef.current;
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
         if (!restore) return;
@@ -2076,20 +2080,21 @@ export default function App() {
           return false;
         }
         const nextPosition = { x: intent.clientX, y: intent.clientY };
+        const nextScreenPosition = { x: intent.screenX, y: intent.screenY };
         const semanticReturnPosition = semanticSearchReturnPointerPositionRef.current;
         if (semanticSearchReturnFocusRef.current) {
           const explicitMove =
             (intent.moved && !intent.trusted) ||
             (intent.trusted && semanticReturnPosition !== null && (
-              semanticReturnPosition.x !== nextPosition.x ||
-              semanticReturnPosition.y !== nextPosition.y
+              semanticReturnPosition.x !== nextScreenPosition.x ||
+              semanticReturnPosition.y !== nextScreenPosition.y
             ));
           if (explicitMove) {
             semanticSearchReturnFocusRef.current = null;
             semanticSearchReturnPointerPositionRef.current = null;
           } else {
             if (intent.trusted && semanticReturnPosition === null) {
-              semanticSearchReturnPointerPositionRef.current = nextPosition;
+              semanticSearchReturnPointerPositionRef.current = nextScreenPosition;
             }
             return true;
           }
@@ -2106,7 +2111,10 @@ export default function App() {
           return true;
         }
         const readerOpenPosition = readerOpenPointerPositionRef.current;
-        if (intent.trusted) lastDashboardPointerPositionRef.current = nextPosition;
+        if (intent.trusted) {
+          lastDashboardPointerPositionRef.current = nextPosition;
+          lastDashboardPointerScreenPositionRef.current = nextScreenPosition;
+        }
         if (
           intent.trusted &&
           readerReturnFocusRef.current &&
@@ -3361,6 +3369,8 @@ function PanelFrame({
         onPointerIntent?.({
           clientX: event.clientX,
           clientY: event.clientY,
+          screenX: event.screenX,
+          screenY: event.screenY,
           moved: false,
           trusted: event.isTrusted,
         });
@@ -3370,6 +3380,8 @@ function PanelFrame({
         if (onPointerIntent?.({
           clientX: event.clientX,
           clientY: event.clientY,
+          screenX: event.screenX,
+          screenY: event.screenY,
           moved: event.movementX !== 0 || event.movementY !== 0,
           trusted: event.isTrusted,
         })) return;
@@ -3386,6 +3398,8 @@ function PanelFrame({
         if (onPointerIntent?.({
           clientX: event.clientX,
           clientY: event.clientY,
+          screenX: event.screenX,
+          screenY: event.screenY,
           moved: event.movementX !== 0 || event.movementY !== 0,
           trusted: event.isTrusted,
         })) return;
@@ -3856,6 +3870,8 @@ function FeedPanelView({
           if (onPointerIntent({
             clientX: event.clientX,
             clientY: event.clientY,
+            screenX: event.screenX,
+            screenY: event.screenY,
             moved: event.movementX !== 0 || event.movementY !== 0,
             trusted: event.isTrusted,
           })) return;
