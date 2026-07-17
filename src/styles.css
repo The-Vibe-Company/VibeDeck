@@ -895,12 +895,12 @@ button:disabled {
   color: var(--muted-dim);
 }
 
-.dashboard-panel--focused .panel-kind {
+.renderer-has-focus .dashboard-panel--focused .panel-kind {
   border-color: var(--amber-line);
   color: var(--amber-light);
 }
 
-.dashboard-panel--focused .panel-title {
+.renderer-has-focus .dashboard-panel--focused .panel-title {
   color: var(--amber-light);
 }
 
@@ -1359,7 +1359,7 @@ button:disabled {
   box-shadow: inset 0 0 0 1px var(--control-border);
 }
 
-.dashboard-panel--focused .article-row--focused {
+.renderer-has-focus .dashboard-panel--focused .article-row--focused {
   box-shadow: inset 0 0 0 1px var(--amber);
 }
 

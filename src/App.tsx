@@ -471,7 +471,6 @@ export default function App() {
   const [modal, setModal] = useState<ModalState | null>(null);
   const [interactionActive, setInteractionActive] = useState(false);
   const [structuralMutationPending, setStructuralMutationPending] = useState(false);
-  const [rendererFocused, setRendererFocused] = useState(() => document.hasFocus());
   const [openPanelActionMenuIds, setOpenPanelActionMenuIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -509,14 +508,17 @@ export default function App() {
     interactionActive ||
     openPanelActionMenuIds.size > 0;
 
-  useEffect(() => {
-    const handleFocus = () => setRendererFocused(true);
-    const handleBlur = () => setRendererFocused(false);
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    const handleFocus = () => root.classList.add("renderer-has-focus");
+    const handleBlur = () => root.classList.remove("renderer-has-focus");
+    root.classList.toggle("renderer-has-focus", document.hasFocus());
     window.addEventListener("focus", handleFocus);
     window.addEventListener("blur", handleBlur);
     return () => {
       window.removeEventListener("focus", handleFocus);
       window.removeEventListener("blur", handleBlur);
+      root.classList.remove("renderer-has-focus");
     };
   }, []);
 
@@ -2559,7 +2561,7 @@ export default function App() {
           catalog={state!.sourceCatalog}
           webPreview={webPreviewDrafts[panelId] ?? null}
           webPreviewRuntime={webStates[panelId]}
-          focused={rendererFocused && focusedPanelId === panelId}
+          focused={focusedPanelId === panelId}
           onFocus={() => setFocusedPanelId(panelId)}
           onClose={() => closeDraft(panelId)}
           onStartWebPreview={(url) => startWebPreview(panelId, url)}
@@ -2586,7 +2588,7 @@ export default function App() {
       </PanelPlacementTarget>
     ) : content;
     const common = {
-      focused: rendererFocused && focusedPanelId === panel.id,
+      focused: focusedPanelId === panel.id,
       actionsDisabled: structuralMutationPending || Object.keys(drafts).length > 0,
       onFocus: () => setFocusedPanelId(panel.id),
       onPointerIntent: (intent: PanelPointerIntent | null) => {
