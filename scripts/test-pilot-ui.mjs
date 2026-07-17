@@ -201,7 +201,24 @@ async function waitForDomFocus(page, locator, label, timeoutMs = 5_000) {
     );
     await wait.dispose();
   } catch (error) {
-    throw new Error(`Délai dépassé : ${label}.`, { cause: error });
+    const diagnostics = await page.evaluate(() => {
+      const active = document.activeElement;
+      return {
+        activeElement: active instanceof HTMLElement
+          ? {
+              tagName: active.tagName,
+              id: active.id,
+              className: active.className,
+            }
+          : null,
+        documentHasFocus: document.hasFocus(),
+        focusTrace: globalThis.__vibedeckPilotFocusTrace ?? [],
+      };
+    });
+    throw new Error(
+      `Délai dépassé : ${label}. Diagnostic : ${JSON.stringify(diagnostics)}`,
+      { cause: error },
+    );
   } finally {
     await handle.dispose();
   }
@@ -1979,6 +1996,36 @@ try {
   // main process. Le contrat de focus est prouvé après Échap par le retour de
   // document.activeElement sur la ligne du fil ; ici on attend seulement que
   // le lecteur soit chargé (et focalisé quand la fenêtre est affichée).
+  await page.evaluate(() => {
+    const trace = [];
+    globalThis.__vibedeckPilotFocusTrace = trace;
+    const describeTarget = (target) => target instanceof HTMLElement
+      ? `${target.tagName.toLowerCase()}#${target.id}.${target.className}`
+      : String(target);
+    for (const type of ["focusin", "focusout", "pointerdown", "pointerenter", "pointermove", "keydown"]) {
+      document.addEventListener(type, (event) => {
+        const pointer = event instanceof PointerEvent
+          ? {
+              clientX: event.clientX,
+              clientY: event.clientY,
+              screenX: event.screenX,
+              screenY: event.screenY,
+              movementX: event.movementX,
+              movementY: event.movementY,
+              trusted: event.isTrusted,
+            }
+          : null;
+        trace.push({
+          type,
+          target: describeTarget(event.target),
+          activeElement: describeTarget(document.activeElement),
+          key: event instanceof KeyboardEvent ? event.key : null,
+          pointer,
+        });
+        if (trace.length > 40) trace.shift();
+      }, true);
+    }
+  });
   await electronApp.evaluate(async ({ webContents }, { articlePrefix, requireFocus }) => {
     let reader;
     for (let attempt = 0; attempt < 100; attempt += 1) {
