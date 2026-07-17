@@ -1396,9 +1396,17 @@ button:disabled {
   letter-spacing: -0.015em;
 }
 
+.draft-step__intro {
+  max-width: 66ch;
+  margin: -8px 0 13px;
+  color: var(--muted);
+  font-size: 9.5px;
+  line-height: 1.45;
+}
+
 .panel-type-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 9px;
 }
 
@@ -3095,6 +3103,12 @@ button:disabled {
 
   .feed-refresh-action::after {
     display: block;
+  }
+}
+
+@container (max-width: 620px) {
+  .panel-type-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

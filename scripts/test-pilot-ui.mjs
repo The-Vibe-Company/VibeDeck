@@ -27,6 +27,7 @@ const topArrivalTitle = "ARRIVÉE EN TÊTE — scroll nul";
 const pillArrivalTitle = "ARRIVÉE PASTILLE — rappel vers le haut";
 const sharedArrivalTitle = "ARRIVÉE PARTAGÉE — tampon indépendant par panel";
 const sharedSecondArrivalTitle = "ARRIVÉE PARTAGÉE — deuxième insertion";
+const controlledPreviewTitle = `Page web contrôlée — ${"titre long ".repeat(9)}`;
 const recentRelevanceTitle = "Article de référence 01 — titre suffisamment long pour stabiliser la hauteur";
 const oldRelevanceTitle = "Article de référence 90 — titre suffisamment long pour stabiliser la hauteur";
 
@@ -329,7 +330,7 @@ const server = createServer((request, response) => {
       "Set-Cookie": "vibedeck-preview-session=active; Path=/; SameSite=Lax",
     });
     response.end(`<!doctype html>
-      <html lang="fr"><head><title>Page web contrôlée</title></head>
+      <html lang="fr"><head><title>${escapeXml(controlledPreviewTitle)}</title></head>
       <body><main><h1>Aperçu web contrôlé</h1><p>Session locale de test.</p></main></body></html>`);
     return;
   }
@@ -1158,7 +1159,97 @@ try {
     0.01,
     "hauteur de l’en-tête du Nouveau panel",
   );
-  await webDraftLeaf.getByRole("button", { name: /Page web/ }).click();
+  const pageWebTypeButton = webDraftLeaf.getByRole("button", { name: /Page web/ });
+  const feedTypeButton = webDraftLeaf.getByRole("button", { name: /Fil agrégé/ });
+  const xTypeButton = webDraftLeaf.getByRole("button", { name: /X \(Twitter\)/ });
+  assert.equal(
+    await webDraftLeaf.locator(".panel-type-grid > button").count(),
+    3,
+    "La création doit proposer Page web, Fil agrégé et X.",
+  );
+  await waitForDomFocus(
+    page,
+    pageWebTypeButton,
+    "ouvrir le nouveau panel doit focaliser le premier type",
+  );
+  await page.keyboard.press("Tab");
+  assert.equal(
+    await feedTypeButton.evaluate((button) => document.activeElement === button),
+    true,
+    "Le type Fil agrégé doit suivre Page web au clavier.",
+  );
+  await page.keyboard.press("Tab");
+  assert.equal(
+    await xTypeButton.evaluate((button) => document.activeElement === button),
+    true,
+    "Le type X doit être directement atteignable au clavier.",
+  );
+  const typeGridColumnsByWidth = await webDraftLeaf.locator(".panel-type-grid").evaluate((grid) =>
+    [700, 500, 360].map((width) => {
+      const panel = document.createElement("div");
+      panel.className = "dashboard-panel";
+      panel.style.width = `${width}px`;
+      panel.style.height = "300px";
+      panel.style.position = "fixed";
+      panel.style.inset = "0 auto auto -10000px";
+      const clonedGrid = grid.cloneNode(true);
+      panel.append(clonedGrid);
+      document.body.append(panel);
+      const columns = getComputedStyle(clonedGrid).gridTemplateColumns.split(" ").length;
+      panel.remove();
+      return { width, columns };
+    }),
+  );
+  assert.deepEqual(
+    typeGridColumnsByWidth,
+    [
+      { width: 700, columns: 3 },
+      { width: 500, columns: 2 },
+      { width: 360, columns: 1 },
+    ],
+    `La grille des types doit suivre les trois plages : ${JSON.stringify(typeGridColumnsByWidth)}`,
+  );
+
+  await xTypeButton.click();
+  const xHomeButton = webDraftLeaf.getByRole("button", { name: /Ouvrir X et me connecter/ });
+  await waitForDomFocus(
+    page,
+    xHomeButton,
+    "entrer dans le constructeur X doit focaliser l’accès à l’accueil",
+  );
+  const xUrlInput = webDraftLeaf.getByLabel("Adresse X");
+  await xUrlInput.fill("https://x.com.evil.test/i/lists/123456789");
+  await webDraftLeaf.getByRole("button", { name: "Prévisualiser" }).click();
+  const xValidationError = webDraftLeaf.getByRole("alert")
+    .filter({ hasText: "x.com ou twitter.com" });
+  await xValidationError.waitFor({ state: "visible" });
+  await waitForDomFocus(
+    page,
+    xUrlInput,
+    "un rejet de prévisualisation X doit restaurer le focus sur l’adresse",
+  );
+  assert.equal(
+    await xUrlInput.getAttribute("aria-invalid"),
+    "true",
+    "l’adresse X refusée doit être annoncée comme invalide",
+  );
+  const xErrorId = await xUrlInput.getAttribute("aria-describedby");
+  assert.ok(xErrorId, "l’adresse X refusée doit référencer son erreur");
+  assert.equal(
+    await xValidationError.getAttribute("id"),
+    xErrorId,
+    "l’erreur référencée par l’adresse X doit être annoncée",
+  );
+  await page.keyboard.press("Tab");
+  assert.equal(
+    await webDraftLeaf.getByRole("button", { name: "Prévisualiser" })
+      .evaluate((button) => document.activeElement === button),
+    true,
+    "la navigation clavier doit continuer après la restauration du focus X",
+  );
+  await webDraftLeaf.getByRole("button", { name: "Type de panel" }).click();
+  await pageWebTypeButton.waitFor({ state: "visible" });
+  await pageWebTypeButton.click();
   const webNameInput = webDraftLeaf.getByLabel("Nom du panel web");
   await waitForDomFocus(
     page,
@@ -1185,11 +1276,20 @@ try {
     .waitFor({ state: "visible" });
   await webDraftLeaf.getByRole("button", { name: "Créer ce panel" }).click();
   await webDraftLeaf.waitFor({ state: "detached" });
-  const previewWebPanelId = await page.evaluate(async (expectedUrl) => {
+  const previewWebPanel = await page.evaluate(async (expectedUrl) => {
     const state = await window.vibedeck.getState();
-    return state.panels.find((panel) => panel.kind === "web" && panel.url === expectedUrl)?.id ?? null;
+    const panel = state.panels.find(
+      (candidate) => candidate.kind === "web" && candidate.url === expectedUrl,
+    );
+    return panel ? { id: panel.id, name: panel.name } : null;
   }, `${origin}/preview.html`);
-  assert.ok(previewWebPanelId, "La preview doit être confirmée depuis son URL main-owned.");
+  assert.ok(previewWebPanel, "La preview doit être confirmée depuis son URL main-owned.");
+  assert.equal(
+    previewWebPanel.name,
+    controlledPreviewTitle.slice(0, 80),
+    "un titre chargé automatiquement doit respecter la borne main-owned du nom de panel",
+  );
+  const previewWebPanelId = previewWebPanel.id;
   const previewWebLeaf = page.locator(
     `.split-layout__leaf[data-panel-id="${previewWebPanelId}"]`,
   );
