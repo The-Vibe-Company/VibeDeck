@@ -299,6 +299,7 @@ test("creates and syncs native views with clipped bounds and effective visibilit
   assert.equal(initial[0].visible, true);
   assert.deepEqual(initial[0].bounds, { x: 790, y: 590, width: 10, height: 10 });
   assert.deepEqual(views[0].webContents.loadCalls, ["https://example.com/"]);
+  const stateCountBeforeGeometryOnlySync = states.length;
 
   const updated = controller.sync([
     descriptor("news", {
@@ -308,11 +309,20 @@ test("creates and syncs native views with clipped bounds and effective visibilit
   ]);
 
   assert.equal(views.length, 1, "sync must reuse a view with the same panel id");
-  assert.deepEqual(views[0].bounds, { x: 25, y: 35, width: 0, height: 100 });
+  assert.deepEqual(
+    views[0].bounds,
+    { x: 790, y: 590, width: 10, height: 10 },
+    "hiding a clipped view must preserve its page viewport",
+  );
   assert.equal(views[0].visible, false);
   assert.equal(updated[0].requestedVisible, true);
   assert.equal(updated[0].visible, false);
-  assert.equal(states.at(-1).panelId, "news");
+  assert.deepEqual(updated[0].bounds, { x: 25, y: 35, width: 0, height: 100 });
+  assert.equal(
+    states.length,
+    stateCountBeforeGeometryOnlySync,
+    "geometry-only sync must not round-trip runtime state to the renderer",
+  );
 });
 
 test("rejects duplicate descriptors and enforces the migration-safe view limit", () => {
@@ -415,7 +425,7 @@ test("rejects reader fallback reasons outside the closed runtime vocabulary", ()
 
 test("publishes an original-reader decision before allocating its native view", () => {
   const { controller, creationEvents, searchCalls, states, views, window } = createHarness();
-  controller.sync([{
+  const [pendingReader] = controller.sync([{
     ...descriptor("reader:article"),
     url: "https://example.org/article",
     kind: "reader",
@@ -497,6 +507,54 @@ test("keeps the public reader invisible until a bounded extraction becomes stati
   assert.equal(views[0].visible, true);
   assert.equal(states.at(-1).readerMode, "simplified");
   assert.equal(states.at(-1).readerFallback, null);
+});
+
+test("applies pending reader bounds before revealing a completed extraction", async () => {
+  let finishExtraction;
+  const extraction = new Promise((resolve) => {
+    finishExtraction = resolve;
+  });
+  const { controller, states, views } = createHarness({
+    readerExtractionResult: () => extraction,
+  });
+  controller.sync([{
+    ...descriptor("reader:article"),
+    url: "https://www.lemonde.fr/article",
+    kind: "reader",
+    itemId: "article-1",
+    connectorId: "le-monde",
+    readerMode: "extracting",
+  }]);
+  const [pendingReader] = controller.sync([{
+    ...descriptor("reader:article", {
+      bounds: { x: 40, y: 50, width: 520, height: 360 },
+    }),
+    url: "https://www.lemonde.fr/article",
+    kind: "reader",
+    itemId: "article-1",
+    connectorId: "le-monde",
+    readerMode: "extracting",
+  }]);
+
+  assert.equal(views[0].visible, false);
+  assert.deepEqual(pendingReader.bounds, { x: 40, y: 50, width: 520, height: 360 });
+  assert.deepEqual(views[0].bounds, { x: 10, y: 20, width: 300, height: 200 });
+  finishExtraction({
+    elementCount: 120,
+    title: "Article redimensionné",
+    blocks: [
+      { kind: "paragraph", text: "Contenu public structuré. ".repeat(30) },
+      { kind: "heading", text: "Le contexte" },
+      { kind: "paragraph", text: "Contenu public structuré. ".repeat(30) },
+    ],
+  });
+  for (let attempt = 0; attempt < 10 && states.at(-1)?.readerMode !== "simplified"; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  assert.equal(states.at(-1)?.readerMode, "simplified");
+  assert.deepEqual(views[0].bounds, { x: 40, y: 50, width: 520, height: 360 });
+  assert.equal(views[0].visible, true);
 });
 
 test("recreates a persistent original reader after an extraction fallback", async () => {
@@ -820,7 +878,7 @@ test("creates one secure preview in the shared persistent session without exposi
 });
 
 test("updates and navigates an existing preview while enforcing a one-preview limit", async () => {
-  const { controller, views } = createHarness();
+  const { controller, states, views } = createHarness();
   controller.startPreview(descriptor("preview:add-panel"));
   await Promise.resolve();
 
@@ -833,9 +891,37 @@ test("updates and navigates an existing preview while enforcing a one-preview li
   );
   assert.equal(views.length, 1, "updating a preview must reuse its native view");
   assert.equal(updated.homeUrl, "https://example.org/sign-in");
-  assert.deepEqual(views[0].bounds, { x: 30, y: 40, width: 500, height: 400 });
+  assert.deepEqual(
+    views[0].bounds,
+    { x: 10, y: 20, width: 300, height: 200 },
+    "a hidden preview must keep its previous page viewport",
+  );
   assert.equal(views[0].visible, false);
   assert.equal(views[0].webContents.loadCalls.at(-1), "https://example.org/sign-in");
+
+  controller.startPreview(
+    descriptor("preview:add-panel", {
+      url: "https://example.org/sign-in",
+      bounds: { x: 30, y: 40, width: 500, height: 400 },
+      visible: true,
+    }),
+  );
+  assert.deepEqual(views[0].bounds, { x: 30, y: 40, width: 500, height: 400 });
+  assert.equal(views[0].visible, true);
+  await Promise.resolve();
+  const stateCountBeforeGeometryOnlySync = states.length;
+  controller.startPreview(
+    descriptor("preview:add-panel", {
+      url: "https://example.org/sign-in",
+      bounds: { x: 35, y: 45, width: 490, height: 390 },
+      visible: true,
+    }),
+  );
+  assert.equal(
+    states.length,
+    stateCountBeforeGeometryOnlySync,
+    "geometry-only preview sync must not round-trip runtime state",
+  );
 
   await controller.navigate("preview:add-panel", "https://example.org/account");
   assert.equal(views[0].webContents.loadCalls.at(-1), "https://example.org/account");

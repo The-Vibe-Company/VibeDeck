@@ -14,7 +14,10 @@ const showWindow = process.env.VIBEDECK_PILOT_UI_SHOW === "1";
 const initialArticleCount = 90;
 const secondaryArticleCount = 2;
 const baselineArticleCount = initialArticleCount + secondaryArticleCount;
+const MIN_WINDOW_WIDTH = 560;
+const MIN_WINDOW_HEIGHT = 460;
 const MIN_PANEL_WIDTH = 256;
+const MIN_PANEL_HEIGHT = 176;
 const SUBPIXEL_EPSILON = 0.5;
 // Doit rester aligné sur HOVER_SEEN_DELAY_MS dans src/App.tsx.
 const HOVER_SEEN_DELAY_MS = 1000;
@@ -111,6 +114,20 @@ async function nativeWebViewSnapshots(electronApp, expectedUrl) {
   }, expectedUrl);
 }
 
+async function nativeWebViewGeometry(electronApp, expectedUrl) {
+  return electronApp.evaluate(({ BrowserWindow }, url) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    if (!window) throw new Error("La fenêtre pilote est introuvable.");
+    const views = window.contentView.children.filter(
+      (view) => "webContents" in view && view.webContents.getURL() === url,
+    );
+    if (views.length !== 1) {
+      throw new Error(`Une vue web était attendue, ${views.length} trouvée(s).`);
+    }
+    return { bounds: views[0].getBounds(), visible: views[0].getVisible() };
+  }, expectedUrl);
+}
+
 async function setNativeWebViewStateProbe(electronApp, expectedUrl, stateProbe) {
   await electronApp.evaluate(async ({ BrowserWindow }, { url, probe }) => {
     const window = BrowserWindow.getAllWindows()[0];
@@ -143,6 +160,29 @@ async function waitForNativeWebView(electronApp, expectedUrl, visible, label, ti
   let snapshots = [];
   do {
     snapshots = await nativeWebViewSnapshots(electronApp, expectedUrl);
+    if (snapshots.length === 1 && snapshots[0].visible === visible) return snapshots[0];
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  } while (Date.now() < deadline);
+  throw new Error(`Délai dépassé : ${label}. Vues observées : ${JSON.stringify(snapshots)}`);
+}
+
+async function waitForNativeWebViewPrefix(
+  electronApp,
+  expectedUrlPrefix,
+  visible,
+  label,
+  timeoutMs = 5_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  let snapshots = [];
+  do {
+    snapshots = await electronApp.evaluate(({ BrowserWindow }, urlPrefix) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      if (!window) throw new Error("La fenêtre pilote est introuvable.");
+      return window.contentView.children
+        .filter((view) => "webContents" in view && view.webContents.getURL().startsWith(urlPrefix))
+        .map((view) => ({ url: view.webContents.getURL(), visible: view.getVisible() }));
+    }, expectedUrlPrefix);
     if (snapshots.length === 1 && snapshots[0].visible === visible) return snapshots[0];
     await new Promise((resolve) => setTimeout(resolve, 20));
   } while (Date.now() < deadline);
@@ -503,13 +543,67 @@ try {
   const nextUpdateCta = page.getByRole("button", { name: "Mise à jour 0.4.1 prête", exact: true });
   await nextUpdateCta.waitFor();
   const updateWidthWindow = await electronApp.browserWindow(page);
-  await updateWidthWindow.evaluate((window) => window.setSize(860, 600));
-  await updateWidthWindow.dispose();
-  assert.equal(
-    await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
-    true,
-    "Le CTA de mise à jour ne doit pas créer de débordement à la largeur minimale.",
+  const configuredMinimumSize = await updateWidthWindow.evaluate(
+    (window, size) => {
+      window.setSize(size.width, size.height);
+      return window.getMinimumSize();
+    },
+    { width: MIN_WINDOW_WIDTH, height: MIN_WINDOW_HEIGHT },
   );
+  await updateWidthWindow.dispose();
+  assert.deepEqual(
+    configuredMinimumSize,
+    [MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT],
+    "Electron doit imposer exactement la nouvelle taille minimale.",
+  );
+  const compactUpdateBounds = await page.evaluate(() => {
+    const cta = document.querySelector(".update-ready-cta");
+    const bounds = cta?.getBoundingClientRect();
+    return {
+      noOverflow:
+        document.documentElement.scrollWidth <= window.innerWidth &&
+        document.documentElement.scrollHeight <= window.innerHeight,
+      ctaInside:
+        bounds instanceof DOMRect && bounds.left >= 0 && bounds.right <= window.innerWidth,
+    };
+  });
+  assert.deepEqual(
+    compactUpdateBounds,
+    { noOverflow: true, ctaInside: true },
+    "Le CTA compact de mise à jour doit rester visible sans débordement à la taille minimale.",
+  );
+  await page.locator(".global-tools").click();
+  const compactToolsDialog = page.getByRole("dialog", { name: "Outils du poste" });
+  await compactToolsDialog.waitFor({ state: "visible" });
+  const compactToolsMetrics = await compactToolsDialog.evaluate(async (dialog) => {
+    const scroll = dialog.querySelector(".pilot-tools-scroll");
+    const footer = dialog.querySelector("footer");
+    if (!(scroll instanceof HTMLElement) || !(footer instanceof HTMLElement)) {
+      throw new Error("Structure scrollable des outils introuvable.");
+    }
+    scroll.scrollTop = scroll.scrollHeight;
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const footerBounds = footer.getBoundingClientRect();
+    const lastDangerBounds = scroll.querySelector(".pilot-tools-danger:last-of-type")
+      ?.getBoundingClientRect();
+    const scrollBounds = scroll.getBoundingClientRect();
+    return {
+      scrollable: scroll.scrollHeight > scroll.clientHeight,
+      footerVisible: footerBounds.top >= 0 && footerBounds.bottom <= window.innerHeight,
+      lastActionReachable: Boolean(
+        lastDangerBounds &&
+        lastDangerBounds.top < scrollBounds.bottom &&
+        lastDangerBounds.bottom > scrollBounds.top
+      ),
+    };
+  });
+  assert.deepEqual(
+    compactToolsMetrics,
+    { scrollable: true, footerVisible: true, lastActionReachable: true },
+    "Les outils doivent rester entièrement parcourables à la hauteur minimale.",
+  );
+  await compactToolsDialog.locator("footer").getByRole("button", { name: "Fermer" }).click();
+  await compactToolsDialog.waitFor({ state: "detached" });
   const restoredWindow = await electronApp.browserWindow(page);
   await restoredWindow.evaluate((window) => window.setSize(1280, 820));
   await restoredWindow.dispose();
@@ -1692,6 +1786,337 @@ try {
     "L’état de lecture doit rester explicite dans le panel le plus étroit.",
   );
 
+  await publishUpdateState("up-to-date");
+  await page.locator(".update-ready-cta").waitFor({ state: "detached" });
+  const globalTextScaleReset = page.getByRole("button", {
+    name: "Réinitialiser la taille du texte des fils",
+  });
+  await globalTextScaleReset.focus();
+  await publishUpdateState("ready", { availableVersion: "0.4.2" });
+  await page.getByRole("button", { name: "Mise à jour 0.4.2 prête", exact: true }).waitFor();
+  await waitForDomFocus(
+    page,
+    page.locator(".global-tools"),
+    "L’apparition d’un contexte compact doit transférer le focus sans redimensionnement",
+  );
+  await publishUpdateState("up-to-date");
+  await page.locator(".update-ready-cta").waitFor({ state: "detached" });
+  await globalTextScaleReset.focus();
+  const compactWindow = await electronApp.browserWindow(page);
+  await compactWindow.evaluate(
+    (window, size) => window.setSize(size.width, size.height),
+    { width: MIN_WINDOW_WIDTH, height: MIN_WINDOW_HEIGHT },
+  );
+  await compactWindow.dispose();
+  await waitForDomFocus(
+    page,
+    page.locator(".global-tools"),
+    "Le passage en barre compacte doit transférer le focus depuis l’échelle globale",
+  );
+  await publishUpdateState("ready", { availableVersion: "0.4.2" });
+  await page.getByRole("button", { name: "Mise à jour 0.4.2 prête", exact: true }).waitFor();
+  await page.evaluate(() => new Promise(
+    (resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)),
+  ));
+  const compactWindowMetrics = await page.evaluate(() => {
+    const bar = document.querySelector(".global-bar");
+    if (!(bar instanceof HTMLElement)) throw new Error("Barre globale introuvable.");
+    const actionLabels = [...bar.querySelectorAll(".global-action-label")];
+    const textScale = bar.querySelector(".text-scale-group");
+    return {
+      noOverflow:
+        document.documentElement.scrollWidth <= window.innerWidth &&
+        document.documentElement.scrollHeight <= window.innerHeight &&
+        bar.scrollWidth <= bar.clientWidth,
+      compactLabelsHidden: actionLabels.every(
+        (label) => label instanceof HTMLElement && label.getClientRects().length === 0,
+      ),
+      textScaleHidden:
+        textScale instanceof HTMLElement && textScale.getClientRects().length === 0,
+    };
+  });
+  assert.deepEqual(
+    compactWindowMetrics,
+    { noOverflow: true, compactLabelsHidden: true, textScaleHidden: true },
+    "La barre globale doit adopter son rendu compact sans déborder à 560 × 460.",
+  );
+  for (const name of ["Rechercher", "Outils", "Nouveau panel"]) {
+    const action = page.getByRole("button", { name, exact: true });
+    await action.focus();
+    assert.equal(
+      await action.evaluate((button) => {
+        const bounds = button.getBoundingClientRect();
+        return document.activeElement === button &&
+          bounds.left >= 0 &&
+          bounds.right <= window.innerWidth &&
+          bounds.width > 0;
+      }),
+      true,
+      `L’action compacte « ${name} » doit rester visible et focalisable.`,
+    );
+  }
+
+  const compactRowWidths = await page.locator(".split-layout__leaf").evaluateAll((leaves) =>
+    leaves.map((leaf) => leaf.getBoundingClientRect().width),
+  );
+  assert.ok(
+    compactRowWidths.every((width) => width + SUBPIXEL_EPSILON >= MIN_PANEL_WIDTH),
+    `Le split horizontal doit préserver 256 px par panel à 560 × 460 : ${compactRowWidths.join(", ")}`,
+  );
+
+  await page.evaluate(async () => {
+    const state = await window.vibedeck.getState();
+    if (state.dashboard.layout?.type !== "split") {
+      throw new Error("Le layout pilote doit avoir une racine divisée.");
+    }
+    await window.vibedeck.saveDashboardLayout(
+      { ...state.dashboard.layout, direction: "column", ratio: 0.5 },
+      state.dashboard.revision,
+    );
+  });
+  await page.waitForFunction(() =>
+    document.querySelector(".split-layout__split--column") !== null,
+  );
+  const compactColumnHeights = await page.locator(".split-layout__leaf").evaluateAll((leaves) =>
+    leaves.map((leaf) => leaf.getBoundingClientRect().height),
+  );
+  assert.ok(
+    compactColumnHeights.every((height) => height + SUBPIXEL_EPSILON >= MIN_PANEL_HEIGHT),
+    `Le split vertical doit préserver 176 px par panel à 560 × 460 : ${compactColumnHeights.join(", ")}`,
+  );
+  await page.evaluate(async () => {
+    const state = await window.vibedeck.getState();
+    if (state.dashboard.layout?.type !== "split") {
+      throw new Error("Le layout pilote doit avoir une racine divisée.");
+    }
+    await window.vibedeck.saveDashboardLayout(
+      { ...state.dashboard.layout, direction: "row", ratio: 0.5 },
+      state.dashboard.revision,
+    );
+  });
+  await page.waitForFunction(() =>
+    document.querySelector(".split-layout__split--row") !== null,
+  );
+
+  const thirdPanelId = await page.evaluate(async ({ targetPanelId, url }) => {
+    const before = await window.vibedeck.getState();
+    const existingIds = new Set(before.panels.map(({ id }) => id));
+    const next = await window.vibedeck.createPanel(
+      {
+        kind: "web",
+        name: "Page web compacte",
+        url,
+      },
+      { targetPanelId, side: "left" },
+    );
+    return next.panels.find(({ id }) => !existingIds.has(id))?.id ?? null;
+  }, { targetPanelId: panelId, url: previewUrl });
+  assert.ok(thirdPanelId, "Le troisième panel compact doit être créé.");
+  await page.waitForFunction(
+    () => document.querySelectorAll(".split-layout__leaf").length === 3,
+  );
+  await waitForNativeWebView(
+    electronApp,
+    previewUrl,
+    true,
+    "la vue web compacte doit être visible avant le défilement du canvas",
+  );
+  await page.locator(".dashboard-workspace").evaluate((workspace) => workspace.scrollTo(0, 0));
+  await panelLeaf.locator(".dashboard-panel").focus();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  await page.waitForFunction(
+    (targetPanelId) => document.activeElement
+      ?.closest(".split-layout__leaf")
+      ?.getAttribute("data-panel-id") === targetPanelId,
+    narrowPanelId,
+  );
+  const keyboardRevealMetrics = await page.locator(".dashboard-workspace").evaluate(
+    (workspace, targetPanelId) => {
+      const target = workspace.querySelector(
+        `.split-layout__leaf[data-panel-id="${targetPanelId}"]`,
+      );
+      if (!(target instanceof HTMLElement)) throw new Error("Panel clavier cible introuvable.");
+      const workspaceBounds = workspace.getBoundingClientRect();
+      const targetBounds = target.getBoundingClientRect();
+      return {
+        scrollLeft: workspace.scrollLeft,
+        targetVisible:
+          targetBounds.left < workspaceBounds.right &&
+          targetBounds.right > workspaceBounds.left,
+      };
+    },
+    narrowPanelId,
+  );
+  assert.ok(
+    keyboardRevealMetrics.scrollLeft > 0 && keyboardRevealMetrics.targetVisible,
+    `La double-flèche doit révéler le panel focalisé hors canvas : ${JSON.stringify(keyboardRevealMetrics)}`,
+  );
+  const compactThreeRowMetrics = await page.locator(".dashboard-workspace").evaluate(
+    async (workspace) => {
+      workspace.scrollLeft = workspace.scrollWidth;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      const workspaceBounds = workspace.getBoundingClientRect();
+      const leaves = [...workspace.querySelectorAll(".split-layout__leaf")];
+      const lastBounds = leaves.at(-1)?.getBoundingClientRect();
+      return {
+        widths: leaves.map((leaf) => leaf.getBoundingClientRect().width),
+        scrollable: workspace.scrollWidth > workspace.clientWidth,
+        lastReachable: Boolean(
+          lastBounds &&
+          lastBounds.left < workspaceBounds.right &&
+          lastBounds.right > workspaceBounds.left
+        ),
+      };
+    },
+  );
+  assert.ok(
+    compactThreeRowMetrics.widths.every(
+      (width) => width + SUBPIXEL_EPSILON >= MIN_PANEL_WIDTH,
+    ) && compactThreeRowMetrics.scrollable && compactThreeRowMetrics.lastReachable,
+    `Trois panels horizontaux doivent rester dimensionnés et atteignables : ${JSON.stringify(compactThreeRowMetrics)}`,
+  );
+
+  await page.evaluate(async () => {
+    const state = await window.vibedeck.getState();
+    const toColumn = (node) => node.type === "panel" ? node : {
+      ...node,
+      direction: "column",
+      ratio: 0.5,
+      children: node.children.map(toColumn),
+    };
+    if (!state.dashboard.layout) throw new Error("Le layout compact doit exister.");
+    await window.vibedeck.saveDashboardLayout(
+      toColumn(state.dashboard.layout),
+      state.dashboard.revision,
+    );
+  });
+  await page.waitForFunction(() =>
+    document.querySelectorAll(".split-layout__split--column").length === 2,
+  );
+  await waitForNativeWebView(
+    electronApp,
+    previewUrl,
+    true,
+    "la vue web doit retrouver son viewport complet avant le scroll vertical",
+  );
+  const fullNativeGeometry = await nativeWebViewGeometry(electronApp, previewUrl);
+  await page.locator(".dashboard-workspace").evaluate(
+    async (workspace, scrollOffset) => {
+      workspace.scrollTop = scrollOffset;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    },
+    MIN_PANEL_HEIGHT / 2,
+  );
+  await waitForNativeWebView(
+    electronApp,
+    previewUrl,
+    false,
+    "une vue web partiellement visible doit être masquée sans redimensionnement",
+  );
+  const clippedNativeGeometry = await nativeWebViewGeometry(electronApp, previewUrl);
+  assert.deepEqual(
+    clippedNativeGeometry,
+    { ...fullNativeGeometry, visible: false },
+    "Masquer la portion scrollée doit préserver exactement le viewport natif de la page.",
+  );
+  const compactThreeColumnMetrics = await page.locator(".dashboard-workspace").evaluate(
+    async (workspace) => {
+      workspace.scrollTop = workspace.scrollHeight;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      const workspaceBounds = workspace.getBoundingClientRect();
+      const leaves = [...workspace.querySelectorAll(".split-layout__leaf")];
+      const lastBounds = leaves.at(-1)?.getBoundingClientRect();
+      return {
+        heights: leaves.map((leaf) => leaf.getBoundingClientRect().height),
+        scrollable: workspace.scrollHeight > workspace.clientHeight,
+        lastReachable: Boolean(
+          lastBounds &&
+          lastBounds.top < workspaceBounds.bottom &&
+          lastBounds.bottom > workspaceBounds.top
+        ),
+      };
+    },
+  );
+  assert.ok(
+    compactThreeColumnMetrics.heights.every(
+      (height) => height + SUBPIXEL_EPSILON >= MIN_PANEL_HEIGHT,
+    ) && compactThreeColumnMetrics.scrollable && compactThreeColumnMetrics.lastReachable,
+    `Trois panels verticaux doivent rester dimensionnés et atteignables : ${JSON.stringify(compactThreeColumnMetrics)}`,
+  );
+  await waitForNativeWebView(
+    electronApp,
+    previewUrl,
+    false,
+    "une portion résiduelle de page web ne doit pas dépasser du canvas",
+  );
+  const maximallyScrolledNativeGeometry = await nativeWebViewGeometry(electronApp, previewUrl);
+  assert.deepEqual(
+    maximallyScrolledNativeGeometry,
+    { ...fullNativeGeometry, visible: false },
+    "Le défilement maximal ne doit ni afficher hors canvas, ni redimensionner la page native.",
+  );
+  const readerWithScrollbarRow = narrowLeaf.locator(".article-row").first();
+  await readerWithScrollbarRow.waitFor({ state: "visible" });
+  await readerWithScrollbarRow.focus();
+  await page.keyboard.press("Enter");
+  const readerOverScrollableLayout = page.locator(".link-reader");
+  await readerOverScrollableLayout.waitFor({ state: "visible" });
+  await waitForNativeWebViewPrefix(
+    electronApp,
+    `${origin}/articles/`,
+    true,
+    "le lecteur doit rester visible au-dessus d’un layout avec scrollbars",
+  );
+  await readerOverScrollableLayout.getByLabel("Retour au fil").click();
+  await readerOverScrollableLayout.waitFor({ state: "detached" });
+
+  await page.evaluate(async () => {
+    const state = await window.vibedeck.getState();
+    const layout = state.dashboard.layout;
+    if (layout?.type !== "split" || !layout.children.some((child) => child.type === "split")) {
+      throw new Error("Le layout compact imbriqué attendu est introuvable.");
+    }
+    await window.vibedeck.saveDashboardLayout(
+      {
+        ...layout,
+        direction: "row",
+        ratio: 0.5,
+        children: layout.children.map((child) => child.type === "split"
+          ? { ...child, direction: "column", ratio: 0.5 }
+          : child),
+      },
+      state.dashboard.revision,
+    );
+  });
+  await page.waitForFunction(() =>
+    document.querySelectorAll(".split-layout__split--row").length === 1 &&
+    document.querySelectorAll(".split-layout__split--column").length === 1,
+  );
+  const compactNestedSpans = await page.locator(".dashboard-workspace").evaluate((workspace) => {
+    workspace.scrollTo(0, 0);
+    return [...workspace.querySelectorAll(".split-layout__leaf")].map((leaf) => {
+      const bounds = leaf.getBoundingClientRect();
+      return { width: bounds.width, height: bounds.height };
+    });
+  });
+  assert.ok(
+    compactNestedSpans.every(({ width, height }) =>
+      width + SUBPIXEL_EPSILON >= MIN_PANEL_WIDTH &&
+      height + SUBPIXEL_EPSILON >= MIN_PANEL_HEIGHT),
+    `Le layout compact imbriqué doit préserver les deux minima : ${JSON.stringify(compactNestedSpans)}`,
+  );
+  await page.evaluate((panelId) => window.vibedeck.deletePanel(panelId), thirdPanelId);
+  await page.waitForFunction(
+    (panelId) =>
+      !document.querySelector(`.split-layout__leaf[data-panel-id="${panelId}"]`) &&
+      document.querySelectorAll(".split-layout__leaf").length === 2,
+    thirdPanelId,
+  );
+  const compactRestoreWindow = await electronApp.browserWindow(page);
+  await compactRestoreWindow.evaluate((window) => window.setSize(900, 820));
+  await compactRestoreWindow.dispose();
+
   // L'icône reste lisible dans un fil étroit et ne provoque aucun débordement.
   assert.equal(
     await narrowLeaf.locator(".article-provider .provider-mark").first().isVisible(),
@@ -1760,6 +2185,78 @@ try {
   await page.keyboard.press("Enter");
   await searchPalette.waitFor({ state: "detached" });
   await page.locator(".search-filter-summary").waitFor({ state: "visible" });
+  const compactSearchWindow = await electronApp.browserWindow(page);
+  await compactSearchWindow.evaluate(
+    (window, size) => window.setSize(size.width, size.height),
+    { width: MIN_WINDOW_WIDTH, height: MIN_WINDOW_HEIGHT },
+  );
+  await compactSearchWindow.dispose();
+  await page.evaluate(() => new Promise(
+    (resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)),
+  ));
+  assert.equal(
+    await page.locator(".search-filter-summary").evaluate((summary) => {
+      const bounds = summary.getBoundingClientRect();
+      const bar = summary.closest(".global-bar");
+      return bar instanceof HTMLElement &&
+        document.documentElement.scrollWidth <= window.innerWidth &&
+        bar.scrollWidth <= bar.clientWidth &&
+        bounds.left >= 0 &&
+        bounds.right <= window.innerWidth;
+    }),
+    true,
+    "La recherche active doit rester visible sans débordement à 560 × 460.",
+  );
+  await narrowLeaf.getByLabel("Agrandir", { exact: true }).click();
+  await page.waitForFunction(
+    (targetPanelId) =>
+      document.querySelector(".split-layout")?.getAttribute("data-maximized-panel-id") ===
+      targetPanelId,
+    narrowPanelId,
+  );
+  for (const width of [640, 641]) {
+    const boundaryWindow = await electronApp.browserWindow(page);
+    await boundaryWindow.evaluate(
+      (window, size) => window.setSize(size.width, size.height),
+      { width, height: MIN_WINDOW_HEIGHT },
+    );
+    await boundaryWindow.dispose();
+    await page.evaluate(() => new Promise(
+      (resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)),
+    ));
+    const boundaryMetrics = await page.evaluate(() => {
+      const bar = document.querySelector(".global-bar");
+      const requiredControls = [
+        bar?.querySelector(".search-filter-summary"),
+        bar?.querySelector(".restore-pill"),
+        bar?.querySelector(".update-ready-cta"),
+      ];
+      if (!(bar instanceof HTMLElement)) throw new Error("Barre globale introuvable.");
+      return {
+        noOverflow: bar.scrollWidth <= bar.clientWidth,
+        controlsInside: requiredControls.every((control) => {
+          if (!(control instanceof HTMLElement)) return false;
+          const bounds = control.getBoundingClientRect();
+          return bounds.left >= 0 && bounds.right <= window.innerWidth;
+        }),
+        persistentLabelsHidden: [...bar.querySelectorAll(".global-action-label")].every(
+          (label) => label instanceof HTMLElement && label.getClientRects().length === 0,
+        ),
+      };
+    });
+    assert.deepEqual(
+      boundaryMetrics,
+      { noOverflow: true, controlsInside: true, persistentLabelsHidden: true },
+      `La barre contextuelle doit rester compacte et complète à ${width} px.`,
+    );
+  }
+  await page.locator(".restore-pill").click();
+  await page.waitForFunction(
+    () => !document.querySelector(".split-layout")?.hasAttribute("data-maximized-panel-id"),
+  );
+  const searchRestoreWindow = await electronApp.browserWindow(page);
+  await searchRestoreWindow.evaluate((window) => window.setSize(900, 820));
+  await searchRestoreWindow.dispose();
   assert.equal(
     await page.locator(".feed-toolbar__search-state").count(),
     2,
@@ -1989,12 +2486,33 @@ try {
     { articleId: sharedReaderSourceId, targetPanelId: narrowPanelId },
   );
 
+  const compactMaximizedWindow = await electronApp.browserWindow(page);
+  await compactMaximizedWindow.evaluate(
+    (window, size) => window.setSize(size.width, size.height),
+    { width: MIN_WINDOW_WIDTH, height: MIN_WINDOW_HEIGHT },
+  );
+  await compactMaximizedWindow.dispose();
   await narrowLeaf.getByLabel("Agrandir", { exact: true }).click();
   await page.waitForFunction(
     (targetPanelId) =>
       document.querySelector(".split-layout")?.getAttribute("data-maximized-panel-id") ===
       targetPanelId,
     narrowPanelId,
+  );
+  assert.equal(
+    await page.evaluate(() => {
+      const bar = document.querySelector(".global-bar");
+      const restore = document.querySelector(".restore-pill");
+      if (!(bar instanceof HTMLElement) || !(restore instanceof HTMLElement)) return false;
+      const bounds = restore.getBoundingClientRect();
+      return document.documentElement.scrollWidth <= window.innerWidth &&
+        document.documentElement.scrollHeight <= window.innerHeight &&
+        bar.scrollWidth <= bar.clientWidth &&
+        bounds.left >= 0 &&
+        bounds.right <= window.innerWidth;
+    }),
+    true,
+    "La restauration d’un panel agrandi doit rester visible sans débordement à 560 × 460.",
   );
   await narrowLeaf.locator(".dashboard-panel").focus();
   await page.keyboard.press("ArrowRight");
@@ -2014,6 +2532,9 @@ try {
   await page.waitForFunction(
     () => !document.querySelector(".split-layout")?.hasAttribute("data-maximized-panel-id"),
   );
+  const maximizedRestoreWindow = await electronApp.browserWindow(page);
+  await maximizedRestoreWindow.evaluate((window) => window.setSize(900, 820));
+  await maximizedRestoreWindow.dispose();
 
   const primaryTitle = panelLeaf.locator(".panel-title");
   const overflowTrigger = panelLeaf.getByLabel("Plus d’actions", { exact: true });

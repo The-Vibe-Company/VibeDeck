@@ -478,6 +478,13 @@ export default function SplitLayout({
     maximizedPanelId && findPanel(layout, maximizedPanelId)
       ? ({ type: "panel", panelId: maximizedPanelId } satisfies LayoutNode)
       : layout;
+  const rootStyle: CSSProperties = visibleLayout
+    ? {
+        ...FILL_STYLE,
+        minWidth: minimumBranchSpan(visibleLayout, "row"),
+        minHeight: minimumBranchSpan(visibleLayout, "column"),
+      }
+    : FILL_STYLE;
 
   return (
     <DragHandleContext.Provider value={makeHandleProps}>
@@ -487,7 +494,7 @@ export default function SplitLayout({
         }`}
         data-interacting={isInteracting || undefined}
         data-maximized-panel-id={maximizedPanelId ?? undefined}
-        style={FILL_STYLE}
+        style={rootStyle}
       >
         {visibleLayout && (
           <LayoutBranch

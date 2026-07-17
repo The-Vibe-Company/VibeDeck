@@ -715,12 +715,24 @@ export function createWebPanelController({
     }
   }
 
+  function applyVisibleBounds(record) {
+    if (!record.visible) return;
+    const boundsChanged =
+      record.appliedBounds.x !== record.bounds.x ||
+      record.appliedBounds.y !== record.bounds.y ||
+      record.appliedBounds.width !== record.bounds.width ||
+      record.appliedBounds.height !== record.bounds.height;
+    if (!boundsChanged) return;
+    record.view.setBounds(record.bounds);
+    record.appliedBounds = { ...record.bounds };
+  }
+
   function applyBounds(record, descriptor) {
     record.bounds = descriptor.bounds;
     record.requestedVisible = descriptor.visible;
     record.visible = shouldDisplay(record);
 
-    record.view.setBounds(descriptor.bounds);
+    applyVisibleBounds(record);
     record.view.setVisible(record.visible);
   }
 
@@ -1108,6 +1120,7 @@ export function createWebPanelController({
       record.title = normalized.article.title;
       record.loading = false;
       record.visible = shouldDisplay(record);
+      applyVisibleBounds(record);
       record.view.setVisible(record.visible);
       if (record.visible && typeof record.contents.focus === "function") record.contents.focus();
       emit(record);
@@ -1163,6 +1176,7 @@ export function createWebPanelController({
         visible: false,
         requestedVisible: false,
         bounds: { ...descriptor.bounds },
+        appliedBounds: { ...descriptor.bounds },
         error: null,
         errorCode: null,
         crashed: false,
@@ -1394,8 +1408,6 @@ export function createWebPanelController({
         record.homeUrl = descriptor.url;
         record.originalUrl = descriptor.url;
         void load(record, descriptor.url).catch(() => {});
-      } else {
-        emit(record);
       }
     }
 
@@ -1437,8 +1449,6 @@ export function createWebPanelController({
       record.homeUrl = normalized.url;
       record.originalUrl = normalized.url;
       void load(record, normalized.url).catch(() => {});
-    } else {
-      emit(record);
     }
     return snapshot(record);
   }

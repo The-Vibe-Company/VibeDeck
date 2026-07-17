@@ -346,11 +346,14 @@ function initialFeedUi(panel: FeedPanel, state: AppState): FeedPanelUi {
   };
 }
 
-function focusDashboardPanelRoot(panelId: string) {
+function focusDashboardPanelRoot(panelId: string, reveal = false) {
   const panel = document.querySelector<HTMLElement>(
     `.split-layout__leaf[data-panel-id="${CSS.escape(panelId)}"] .dashboard-panel`,
   );
   if (!panel) return false;
+  if (reveal) {
+    panel.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
   panel.focus({ preventScroll: true });
   return document.activeElement === panel;
 }
@@ -467,6 +470,8 @@ export default function App() {
   const layoutRef = useRef<LayoutNode | null>(null);
   const pilotToolsUpdateActionRef = useRef<HTMLButtonElement>(null);
   const globalToolsButtonRef = useRef<HTMLButtonElement>(null);
+  const globalTextScaleGroupRef = useRef<HTMLDivElement>(null);
+  const globalTextScaleHadFocusRef = useRef(false);
   const linkPreviewRef = useRef<LinkPreview | null>(null);
   const feedUiRef = useRef<Record<string, FeedPanelUi>>({});
   const draftsRef = useRef<Record<string, DraftPanel>>({});
@@ -501,6 +506,39 @@ export default function App() {
       return () => window.cancelAnimationFrame(frame);
     }
   }, [restoreGlobalToolsFocus, updateInstallConfirmationOpen]);
+
+  const preserveGlobalTextScaleFocus = useCallback(() => {
+    const group = globalTextScaleGroupRef.current;
+    if (!group || group.getClientRects().length > 0) return;
+    const active = document.activeElement;
+    if (
+      globalTextScaleHadFocusRef.current ||
+      (active instanceof HTMLElement && group.contains(active))
+    ) {
+      globalTextScaleHadFocusRef.current = false;
+      globalToolsButtonRef.current?.focus({ preventScroll: true });
+    }
+  }, []);
+
+  useEffect(() => {
+    preserveGlobalTextScaleFocus();
+  });
+
+  useEffect(() => {
+    const trackGlobalTextScaleFocus = (event: FocusEvent) => {
+      const group = globalTextScaleGroupRef.current;
+      globalTextScaleHadFocusRef.current = Boolean(
+        group && event.target instanceof Node && group.contains(event.target),
+      );
+    };
+    const preserveAfterResize = () => requestAnimationFrame(preserveGlobalTextScaleFocus);
+    document.addEventListener("focusin", trackGlobalTextScaleFocus, true);
+    window.addEventListener("resize", preserveAfterResize);
+    return () => {
+      document.removeEventListener("focusin", trackGlobalTextScaleFocus, true);
+      window.removeEventListener("resize", preserveAfterResize);
+    };
+  }, [preserveGlobalTextScaleFocus]);
   const pendingRatioLayoutRef = useRef<LayoutNode | null>(null);
   const saveChainRef = useRef<Promise<void>>(Promise.resolve());
   const toastTimerRef = useRef<number | null>(null);
@@ -575,7 +613,7 @@ export default function App() {
   useLayoutEffect(() => {
     const pendingPanelId = pendingKeyboardPanelFocusRef.current;
     if (!pendingPanelId) return;
-    if (focusDashboardPanelRoot(pendingPanelId)) {
+    if (focusDashboardPanelRoot(pendingPanelId, true)) {
       pendingKeyboardPanelFocusRef.current = null;
     }
   }, [focusedPanelId, layout, maximizedPanelId]);
@@ -933,6 +971,35 @@ export default function App() {
 
   const syncWebPanels = useCallback(() => {
     if (!state) return;
+    const workspace = document.querySelector<HTMLElement>(".dashboard-workspace");
+    const workspaceRect = workspace?.getBoundingClientRect();
+    const workspaceBounds = workspace && workspaceRect
+      ? {
+          left: workspaceRect.left,
+          top: workspaceRect.top,
+          right: workspaceRect.left + workspace.clientWidth,
+          bottom: workspaceRect.top + workspace.clientHeight,
+        }
+      : null;
+    const measureSurface = (surface: HTMLElement | null) => {
+      const rect = surface?.getBoundingClientRect();
+      if (!rect || !workspaceBounds) {
+        return {
+          bounds: { x: 0, y: 0, width: 0, height: 0 },
+          hasArea: false,
+          fullyInViewport: false,
+        };
+      }
+      return {
+        bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        hasArea: rect.width > 0 && rect.height > 0,
+        fullyInViewport:
+          rect.left + 0.5 >= workspaceBounds.left &&
+          rect.top + 0.5 >= workspaceBounds.top &&
+          rect.right <= workspaceBounds.right + 0.5 &&
+          rect.bottom <= workspaceBounds.bottom + 0.5,
+      };
+    };
     const failedPanelIds = new Set(
       failedWebPanelKey ? failedWebPanelKey.split("\u0000") : [],
     );
@@ -947,30 +1014,27 @@ export default function App() {
           !nativeWebSurfacesBlocked &&
           !linkPreview &&
           !failedPanelIds.has(panel.id);
-        const rect = surface?.getBoundingClientRect();
+        const measured = measureSurface(surface);
         return {
           kind: "web",
           panelId: panel.id,
           url: panel.url,
-          bounds: rect
-            ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
-            : { x: 0, y: 0, width: 0, height: 0 },
-          visible: canDisplay,
+          bounds: measured.bounds,
+          visible: canDisplay && measured.fullyInViewport,
         };
       });
     for (const preview of Object.values(webPreviewDrafts)) {
       const surface = document.querySelector<HTMLElement>(
         `[data-web-preview-surface="${CSS.escape(preview.previewId)}"]`,
       );
-      const rect = surface?.getBoundingClientRect();
+      const measured = measureSurface(surface);
       descriptors.push({
         kind: "preview",
         panelId: preview.previewId,
-        bounds: rect
-          ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
-          : { x: 0, y: 0, width: 0, height: 0 },
+        bounds: measured.bounds,
         visible:
           Boolean(surface) &&
+          measured.fullyInViewport &&
           !nativeWebSurfacesBlocked &&
           !linkPreview &&
           !failedPanelIds.has(preview.previewId),
@@ -980,16 +1044,17 @@ export default function App() {
       const surface = document.querySelector<HTMLElement>(
         `[data-web-panel-surface="${LINK_READER_ID}"]`,
       );
-      const rect = surface?.getBoundingClientRect();
+      const measured = measureSurface(surface);
       descriptors.push({
         kind: "reader",
         panelId: LINK_READER_ID,
         itemId: linkPreview.itemId,
-        bounds: rect
-          ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
-          : { x: 0, y: 0, width: 0, height: 0 },
+        bounds: measured.bounds,
         visible:
           Boolean(surface) &&
+          // Le lecteur recouvre le workspace et reste borné par dashboard-stage ;
+          // les éventuelles scrollbars du layout sous-jacent ne doivent pas le masquer.
+          measured.hasArea &&
           !nativeWebSurfacesBlocked &&
           !failedPanelIds.has(LINK_READER_ID),
       });
@@ -1006,18 +1071,22 @@ export default function App() {
   useEffect(() => {
     let frame = requestAnimationFrame(syncWebPanels);
     const settleTimer = window.setTimeout(syncWebPanels, 120);
-    const observer = new ResizeObserver(() => {
+    const scheduleSync = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(syncWebPanels);
-    });
+    };
+    const observer = new ResizeObserver(scheduleSync);
     const dashboard = document.querySelector(".dashboard-stage");
+    const workspace = document.querySelector(".dashboard-workspace");
     if (dashboard) observer.observe(dashboard);
-    window.addEventListener("resize", syncWebPanels);
+    workspace?.addEventListener("scroll", scheduleSync, { passive: true });
+    window.addEventListener("resize", scheduleSync);
     return () => {
       cancelAnimationFrame(frame);
       window.clearTimeout(settleTimer);
       observer.disconnect();
-      window.removeEventListener("resize", syncWebPanels);
+      workspace?.removeEventListener("scroll", scheduleSync);
+      window.removeEventListener("resize", scheduleSync);
     };
   }, [layout, maximizedPanelId, syncWebPanels]);
 
@@ -1741,7 +1810,7 @@ export default function App() {
             pendingKeyboardPanelFocusRef.current = nextPanelId;
             setFocusedPanelId(nextPanelId);
             if (maximizedPanelId) setMaximizedPanelId(nextPanelId);
-            if (focusDashboardPanelRoot(nextPanelId)) {
+            if (focusDashboardPanelRoot(nextPanelId, true)) {
               pendingKeyboardPanelFocusRef.current = null;
             }
           }
@@ -1990,15 +2059,22 @@ export default function App() {
         )}
         <button
           type="button"
-          className="quiet-button"
+          className="quiet-button global-search"
           disabled={!state.panels.some((panel) => panel.kind === "feed")}
+          aria-label="Rechercher"
+          title="Rechercher"
           onClick={() => {
             openSemanticSearch({ kind: "all" });
           }}
         >
-          <Search size={13} /> Rechercher
+          <Search size={13} /> <span className="global-action-label">Rechercher</span>
         </button>
-        <div className="text-scale-group" role="group" aria-label="Taille du texte des fils">
+        <div
+          ref={globalTextScaleGroupRef}
+          className="text-scale-group"
+          role="group"
+          aria-label="Taille du texte des fils"
+        >
           <button
             type="button"
             className="quiet-button text-scale-button"
@@ -2068,10 +2144,11 @@ export default function App() {
           className="quiet-button global-tools"
           aria-label={updateNoticeDeferred
             ? `Outils — mise à jour ${readyUpdateVersion} prête`
-            : undefined}
+            : "Outils"}
+          title="Outils"
           onClick={() => setModal({ kind: "pilot-tools" })}
         >
-          <SlidersHorizontal size={13} /> Outils
+          <SlidersHorizontal size={13} /> <span className="global-action-label">Outils</span>
           {updateNoticeDeferred && <span className="tools-update-signal" aria-hidden="true" />}
         </button>
         {state.panels.length > 0 && Object.keys(drafts).length === 0 && (
@@ -2083,8 +2160,14 @@ export default function App() {
             Vider
           </button>
         )}
-        <button type="button" className="primary-button global-add" onClick={() => beginDraft()}>
-          <Plus size={14} /> Nouveau panel
+        <button
+          type="button"
+          className="primary-button global-add"
+          aria-label="Nouveau panel"
+          title="Nouveau panel"
+          onClick={() => beginDraft()}
+        >
+          <Plus size={14} /> <span className="global-action-label">Nouveau panel</span>
         </button>
       </header>
 
@@ -5527,6 +5610,7 @@ function PilotToolsModal({
             <X size={16} />
           </button>
         </header>
+        <div className="modal-scroll pilot-tools-scroll">
         <div className={`pilot-tools-update pilot-tools-update--${updateState?.status ?? "unknown"}`}>
           <span>
             <strong>VibeDeck {updateState?.currentVersion ?? ""}</strong>
@@ -5676,6 +5760,7 @@ function PilotToolsModal({
           </button>
         </div>
         {error && <p className="form-error" role="alert">{error}</p>}
+        </div>
         <footer>
           <button type="button" className="quiet-button" onClick={onClose} disabled={Boolean(pending)}>
             Fermer
