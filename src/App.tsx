@@ -535,6 +535,7 @@ export default function App() {
   } | null>(null);
   const pendingKeyboardPanelFocusRef = useRef<string | null>(null);
   const readerReturnFocusRef = useRef<ReaderReturnFocus | null>(null);
+  const readerNativeFocusHandoffRef = useRef(false);
   const lastDashboardPointerPositionRef = useRef<{ x: number; y: number } | null>(null);
   const readerOpenPointerPositionRef = useRef<{ x: number; y: number } | null>(null);
   const focusedPanelIdRef = useRef<string | null>(null);
@@ -955,6 +956,21 @@ export default function App() {
       if (readerReturnFocusRef.current !== target) return;
       restoreArticleFocus(target);
     };
+    let panelRootFocusFrame = 0;
+    const restoreAfterPanelRootFocus = (event: FocusEvent) => {
+      if (
+        readerReturnFocusRef.current !== target ||
+        !(event.target instanceof HTMLElement) ||
+        !event.target.matches(".dashboard-panel")
+      ) return;
+      readerNativeFocusHandoffRef.current = true;
+      window.cancelAnimationFrame(panelRootFocusFrame);
+      panelRootFocusFrame = window.requestAnimationFrame(() => {
+        restorePendingFocus();
+        readerNativeFocusHandoffRef.current = false;
+      });
+    };
+    document.addEventListener("focusin", restoreAfterPanelRootFocus, true);
     restorePendingFocus();
     const frame = window.requestAnimationFrame(restorePendingFocus);
     // Sous Windows, Chromium peut appliquer le focus natif de la surface
@@ -965,7 +981,10 @@ export default function App() {
       window.setTimeout(restorePendingFocus, delay)
     );
     return () => {
+      document.removeEventListener("focusin", restoreAfterPanelRootFocus, true);
       window.cancelAnimationFrame(frame);
+      window.cancelAnimationFrame(panelRootFocusFrame);
+      readerNativeFocusHandoffRef.current = false;
       for (const retry of retries) window.clearTimeout(retry);
     };
   }, [linkPreview, readerSurfacePresent]);
@@ -2052,6 +2071,17 @@ export default function App() {
           readerReturnFocusRef.current = null;
           readerOpenPointerPositionRef.current = null;
           return false;
+        }
+        if (
+          readerReturnFocusRef.current &&
+          !linkPreview &&
+          readerNativeFocusHandoffRef.current
+        ) {
+          // Windows émet un enter/move sur le DOM sous la WebContentsView dans
+          // la même frame que son retour de focus natif. Un clic est déjà
+          // traité par la branche `intent === null` ; le mouvement réel reprend
+          // donc la priorité dès la frame suivante.
+          return true;
         }
         if (
           readerReturnFocusRef.current &&
@@ -3259,6 +3289,7 @@ function PanelFrame({
   const dragHandle = useSplitPanelDragHandle(panelId);
   const [renaming, setRenaming] = useState(false);
   const [nameValue, setNameValue] = useState(name);
+  const lastPointerPositionRef = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => setNameValue(name), [name]);
 
@@ -3283,6 +3314,19 @@ function PanelFrame({
     const active = document.activeElement;
     if (!active || active === document.body || active === panelElement) return true;
     return active instanceof HTMLElement && active.matches(".dashboard-panel");
+  }
+
+  function trackPointerMovement(
+    clientX: number,
+    clientY: number,
+    movementX: number,
+    movementY: number,
+  ) {
+    const previous = lastPointerPositionRef.current;
+    lastPointerPositionRef.current = { x: clientX, y: clientY };
+    return movementX !== 0 || movementY !== 0 || Boolean(
+      previous && (previous.x !== clientX || previous.y !== clientY),
+    );
   }
 
   const panelMenuActions: PanelMenuAction[] = [
@@ -3327,10 +3371,16 @@ function PanelFrame({
         focusFromPointer(event.currentTarget);
       }}
       onPointerEnter={(event) => {
+        const moved = trackPointerMovement(
+          event.clientX,
+          event.clientY,
+          event.movementX,
+          event.movementY,
+        );
         if (onPointerIntent?.({
           clientX: event.clientX,
           clientY: event.clientY,
-          moved: event.movementX !== 0 || event.movementY !== 0,
+          moved,
           trusted: event.isTrusted,
         })) return;
         if (
@@ -3343,15 +3393,21 @@ function PanelFrame({
         }
       }}
       onPointerMove={(event) => {
+        const moved = trackPointerMovement(
+          event.clientX,
+          event.clientY,
+          event.movementX,
+          event.movementY,
+        );
         if (onPointerIntent?.({
           clientX: event.clientX,
           clientY: event.clientY,
-          moved: event.movementX !== 0 || event.movementY !== 0,
+          moved,
           trusted: event.isTrusted,
         })) return;
         if (
           (kind === "FIL"
-            ? event.movementX !== 0 || event.movementY !== 0
+            ? moved
             : !document.hasFocus() || document.activeElement !== event.currentTarget) &&
           canMoveFocusOnHover(event.currentTarget)
         ) {

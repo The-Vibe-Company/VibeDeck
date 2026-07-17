@@ -201,7 +201,23 @@ async function waitForDomFocus(page, locator, label, timeoutMs = 5_000) {
     );
     await wait.dispose();
   } catch (error) {
-    throw new Error(`Délai dépassé : ${label}.`, { cause: error });
+    const diagnostics = await page.evaluate(() => {
+      const active = document.activeElement;
+      return {
+        activeElement: active instanceof HTMLElement
+          ? {
+              tagName: active.tagName,
+              id: active.id,
+              className: active.className,
+            }
+          : null,
+        documentHasFocus: document.hasFocus(),
+      };
+    });
+    throw new Error(
+      `Délai dépassé : ${label}. Diagnostic : ${JSON.stringify(diagnostics)}`,
+      { cause: error },
+    );
   } finally {
     await handle.dispose();
   }
@@ -1036,6 +1052,54 @@ try {
     await page.locator(".article-row").nth(4).evaluate((row) => document.activeElement === row),
     true,
     "Après survol, les flèches doivent partir de la ligne survolée et avancer d’un cran.",
+  );
+
+  const configureSourcesButton = filPanel.getByLabel("Configurer les sources", { exact: true });
+  const zeroMovementRow = filPanel.locator(".article-row").nth(5);
+  const zeroMovementNextRow = filPanel.locator(".article-row").nth(6);
+  const configureSourcesBox = await configureSourcesButton.boundingBox();
+  const zeroMovementRowBox = await zeroMovementRow.boundingBox();
+  const zeroMovementRowId = await zeroMovementRow.getAttribute("id");
+  assert.ok(configureSourcesBox, "Le bouton Configurer les sources doit être visible.");
+  assert.ok(zeroMovementRowBox, "La ligne de régression du pointeur doit être visible.");
+  assert.ok(zeroMovementRowId, "La ligne de régression du pointeur doit être identifiable.");
+  await configureSourcesButton.dispatchEvent("pointermove", {
+    bubbles: true,
+    pointerType: "mouse",
+    clientX: configureSourcesBox.x + configureSourcesBox.width / 2,
+    clientY: configureSourcesBox.y + configureSourcesBox.height / 2,
+  });
+  await configureSourcesButton.focus();
+  assert.equal(
+    await configureSourcesButton.evaluate((button) => document.activeElement === button),
+    true,
+    "Configurer les sources doit posséder le vrai focus avant la régression.",
+  );
+  await zeroMovementRow.dispatchEvent("pointermove", {
+    bubbles: true,
+    pointerType: "mouse",
+    clientX: zeroMovementRowBox.x + zeroMovementRowBox.width / 2,
+    clientY: zeroMovementRowBox.y + zeroMovementRowBox.height / 2,
+  });
+  await page.waitForFunction(
+    (articleId) => document.querySelector(".article-row--focused")?.id === articleId,
+    zeroMovementRowId,
+  );
+  assert.equal(
+    await configureSourcesButton.evaluate((button) => document.activeElement === button),
+    false,
+    "Un déplacement absolu doit retirer le focus du bouton même si movementX/Y valent zéro.",
+  );
+  assert.equal(
+    await filPanel.evaluate((panel) => document.activeElement === panel),
+    true,
+    "Le déplacement absolu vers un article doit rendre le vrai focus DOM au Fil.",
+  );
+  await page.keyboard.press("ArrowDown");
+  assert.equal(
+    await zeroMovementNextRow.evaluate((row) => document.activeElement === row),
+    true,
+    "Après le déplacement absolu, la flèche doit partir de l’article survolé.",
   );
   // Relâcher le survol du fil pour ne pas laisser de minuteur « vu » armé.
   await page.locator(".global-bar").hover();
@@ -1948,9 +2012,41 @@ try {
     reader.sendInputEvent({ type: "keyUp", keyCode: "Escape" });
   }, { articlePrefix: `${origin}/articles/`, requireFocus: showWindow });
   await page.locator(".link-reader").waitFor({ state: "detached" });
-  await page.waitForFunction(
-    (articleId) => document.activeElement?.id === articleId,
-    readerSourceId,
+  await waitForDomFocus(
+    page,
+    readerSourceRow,
+    "Échap depuis le lecteur natif doit rendre le focus à la ligne d’origine",
+  );
+  await electronApp.evaluate(async ({ webContents }, articlePrefix) => {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (!webContents.getAllWebContents().some((contents) =>
+        contents.getURL().startsWith(articlePrefix))) return;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error("La vue native du lecteur reste présente après Échap.");
+  }, `${origin}/articles/`);
+  // Sur Windows, Chromium peut rendre le focus à la racine du renderer plus
+  // d'une seconde après le retrait de la WebContentsView. Rejouer ce vol tardif
+  // sans intention clavier ou pointeur : la reprise ciblée doit gagner la course.
+  await page.waitForTimeout(1_100);
+  await readerSourceRow.evaluate((row) => {
+    const panel = row.closest(".dashboard-panel");
+    if (!(panel instanceof HTMLElement)) throw new Error("Le Fil du lecteur est introuvable.");
+    panel.focus({ preventScroll: true });
+    panel.dispatchEvent(new PointerEvent("pointermove", {
+      bubbles: true,
+      clientX: 1_100,
+      clientY: 700,
+      movementX: 0,
+      movementY: 0,
+      pointerType: "mouse",
+    }));
+  });
+  await waitForDomFocus(
+    page,
+    readerSourceRow,
+    "la reprise tardive du lecteur doit restaurer la ligne après le focus natif Windows",
+    1_000,
   );
   await page.keyboard.press("ArrowDown");
   await page.waitForFunction(
