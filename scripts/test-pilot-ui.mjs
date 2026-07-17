@@ -1261,11 +1261,14 @@ try {
     if (!view || !("webContents" in view)) {
       throw new Error("La vue web native à focaliser est introuvable.");
     }
-    view.webContents.focus();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    const windowFocused = window.isFocused();
+    if (windowFocused) {
+      view.webContents.focus();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
     return {
       appActive: process.platform === "darwin" ? app.isActive() : null,
-      windowFocused: window.isFocused(),
+      windowFocused,
       dashboardFocused: window.webContents.isFocused(),
       nativeFocused: view.webContents.isFocused(),
     };
