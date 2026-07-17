@@ -418,21 +418,6 @@ function restoreSemanticSearchControl(
     : false;
 }
 
-function restoreSemanticSearchControlAfterRender(
-  restore: SemanticSearchRestoreState | null,
-  remainingFrames = 12,
-) {
-  if (!restore) return;
-  if (restoreSemanticSearchControl(restore, false)) return;
-  if (restore.focusedControl && remainingFrames > 0) {
-    window.requestAnimationFrame(() => {
-      restoreSemanticSearchControlAfterRender(restore, remainingFrames - 1);
-    });
-    return;
-  }
-  if (restore.focusedPanelId) focusDashboardPanelRoot(restore.focusedPanelId);
-}
-
 export default function App() {
   const [state, setState] = useState<AppState | null>(null);
   const [layout, setLayout] = useState<LayoutNode | null>(null);
@@ -564,6 +549,8 @@ export default function App() {
   const semanticResultItemsRef = useRef<FeedItem[]>([]);
   const semanticBaseItemIdsRef = useRef(new Set<string>());
   const semanticSearchRestoreRef = useRef<SemanticSearchRestoreState | null>(null);
+  const semanticSearchReturnFocusRef = useRef<SemanticSearchRestoreState | null>(null);
+  const semanticSearchReturnPointerPositionRef = useRef<{ x: number; y: number } | null>(null);
   const activeSemanticSearchRef = useRef<ActiveSemanticSearch | null>(null);
   const semanticSearchNativeOriginRef = useRef(false);
   const pendingSeenItemIdsRef = useRef(new Set<string>());
@@ -1009,6 +996,8 @@ export default function App() {
       }
       readerReturnFocusRef.current = null;
       readerOpenPointerPositionRef.current = null;
+      semanticSearchReturnFocusRef.current = null;
+      semanticSearchReturnPointerPositionRef.current = null;
     };
     document.addEventListener("pointerdown", cancelReaderReturnForPointerDown, true);
     return () => {
@@ -1624,6 +1613,8 @@ export default function App() {
       },
     ])));
     semanticSearchRestoreRef.current = null;
+    semanticSearchReturnFocusRef.current = restore;
+    semanticSearchReturnPointerPositionRef.current = lastDashboardPointerPositionRef.current;
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
         if (!restore) return;
@@ -1639,10 +1630,24 @@ export default function App() {
             list.scrollTop = anchorRow.offsetTop - anchor.viewportTop;
           } else if (list) list.scrollTop = scrollTop;
         }
-        // La ligne ciblée peut être remontée une frame plus tard par la liste
-        // virtualisée, notamment sur Windows. Réessayer brièvement préserve le
-        // vrai focus DOM au lieu de figer prématurément le focus sur le panel.
-        restoreSemanticSearchControlAfterRender(restore);
+        const restorePendingFocus = (fallbackToPanel = false) => {
+          if (semanticSearchReturnFocusRef.current !== restore) return;
+          if (restoreSemanticSearchControl(restore, false)) return;
+          if (fallbackToPanel && restore?.focusedPanelId) {
+            focusDashboardPanelRoot(restore.focusedPanelId);
+            semanticSearchReturnFocusRef.current = null;
+            semanticSearchReturnPointerPositionRef.current = null;
+          }
+        };
+        // Windows peut émettre un survol stationnaire après le remontage de la
+        // ligne. Les reprises bornées gagnent cette course, mais toute nouvelle
+        // intention clavier ou pointeur efface la cible avant le prochain essai.
+        restorePendingFocus();
+        window.requestAnimationFrame(() => restorePendingFocus());
+        for (const delay of [50, 150, 300, 600]) {
+          window.setTimeout(() => restorePendingFocus(), delay);
+        }
+        window.setTimeout(() => restorePendingFocus(true), 1_000);
       });
     });
   }
@@ -1798,6 +1803,10 @@ export default function App() {
       ) {
         readerReturnFocusRef.current = null;
         readerOpenPointerPositionRef.current = null;
+      }
+      if (semanticSearchReturnFocusRef.current && event.key !== "Escape") {
+        semanticSearchReturnFocusRef.current = null;
+        semanticSearchReturnPointerPositionRef.current = null;
       }
       if (event.key === "Escape") {
         if (semanticSearchOpen) {
@@ -2062,7 +2071,28 @@ export default function App() {
         if (!intent) {
           readerReturnFocusRef.current = null;
           readerOpenPointerPositionRef.current = null;
+          semanticSearchReturnFocusRef.current = null;
+          semanticSearchReturnPointerPositionRef.current = null;
           return false;
+        }
+        const nextPosition = { x: intent.clientX, y: intent.clientY };
+        const semanticReturnPosition = semanticSearchReturnPointerPositionRef.current;
+        if (semanticSearchReturnFocusRef.current) {
+          const explicitMove =
+            (intent.moved && !intent.trusted) ||
+            (intent.trusted && semanticReturnPosition !== null && (
+              semanticReturnPosition.x !== nextPosition.x ||
+              semanticReturnPosition.y !== nextPosition.y
+            ));
+          if (explicitMove) {
+            semanticSearchReturnFocusRef.current = null;
+            semanticSearchReturnPointerPositionRef.current = null;
+          } else {
+            if (intent.trusted && semanticReturnPosition === null) {
+              semanticSearchReturnPointerPositionRef.current = nextPosition;
+            }
+            return true;
+          }
         }
         if (
           readerReturnFocusRef.current &&
@@ -2075,7 +2105,6 @@ export default function App() {
           // seul un clic (intent null ci-dessus) ou le clavier prime.
           return true;
         }
-        const nextPosition = { x: intent.clientX, y: intent.clientY };
         const readerOpenPosition = readerOpenPointerPositionRef.current;
         if (intent.trusted) lastDashboardPointerPositionRef.current = nextPosition;
         if (
