@@ -1,0 +1,35 @@
+AGENTS.md
+  s_4bc577046b3948::t_052f9537230db1 103
+src/App.tsx
+  s_4bc577046b3948::t_9c5f8f23379016 3177,3185-3187
+  s_4bc577046b3948::t_e75090e9c0e7ff 3136
+README.md
+  s_4bc577046b3948::t_e75090e9c0e7ff 73
+scripts/test-pilot-ui.mjs
+  s_4bc577046b3948::t_70f2729441b6d2 876-885,1252
+  s_4bc577046b3948::t_b55a6b83878dc5 1227-1232,1255,1267,1269,1301-1308,1315-1320,1322-1334,1337-1351
+  s_4bc577046b3948::t_bbbf992df64c47 1245-1251
+  s_4bc577046b3948::t_26ad8edb136df3 1226,1233-1244,1256-1266,1268,1270-1279,1289-1296,1356-1358
+  s_4bc577046b3948::t_67723d9483e1d7 1253-1254,1280-1283
+  s_4bc577046b3948::t_2d52007317d458 1297-1300,1309-1314,1321
+  s_4bc577046b3948::t_8a32f6eddd769a 1352-1355
+  s_4bc577046b3948::t_1a10956dfaeb8f 898-902,904,915
+  s_4bc577046b3948::t_effb90fa14bdb1 1284-1288
+  s_4bc577046b3948::t_ca6788ec28c9bb 1335-1336
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "d7a82237eb5776c342a977b7dbdb8eafb0780fe5",
+  "prompts": {},
+  "sessions": {
+    "s_4bc577046b3948": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6ea2-2812-7951-8153-6317b88fded7",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
