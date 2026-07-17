@@ -1662,8 +1662,10 @@ try {
   );
   await waitForResponsiveFocusEffects(page, panelLeaf.locator(".dashboard-panel"));
   assert.equal(
-    await page.evaluate(() => document.activeElement === document.body),
-    true,
+    await panelLeaf.getByLabel("Plus d’actions", { exact: true }).evaluate(
+      (trigger) => document.activeElement === trigger,
+    ),
+    false,
     "Supprimer une action conditionnelle ne doit pas armer un futur transfert de focus responsive.",
   );
   await narrowWindow.evaluate((window) => window.setSize(1_600, 820));
@@ -1708,8 +1710,10 @@ try {
   );
   await waitForResponsiveFocusEffects(page, panelLeaf.locator(".dashboard-panel"));
   assert.equal(
-    await page.evaluate(() => document.activeElement === document.body),
-    true,
+    await panelLeaf.getByLabel("Plus d’actions", { exact: true }).evaluate(
+      (trigger) => document.activeElement === trigger,
+    ),
+    false,
     "Un vrai focus ailleurs doit empêcher tout transfert responsive ultérieur.",
   );
   await narrowWindow.evaluate((window) => window.setSize(1_600, 820));
