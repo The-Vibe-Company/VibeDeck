@@ -8,6 +8,12 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      windows_signing_smoke:
+        description: Construire et vérifier Windows signé sans publier de release
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: pilot-build-${{ github.event.pull_request.number || github.ref }}
@@ -116,6 +122,68 @@ jobs:
         with:
           name: ${{ matrix.artifact_name }}
           path: ${{ matrix.artifact_paths }}
+          if-no-files-found: error
+          retention-days: 7
+
+  windows_signing_smoke:
+    name: Verify Windows Azure signing
+    if: github.event_name == 'workflow_dispatch' && inputs.windows_signing_smoke == true
+    runs-on: windows-latest
+    timeout-minutes: 60
+    environment: signed-release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Build signed Windows distribution without publishing
+        shell: pwsh
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_CODE_SIGNING_ENDPOINT: ${{ vars.AZURE_CODE_SIGNING_ENDPOINT }}
+          AZURE_CODE_SIGNING_ACCOUNT_NAME: ${{ vars.AZURE_CODE_SIGNING_ACCOUNT_NAME }}
+          AZURE_CERTIFICATE_PROFILE_NAME: ${{ vars.AZURE_CERTIFICATE_PROFILE_NAME }}
+          WIN_PUBLISHER_NAME: ${{ vars.WIN_PUBLISHER_NAME }}
+        run: npm run dist:win:signed -- --publish never
+      - run: npm run verify:packaged-fuses
+      - run: npm run test:packaged
+      - name: Verify signed application, installer and update metadata
+        shell: pwsh
+        env:
+          WIN_PUBLISHER_NAME: ${{ vars.WIN_PUBLISHER_NAME }}
+        run: |
+          $installers = @(Get-ChildItem release -File -Filter *.exe)
+          if ($installers.Count -ne 1) { throw "Un installateur Windows est requis" }
+          $applications = @(Get-ChildItem release/win-unpacked -File -Filter *.exe)
+          if ($applications.Count -ne 1) { throw "Un exécutable VibeDeck packagé est requis" }
+          $blockmaps = @(Get-ChildItem release -File -Filter *.blockmap)
+          if ($blockmaps.Count -ne 1) { throw "Une blockmap Windows est requise" }
+          if (-not (Test-Path release/latest.yml)) { throw "latest.yml introuvable" }
+
+          $expectedCommonName = [regex]::Escape($env:WIN_PUBLISHER_NAME)
+          foreach ($artifact in @($applications[0], $installers[0])) {
+            $signature = Get-AuthenticodeSignature $artifact.FullName
+            if ($signature.Status -ne "Valid") {
+              throw "Signature Authenticode invalide pour $($artifact.Name): $($signature.Status)"
+            }
+            if ($signature.SignerCertificate.Subject -notmatch "(^|,\s*)CN=$expectedCommonName(,|$)") {
+              throw "Sujet Authenticode inattendu pour $($artifact.Name): $($signature.SignerCertificate.Subject)"
+            }
+            Get-FileHash -Algorithm SHA256 $artifact.FullName
+          }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vibedeck-windows-signed-smoke
+          path: |
+            release/*.exe
+            release/*.blockmap
+            release/latest.yml
           if-no-files-found: error
           retention-days: 7
 

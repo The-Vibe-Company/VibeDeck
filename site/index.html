@@ -30,6 +30,7 @@ html { scroll-behavior: smooth; }
 .btn-amber:hover { background: #ffb63d; color: #1c1a16; }
 .btn-ghost { border: 1.5px solid #ddd6c8; color: #2a2823; padding: 13px 28px; border-radius: 11px; font-size: 16px; white-space: nowrap; background: #fff; }
 .btn-ghost:hover { border-color: #f5a623; color: #b97a10; }
+.nav-link:focus-visible, .btn-header:focus-visible, .btn-amber:focus-visible, .btn-ghost:focus-visible { outline: 3px solid #8f5d08; outline-offset: 3px; }
 
 /* --- Démo interactive (maquette sombre) --- */
 .demo-btn-outline { display: inline-flex; min-height: 29px; align-items: center; padding: 6px 11px; border: 1px solid oklch(34.45% 0.0106 91.6); border-radius: 5px; background: transparent; color: oklch(76.77% 0.0164 86.4); cursor: pointer; font-size: 11.5px; font-weight: 600; font-family: inherit; }
@@ -69,7 +70,7 @@ html { scroll-behavior: smooth; }
     <h1 style="margin:0; font-size:clamp(36px, 6.5vw, 64px); font-weight:700; letter-spacing:-0.03em; line-height:1.04; color:#1c1a16; max-width:800px; text-wrap:balance;">Suivez tout ce qui compte, sur un seul écran.</h1>
     <p style="margin:0; font-size:clamp(16px, 2vw, 19px); line-height:1.55; color:#5c574c; max-width:600px; text-wrap:pretty;">VibeDeck rassemble vos sites, flux et médias favoris dans un dashboard de panneaux que vous composez librement. Tout reste sur votre machine — sans compte, sans serveur, sans tracking.</p>
     <div style="display:flex; flex-wrap:wrap; gap:14px; justify-content:center;">
-      <a href="#telecharger" class="btn-amber">Télécharger pour macOS</a>
+      <a href="#telecharger" class="btn-amber">Télécharger VibeDeck</a>
       <a href="https://github.com/The-Vibe-Company/VibeDeck" class="btn-ghost">Voir le code</a>
     </div>
     <div style="font-family:'IBM Plex Mono',monospace; font-size:12px; color:#a09a8c;">Open source · Licence MIT</div>
@@ -204,10 +205,10 @@ html { scroll-behavior: smooth; }
       <rect x="26" y="30" width="28" height="24" rx="5" fill="#f5a623"></rect>
     </svg>
     <h2 style="margin:0; font-size:clamp(28px, 4.5vw, 40px); font-weight:700; letter-spacing:-0.02em; color:#1c1a16;">Montez votre deck</h2>
-    <p style="margin:0; font-size:16px; color:#5c574c; max-width:440px; text-wrap:pretty;">Gratuit et open source. Disponible pour macOS, Windows arrive bientôt.</p>
+    <p style="margin:0; font-size:16px; color:#5c574c; max-width:440px; text-wrap:pretty;">Gratuit et open source. Disponible pour macOS et Windows.</p>
     <div style="display:flex; flex-wrap:wrap; gap:14px; justify-content:center;">
-      <a href="https://github.com/The-Vibe-Company/VibeDeck/releases" class="btn-amber">Télécharger pour macOS</a>
-      <a href="https://github.com/The-Vibe-Company/VibeDeck" class="btn-ghost">GitHub</a>
+      <a href="https://github.com/The-Vibe-Company/VibeDeck/releases/latest" class="btn-amber">Télécharger pour macOS</a>
+      <a href="https://github.com/The-Vibe-Company/VibeDeck/releases/latest" class="btn-ghost">Télécharger pour Windows</a>
     </div>
   </section>
 
