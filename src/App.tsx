@@ -956,7 +956,6 @@ export default function App() {
   useLayoutEffect(() => {
     if (
       linkPreview ||
-      readerSurfacePresent ||
       !readerReturnFocusRef.current
     ) return;
     const target = readerReturnFocusRef.current;
@@ -968,12 +967,13 @@ export default function App() {
       if (readerReturnFocusRef.current !== target) return;
       restoreArticleFocus(target);
     };
+    restorePendingFocus();
     const frame = window.requestAnimationFrame(restorePendingFocus);
     // Sous Windows, Chromium peut appliquer le focus natif de la surface
     // sous le curseur après la frame qui suit la destruction de la vue. Ces
     // reprises bornées gagnent cette course sans lutter contre l’utilisateur :
     // toute intention explicite efface `readerReturnFocusRef` en amont.
-    const retries = [50, 150, 300].map((delay) =>
+    const retries = [50, 150, 300, 600, 1_000].map((delay) =>
       window.setTimeout(restorePendingFocus, delay)
     );
     return () => {
