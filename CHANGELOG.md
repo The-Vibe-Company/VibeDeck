@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.12.0](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.11.0...v0.12.0) (2026-07-17)
+
+
+### Features
+
+* **site:** télécharger directement la dernière release ([#66](https://github.com/The-Vibe-Company/VibeDeck/issues/66)) ([9f30038](https://github.com/The-Vibe-Company/VibeDeck/commit/9f300386162fb81ad64236fb138ede9078bad20e))
+
+
+### Bug Fixes
+
+* **fils:** reprendre le clavier au survol ([#60](https://github.com/The-Vibe-Company/VibeDeck/issues/60)) ([fc58814](https://github.com/The-Vibe-Company/VibeDeck/commit/fc588143d666dda58e905d19e1a80a47ba5267de))
+
 ## [0.11.0](https://github.com/The-Vibe-Company/VibeDeck/compare/v0.10.0...v0.11.0) (2026-07-17)
 
 
