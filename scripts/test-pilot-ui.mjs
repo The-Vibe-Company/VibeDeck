@@ -1037,6 +1037,54 @@ try {
     true,
     "Après survol, les flèches doivent partir de la ligne survolée et avancer d’un cran.",
   );
+
+  const configureSourcesButton = filPanel.getByLabel("Configurer les sources", { exact: true });
+  const zeroMovementRow = filPanel.locator(".article-row").nth(5);
+  const zeroMovementNextRow = filPanel.locator(".article-row").nth(6);
+  const configureSourcesBox = await configureSourcesButton.boundingBox();
+  const zeroMovementRowBox = await zeroMovementRow.boundingBox();
+  const zeroMovementRowId = await zeroMovementRow.getAttribute("id");
+  assert.ok(configureSourcesBox, "Le bouton Configurer les sources doit être visible.");
+  assert.ok(zeroMovementRowBox, "La ligne de régression du pointeur doit être visible.");
+  assert.ok(zeroMovementRowId, "La ligne de régression du pointeur doit être identifiable.");
+  await configureSourcesButton.dispatchEvent("pointermove", {
+    bubbles: true,
+    pointerType: "mouse",
+    clientX: configureSourcesBox.x + configureSourcesBox.width / 2,
+    clientY: configureSourcesBox.y + configureSourcesBox.height / 2,
+  });
+  await configureSourcesButton.focus();
+  assert.equal(
+    await configureSourcesButton.evaluate((button) => document.activeElement === button),
+    true,
+    "Configurer les sources doit posséder le vrai focus avant la régression.",
+  );
+  await zeroMovementRow.dispatchEvent("pointermove", {
+    bubbles: true,
+    pointerType: "mouse",
+    clientX: zeroMovementRowBox.x + zeroMovementRowBox.width / 2,
+    clientY: zeroMovementRowBox.y + zeroMovementRowBox.height / 2,
+  });
+  await page.waitForFunction(
+    (articleId) => document.querySelector(".article-row--focused")?.id === articleId,
+    zeroMovementRowId,
+  );
+  assert.equal(
+    await configureSourcesButton.evaluate((button) => document.activeElement === button),
+    false,
+    "Un déplacement absolu doit retirer le focus du bouton même si movementX/Y valent zéro.",
+  );
+  assert.equal(
+    await filPanel.evaluate((panel) => document.activeElement === panel),
+    true,
+    "Le déplacement absolu vers un article doit rendre le vrai focus DOM au Fil.",
+  );
+  await page.keyboard.press("ArrowDown");
+  assert.equal(
+    await zeroMovementNextRow.evaluate((row) => document.activeElement === row),
+    true,
+    "Après le déplacement absolu, la flèche doit partir de l’article survolé.",
+  );
   // Relâcher le survol du fil pour ne pas laisser de minuteur « vu » armé.
   await page.locator(".global-bar").hover();
 

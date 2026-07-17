@@ -3259,6 +3259,7 @@ function PanelFrame({
   const dragHandle = useSplitPanelDragHandle(panelId);
   const [renaming, setRenaming] = useState(false);
   const [nameValue, setNameValue] = useState(name);
+  const lastPointerPositionRef = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => setNameValue(name), [name]);
 
@@ -3283,6 +3284,19 @@ function PanelFrame({
     const active = document.activeElement;
     if (!active || active === document.body || active === panelElement) return true;
     return active instanceof HTMLElement && active.matches(".dashboard-panel");
+  }
+
+  function trackPointerMovement(
+    clientX: number,
+    clientY: number,
+    movementX: number,
+    movementY: number,
+  ) {
+    const previous = lastPointerPositionRef.current;
+    lastPointerPositionRef.current = { x: clientX, y: clientY };
+    return movementX !== 0 || movementY !== 0 || Boolean(
+      previous && (previous.x !== clientX || previous.y !== clientY),
+    );
   }
 
   const panelMenuActions: PanelMenuAction[] = [
@@ -3327,10 +3341,16 @@ function PanelFrame({
         focusFromPointer(event.currentTarget);
       }}
       onPointerEnter={(event) => {
+        const moved = trackPointerMovement(
+          event.clientX,
+          event.clientY,
+          event.movementX,
+          event.movementY,
+        );
         if (onPointerIntent?.({
           clientX: event.clientX,
           clientY: event.clientY,
-          moved: event.movementX !== 0 || event.movementY !== 0,
+          moved,
           trusted: event.isTrusted,
         })) return;
         if (
@@ -3343,15 +3363,21 @@ function PanelFrame({
         }
       }}
       onPointerMove={(event) => {
+        const moved = trackPointerMovement(
+          event.clientX,
+          event.clientY,
+          event.movementX,
+          event.movementY,
+        );
         if (onPointerIntent?.({
           clientX: event.clientX,
           clientY: event.clientY,
-          moved: event.movementX !== 0 || event.movementY !== 0,
+          moved,
           trusted: event.isTrusted,
         })) return;
         if (
           (kind === "FIL"
-            ? event.movementX !== 0 || event.movementY !== 0
+            ? moved
             : !document.hasFocus() || document.activeElement !== event.currentTarget) &&
           canMoveFocusOnHover(event.currentTarget)
         ) {
