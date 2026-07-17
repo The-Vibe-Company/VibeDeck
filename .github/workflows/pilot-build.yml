@@ -9,13 +9,47 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: pilot-build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  verify:
+  policy:
+    name: Policy and dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run verify:release
+      - run: npm audit --omit=dev
+      - run: npm audit
+
+  platform:
+    name: Verify and package (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        include:
+          - os: macos-latest
+            artifact_name: vibedeck-macos-unsigned
+            artifact_paths: |
+              release/*.dmg
+              release/*.zip
+              release/*.blockmap
+              release/latest-mac.yml
+          - os: windows-latest
+            artifact_name: vibedeck-windows-unsigned
+            artifact_paths: |
+              release/*.exe
+              release/*.blockmap
+              release/latest.yml
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -26,40 +60,77 @@ jobs:
       - run: npm test
       - name: Verify pilot viewport and focus invariants
         run: npm run test:pilot-ui
-      - run: npm run verify:release
-      - name: Package application directory
-        run: npm run dist:dir
+      - name: Upload pilot UI failure diagnostic
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pilot-ui-failure-${{ runner.os }}
+          path: .context/pilot-ui-failure.png
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Package unsigned macOS distribution
+        if: runner.os == 'macOS'
+        run: npm run dist:mac
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Package unsigned Windows distribution
+        if: runner.os == 'Windows'
+        run: npm run dist:win
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
       - name: Verify packaged Electron fuses
         run: npm run verify:packaged-fuses
-      - name: Smoke packaged application
-        run: npm run test:packaged
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - name: Verify unsigned macOS distribution
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find release -maxdepth 1 -type f -name '*.dmg' | wc -l | tr -d ' ')" = 1
+          test "$(find release -maxdepth 1 -type f -name '*.zip' | wc -l | tr -d ' ')" = 1
+          test "$(find release -maxdepth 1 -type f -name '*.blockmap' | wc -l | tr -d ' ')" = 2
+          test -f release/latest-mac.yml
+          dmg_path="$(find release -maxdepth 1 -type f -name '*.dmg' -print -quit)"
+          mount_path="$RUNNER_TEMP/vibedeck-pilot-volume"
+          mkdir -p "$mount_path"
+          cleanup() { hdiutil detach "$mount_path" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          hdiutil verify "$dmg_path"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount_path" "$dmg_path" >/dev/null
+          app_path="$mount_path/VibeDeck.app"
+          test -d "$app_path"
+          npm run verify:packaged-fuses -- "$app_path"
+          npm run test:packaged -- "$app_path"
+      - name: Verify unsigned Windows distribution
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem release -File -Filter *.exe)
+          if ($installers.Count -ne 1) { throw "Un installateur Windows est requis" }
+          $blockmaps = @(Get-ChildItem release -File -Filter *.blockmap)
+          if ($blockmaps.Count -ne 1) { throw "Une blockmap Windows est requise" }
+          if (-not (Test-Path release/latest.yml)) { throw "latest.yml introuvable" }
+          npm run test:packaged
+      - name: Upload unsigned distribution
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: vibedeck-${{ runner.os }}-directory
-          path: release/
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_paths }}
           if-no-files-found: error
+          retention-days: 7
 
-  windows-installer:
-    runs-on: windows-latest
+  required:
+    name: CI required
+    if: always()
+    needs: [policy, platform]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: npm run verify:release
-      - run: npm run dist:win
+      - name: Require every pre-release check
+        shell: bash
         env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      - name: Verify packaged Electron fuses
-        run: npm run verify:packaged-fuses
-      - name: Smoke packaged application
-        run: npm run test:packaged
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: vibedeck-Windows-installer-unsigned
-          path: release/*.exe
-          if-no-files-found: error
+          POLICY_RESULT: ${{ needs.policy.result }}
+          PLATFORM_RESULT: ${{ needs.platform.result }}
+        run: |
+          test "$POLICY_RESULT" = success
+          test "$PLATFORM_RESULT" = success

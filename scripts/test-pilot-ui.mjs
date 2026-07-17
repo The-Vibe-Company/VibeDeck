@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -394,7 +394,10 @@ const server = createServer((request, response) => {
 });
 
 let electronApp;
+let page;
 const temporaryDirectory = await mkdtemp(path.join(tmpdir(), "vibedeck-pilot-ui-"));
+const failureScreenshotPath = path.join(projectRoot, ".context", "pilot-ui-failure.png");
+await rm(failureScreenshotPath, { force: true });
 
 try {
   origin = await listen(server);
@@ -415,7 +418,7 @@ try {
     timeout: 30_000,
   });
 
-  const page = await electronApp.firstWindow({ timeout: 30_000 });
+  page = await electronApp.firstWindow({ timeout: 30_000 });
   page.setDefaultTimeout(20_000);
   if (showWindow) await page.bringToFront();
   await page.waitForFunction(() => Boolean(window.vibedeck?.getState));
@@ -3092,6 +3095,15 @@ try {
     `✓ virtualisation: ${virtualizationMetrics.perPanel.join("/")} lignes DOM par panel, ` +
     `p95 clavier ${loadKeyboardMetrics.p95.toFixed(2)} ms près de la ligne 1 200`,
   );
+} catch (error) {
+  if (page) {
+    await mkdir(path.join(projectRoot, ".context"), { recursive: true });
+    await page.screenshot({
+      path: failureScreenshotPath,
+      fullPage: true,
+    }).catch(() => undefined);
+  }
+  throw error;
 } finally {
   if (electronApp) await electronApp.close().catch(() => undefined);
   await closeServer(server).catch(() => undefined);

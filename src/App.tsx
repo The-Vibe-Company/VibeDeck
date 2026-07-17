@@ -2912,7 +2912,7 @@ function AdaptiveActionMenu({ actions }: { actions: PanelMenuAction[] }) {
         window.requestAnimationFrame(() => (directAction ?? fallback).focus({ preventScroll: true }));
         return;
       }
-      if (wasCompact !== false || !compact) return;
+      if (!compact) return;
       const active = document.activeElement;
       const secondaryStillFocused =
         active instanceof HTMLElement &&
