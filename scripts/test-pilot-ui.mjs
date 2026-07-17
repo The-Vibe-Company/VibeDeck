@@ -459,21 +459,21 @@ try {
   });
   assert.equal(await updateCta.count(), 0, "Le téléchargement reste silencieux.");
 
-  const toolsButton = page.getByRole("button", { name: "Outils" });
-  await toolsButton.click();
-  const toolsDialog = page.getByRole("dialog", { name: "Outils du poste" });
-  await toolsDialog.getByRole("progressbar", { name: "Téléchargement de la version 0.4.0" }).waitFor();
-  await toolsDialog.locator("footer").getByRole("button", { name: "Fermer" }).click();
-  await toolsDialog.waitFor({ state: "detached" });
+  const settingsButton = page.getByRole("button", { name: "Réglages" });
+  await settingsButton.click();
+  const settingsPage = page.locator(".settings-stage");
+  await settingsPage.getByRole("progressbar", { name: "Téléchargement de la version 0.4.0" }).waitFor();
+  await settingsPage.getByRole("button", { name: /Retour au dashboard/ }).click();
+  await settingsPage.waitFor({ state: "detached" });
   await waitForDomFocus(
     page,
-    toolsButton,
-    "la fermeture des outils doit restaurer le focus avant l’action clavier suivante",
+    settingsButton,
+    "la fermeture des réglages doit restaurer le focus avant l’action clavier suivante",
   );
   assert.equal(
-    await toolsButton.evaluate((button) => document.activeElement === button),
+    await settingsButton.evaluate((button) => document.activeElement === button),
     true,
-    "La fermeture des outils doit restaurer le focus avant l’action clavier suivante.",
+    "La fermeture des réglages doit restaurer le focus avant l’action clavier suivante.",
   );
 
   await publishUpdateState("ready", { availableVersion: "0.4.0" });
@@ -503,46 +503,46 @@ try {
   await updateDialog.waitFor({ state: "detached" });
   await updateCta.waitFor({ state: "detached" });
   assert.equal(await updateCta.count(), 0, "Le report masque seulement le CTA de cette version.");
-  const deferredTools = page.getByRole("button", { name: "Outils — mise à jour 0.4.0 prête" });
+  const deferredSettings = page.getByRole("button", { name: "Réglages — mise à jour 0.4.0 prête" });
   await waitForDomFocus(
     page,
-    deferredTools,
-    "le report de la mise à jour doit rendre le focus aux outils",
+    deferredSettings,
+    "le report de la mise à jour doit rendre le focus aux réglages",
   );
-  await deferredTools.click();
-  await toolsDialog.getByRole("button", { name: "Installer" }).waitFor();
+  await deferredSettings.click();
+  await settingsPage.getByRole("button", { name: "Installer" }).waitFor();
 
   await publishUpdateState("error", { message: "Serveur de mise à jour indisponible." });
-  await toolsDialog.getByText("Serveur de mise à jour indisponible.").waitFor();
+  await settingsPage.getByText("Serveur de mise à jour indisponible.").waitFor();
   await publishUpdateState("up-to-date");
-  await toolsDialog.getByText("Cette version est à jour.").waitFor();
+  await settingsPage.getByText("Cette version est à jour.").waitFor();
   await publishUpdateState("ready", { availableVersion: "0.4.1" });
-  const installFromTools = toolsDialog.getByRole("button", { name: "Installer" });
-  await installFromTools.waitFor();
-  await installFromTools.click();
+  const installFromSettings = settingsPage.getByRole("button", { name: "Installer" });
+  await installFromSettings.waitFor();
+  await installFromSettings.click();
   const nextUpdateDialog = page.getByRole("alertdialog", { name: "Installer VibeDeck 0.4.1 ?" });
   await nextUpdateDialog.waitFor();
-  await toolsDialog.waitFor({ state: "detached" });
+  await settingsPage.waitFor({ state: "visible" });
   await waitForDomFocus(
     page,
     nextUpdateDialog.getByRole("button", { name: "Plus tard" }),
-    "la confirmation ouverte depuis les outils doit recevoir son focus initial",
+    "la confirmation ouverte depuis les réglages doit recevoir son focus initial",
   );
   await page.keyboard.press("Escape");
   await nextUpdateDialog.waitFor({ state: "detached" });
-  await toolsDialog.waitFor({ state: "visible" });
+  await settingsPage.waitFor({ state: "visible" });
   await waitForDomFocus(
     page,
-    installFromTools,
-    "la confirmation ouverte depuis les outils doit restaurer son focus",
+    installFromSettings,
+    "la confirmation ouverte depuis les réglages doit restaurer son focus",
   );
   assert.equal(
-    await installFromTools.evaluate((button) => document.activeElement === button),
+    await installFromSettings.evaluate((button) => document.activeElement === button),
     true,
-    "La confirmation ouverte depuis Outils doit restaurer son focus.",
+    "La confirmation ouverte depuis Réglages doit restaurer son focus.",
   );
-  await toolsDialog.locator("footer").getByRole("button", { name: "Fermer" }).click();
-  await toolsDialog.waitFor({ state: "detached" });
+  await settingsPage.getByRole("button", { name: /Retour au dashboard/ }).click();
+  await settingsPage.waitFor({ state: "detached" });
 
   const nextUpdateCta = page.getByRole("button", { name: "Mise à jour 0.4.1 prête", exact: true });
   await nextUpdateCta.waitFor();
@@ -576,38 +576,105 @@ try {
     { noOverflow: true, ctaInside: true },
     "Le CTA compact de mise à jour doit rester visible sans débordement à la taille minimale.",
   );
-  await page.locator(".global-tools").click();
-  const compactToolsDialog = page.getByRole("dialog", { name: "Outils du poste" });
-  await compactToolsDialog.waitFor({ state: "visible" });
-  const compactToolsMetrics = await compactToolsDialog.evaluate(async (dialog) => {
-    const scroll = dialog.querySelector(".pilot-tools-scroll");
-    const footer = dialog.querySelector("footer");
-    if (!(scroll instanceof HTMLElement) || !(footer instanceof HTMLElement)) {
-      throw new Error("Structure scrollable des outils introuvable.");
+  await page.locator(".global-settings").click();
+  await settingsPage.waitFor({ state: "visible" });
+  for (const section of [
+    { id: "general", label: "Général" },
+    { id: "data", label: "Données" },
+    { id: "storage", label: "Stockage" },
+    { id: "support", label: "Support" },
+  ]) {
+    await settingsPage.locator(`[data-settings-section="${section.id}"]`).click();
+    await settingsPage.getByRole("heading", { name: section.label, level: 1 }).waitFor();
+  }
+  const compactSettingsMetrics = await settingsPage.evaluate(async (stage) => {
+    const content = stage.querySelector(".settings-content");
+    const nav = stage.querySelector(".settings-nav");
+    const back = stage.querySelector(".settings-back");
+    if (!(content instanceof HTMLElement) || !(nav instanceof HTMLElement) || !(back instanceof HTMLElement)) {
+      throw new Error("Structure responsive des réglages introuvable.");
     }
-    scroll.scrollTop = scroll.scrollHeight;
+    content.scrollTop = content.scrollHeight;
     await new Promise((resolve) => requestAnimationFrame(resolve));
-    const footerBounds = footer.getBoundingClientRect();
-    const lastDangerBounds = scroll.querySelector(".pilot-tools-danger:last-of-type")
-      ?.getBoundingClientRect();
-    const scrollBounds = scroll.getBoundingClientRect();
+    const navBounds = nav.getBoundingClientRect();
+    const backBounds = back.getBoundingClientRect();
     return {
-      scrollable: scroll.scrollHeight > scroll.clientHeight,
-      footerVisible: footerBounds.top >= 0 && footerBounds.bottom <= window.innerHeight,
-      lastActionReachable: Boolean(
-        lastDangerBounds &&
-        lastDangerBounds.top < scrollBounds.bottom &&
-        lastDangerBounds.bottom > scrollBounds.top
-      ),
+      noOverflow:
+        document.documentElement.scrollWidth <= window.innerWidth &&
+        document.documentElement.scrollHeight <= window.innerHeight,
+      singleColumn: getComputedStyle(stage).gridTemplateColumns.split(" ").length === 1,
+      navInside: navBounds.left >= 0 && navBounds.right <= window.innerWidth,
+      backInside: backBounds.left >= 0 && backBounds.right <= window.innerWidth,
+      allSectionsReachable: nav.querySelectorAll("button").length === 4,
     };
   });
   assert.deepEqual(
-    compactToolsMetrics,
-    { scrollable: true, footerVisible: true, lastActionReachable: true },
-    "Les outils doivent rester entièrement parcourables à la hauteur minimale.",
+    compactSettingsMetrics,
+    {
+      noOverflow: true,
+      singleColumn: true,
+      navInside: true,
+      backInside: true,
+      allSectionsReachable: true,
+    },
+    "Les réglages doivent rester entièrement parcourables à la taille minimale.",
   );
-  await compactToolsDialog.locator("footer").getByRole("button", { name: "Fermer" }).click();
-  await compactToolsDialog.waitFor({ state: "detached" });
+  await settingsPage.locator('[data-settings-section="general"]').click();
+  await page.waitForFunction(() => {
+    const content = document.querySelector(".settings-content");
+    return content instanceof HTMLElement && content.scrollTop === 0;
+  });
+  assert.equal(
+    await settingsPage.locator(".settings-content").evaluate((content) => content.scrollTop),
+    0,
+    "Changer de section doit toujours révéler son titre et ses premières actions.",
+  );
+
+  const stateForImportFocus = await page.evaluate(() => window.vibedeck.getState());
+  await electronApp.evaluate(({ ipcMain }, importedState) => {
+    ipcMain.removeHandler("aggregator:import-dashboard");
+    ipcMain.handle("aggregator:import-dashboard", async () => {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      return {
+        state: importedState,
+        backupFilePath: "/tmp/vibedeck-pilot-backup.json",
+      };
+    });
+  }, stateForImportFocus);
+  await settingsPage.locator('[data-settings-section="data"]').click();
+  const importDashboardButton = settingsPage.getByRole("button", { name: "Importer" });
+  await importDashboardButton.click();
+  assert.equal(
+    await settingsPage.getByRole("button", { name: /Retour au dashboard/ }).isDisabled(),
+    true,
+    "Une opération en cours doit empêcher de démonter les réglages.",
+  );
+  assert.equal(
+    await page.locator(".global-settings").isDisabled(),
+    true,
+    "Le déclencheur global doit rester bloqué pendant une opération des réglages.",
+  );
+  await page.keyboard.press("Escape");
+  await settingsPage.waitFor({ state: "visible" });
+  await page.keyboard.press("ControlOrMeta+n");
+  await settingsPage.waitFor({ state: "visible" });
+  await settingsPage.waitFor({ state: "detached" });
+  await page.waitForFunction(() =>
+    document.activeElement instanceof HTMLElement &&
+    (
+      Boolean(document.activeElement.closest(".split-layout__leaf[data-panel-id]")) ||
+      document.activeElement.classList.contains("global-settings")
+    ));
+  assert.equal(
+    await page.evaluate(() =>
+      document.activeElement instanceof HTMLElement &&
+      (
+        Boolean(document.activeElement.closest(".split-layout__leaf[data-panel-id]")) ||
+        document.activeElement.classList.contains("global-settings")
+      )),
+    true,
+    "Après import, le vrai focus DOM doit revenir dans le dashboard hydraté ou son action Réglages.",
+  );
   const restoredWindow = await electronApp.browserWindow(page);
   await restoredWindow.evaluate((window) => window.setSize(1280, 820));
   await restoredWindow.dispose();
@@ -724,9 +791,48 @@ try {
     baselineMeasure.timeToRowRightEdge < 20,
     "L'heure doit fermer la ligne contre le bord droit de la rangée (padding uniquement).",
   );
-  const growTextButton = page.getByRole("button", { name: "Agrandir le texte des fils" });
+  await page.locator(".global-settings").click();
+  await settingsPage.waitFor({ state: "visible" });
+  await settingsPage.locator('[data-settings-section="data"]').click();
+  const clearDashboardFromSettings = settingsPage.getByRole("button", {
+    name: "Vider le dashboard",
+    exact: true,
+  });
+  await clearDashboardFromSettings.click();
+  const clearDashboardDialog = page.getByRole("alertdialog", { name: "Vider le dashboard ?" });
+  await clearDashboardDialog.getByText(/sources et leur cache local seront conservés/).waitFor();
+  await clearDashboardDialog.getByRole("button", { name: "Annuler" }).click();
+  await clearDashboardDialog.waitFor({ state: "detached" });
+  await waitForDomFocus(
+    page,
+    clearDashboardFromSettings,
+    "Annuler le vidage doit rendre le focus à l’action des réglages",
+  );
+  await settingsPage.locator('[data-settings-section="storage"]').click();
+  const clearWebDataFromSettings = settingsPage.getByRole("button", {
+    name: "Effacer les données",
+    exact: true,
+  });
+  await clearWebDataFromSettings.click();
+  const clearWebDataDialog = page.getByRole("alertdialog", {
+    name: "Effacer les données des pages web ?",
+  });
+  await clearWebDataDialog.getByText(/cookies et le cache/).waitFor();
+  await clearWebDataDialog.getByRole("button", { name: "Annuler" }).click();
+  await clearWebDataDialog.waitFor({ state: "detached" });
+  await waitForDomFocus(
+    page,
+    clearWebDataFromSettings,
+    "Annuler l’effacement web doit rendre le focus à l’action des réglages",
+  );
+  await settingsPage.locator('[data-settings-section="general"]').click();
+  const growTextButton = settingsPage.getByRole("button", {
+    name: "Agrandir la taille par défaut du texte des fils",
+  });
   await growTextButton.click();
   assert.equal(await defaultTextScale(), "1.1");
+  await settingsPage.getByRole("button", { name: /Retour au dashboard/ }).click();
+  await settingsPage.waitFor({ state: "detached" });
   assert.equal(await firstTitleFontSize(), "15.4px", "A+ global doit agrandir les titres.");
   const grownMeasure = await firstTitleMeasure();
   assert.ok(
@@ -758,6 +864,8 @@ try {
   await page.getByRole("button", { name: /revenir à la taille par défaut/ }).click();
   assert.equal(await panelTextScaleOverride(), "", "La pastille doit retirer l’override.");
   // Bornes du défaut global.
+  await page.locator(".global-settings").click();
+  await settingsPage.locator('[data-settings-section="general"]').click();
   for (let step = 0; step < 10; step += 1) {
     if (await growTextButton.getAttribute("aria-disabled") === "true") break;
     await growTextButton.click();
@@ -768,8 +876,12 @@ try {
     "true",
     "A+ doit s’annoncer désactivé au plafond sans perdre le focus clavier.",
   );
-  await page.getByRole("button", { name: "Réinitialiser la taille du texte des fils" }).click();
+  await settingsPage.getByRole("button", {
+    name: "Réinitialiser la taille par défaut du texte des fils",
+  }).click();
   assert.equal(await defaultTextScale(), "1", "Le bouton pourcentage doit revenir à 100 %.");
+  await settingsPage.getByRole("button", { name: /Retour au dashboard/ }).click();
+  await settingsPage.waitFor({ state: "detached" });
   const zoomMenuRoles = await electronApp.evaluate(({ Menu }) => {
     const collect = (menu) => menu.items.flatMap((item) => [
       item.role ?? "",
@@ -1305,9 +1417,9 @@ try {
     "Le son doit rester directement accessible dans un panel web compact.",
   );
   assert.equal(
-    await previewWebLeaf.getByLabel("Agrandir", { exact: true }).isVisible(),
-    true,
-    "Le plein écran doit rester directement accessible dans un panel web compact.",
+    await previewWebLeaf.getByLabel("Agrandir", { exact: true }).count(),
+    0,
+    "L’agrandissement de panel doit être retiré, y compris dans un panel web compact.",
   );
   await webSoundButton.click();
   const webMuteButton = previewWebLeaf.getByLabel("Couper le son", { exact: true });
@@ -1891,20 +2003,18 @@ try {
 
   await publishUpdateState("up-to-date");
   await page.locator(".update-ready-cta").waitFor({ state: "detached" });
-  const globalTextScaleReset = page.getByRole("button", {
-    name: "Réinitialiser la taille du texte des fils",
-  });
-  await globalTextScaleReset.focus();
+  const globalSettingsButton = page.locator(".global-settings");
+  await globalSettingsButton.focus();
   await publishUpdateState("ready", { availableVersion: "0.4.2" });
   await page.getByRole("button", { name: "Mise à jour 0.4.2 prête", exact: true }).waitFor();
   await waitForDomFocus(
     page,
-    page.locator(".global-tools"),
-    "L’apparition d’un contexte compact doit transférer le focus sans redimensionnement",
+    globalSettingsButton,
+    "L’apparition de la mise à jour doit conserver le focus des réglages",
   );
   await publishUpdateState("up-to-date");
   await page.locator(".update-ready-cta").waitFor({ state: "detached" });
-  await globalTextScaleReset.focus();
+  await globalSettingsButton.focus();
   const compactWindow = await electronApp.browserWindow(page);
   await compactWindow.evaluate(
     (window, size) => window.setSize(size.width, size.height),
@@ -1913,8 +2023,8 @@ try {
   await compactWindow.dispose();
   await waitForDomFocus(
     page,
-    page.locator(".global-tools"),
-    "Le passage en barre compacte doit transférer le focus depuis l’échelle globale",
+    globalSettingsButton,
+    "Le passage en barre compacte doit conserver le focus des réglages",
   );
   await publishUpdateState("ready", { availableVersion: "0.4.2" });
   await page.getByRole("button", { name: "Mise à jour 0.4.2 prête", exact: true }).waitFor();
@@ -1925,7 +2035,6 @@ try {
     const bar = document.querySelector(".global-bar");
     if (!(bar instanceof HTMLElement)) throw new Error("Barre globale introuvable.");
     const actionLabels = [...bar.querySelectorAll(".global-action-label")];
-    const textScale = bar.querySelector(".text-scale-group");
     return {
       noOverflow:
         document.documentElement.scrollWidth <= window.innerWidth &&
@@ -1934,16 +2043,17 @@ try {
       compactLabelsHidden: actionLabels.every(
         (label) => label instanceof HTMLElement && label.getClientRects().length === 0,
       ),
-      textScaleHidden:
-        textScale instanceof HTMLElement && textScale.getClientRects().length === 0,
+      removedControls:
+        bar.querySelector(".text-scale-group, .global-clear") === null &&
+        document.querySelector('[aria-label="Agrandir"], [aria-label="Restaurer"]') === null,
     };
   });
   assert.deepEqual(
     compactWindowMetrics,
-    { noOverflow: true, compactLabelsHidden: true, textScaleHidden: true },
+    { noOverflow: true, compactLabelsHidden: true, removedControls: true },
     "La barre globale doit adopter son rendu compact sans déborder à 560 × 460.",
   );
-  for (const name of ["Rechercher", "Outils", "Nouveau panel"]) {
+  for (const name of ["Rechercher", "Réglages", "Nouveau panel"]) {
     const action = page.getByRole("button", { name, exact: true });
     await action.focus();
     assert.equal(
@@ -2310,13 +2420,6 @@ try {
     true,
     "La recherche active doit rester visible sans débordement à 560 × 460.",
   );
-  await narrowLeaf.getByLabel("Agrandir", { exact: true }).click();
-  await page.waitForFunction(
-    (targetPanelId) =>
-      document.querySelector(".split-layout")?.getAttribute("data-maximized-panel-id") ===
-      targetPanelId,
-    narrowPanelId,
-  );
   for (const width of [640, 641]) {
     const boundaryWindow = await electronApp.browserWindow(page);
     await boundaryWindow.evaluate(
@@ -2331,7 +2434,6 @@ try {
       const bar = document.querySelector(".global-bar");
       const requiredControls = [
         bar?.querySelector(".search-filter-summary"),
-        bar?.querySelector(".restore-pill"),
         bar?.querySelector(".update-ready-cta"),
       ];
       if (!(bar instanceof HTMLElement)) throw new Error("Barre globale introuvable.");
@@ -2353,10 +2455,6 @@ try {
       `La barre contextuelle doit rester compacte et complète à ${width} px.`,
     );
   }
-  await page.locator(".restore-pill").click();
-  await page.waitForFunction(
-    () => !document.querySelector(".split-layout")?.hasAttribute("data-maximized-panel-id"),
-  );
   const searchRestoreWindow = await electronApp.browserWindow(page);
   await searchRestoreWindow.evaluate((window) => window.setSize(900, 820));
   await searchRestoreWindow.dispose();
@@ -2589,55 +2687,42 @@ try {
     { articleId: sharedReaderSourceId, targetPanelId: narrowPanelId },
   );
 
-  const compactMaximizedWindow = await electronApp.browserWindow(page);
-  await compactMaximizedWindow.evaluate(
+  const compactPanelWindow = await electronApp.browserWindow(page);
+  await compactPanelWindow.evaluate(
     (window, size) => window.setSize(size.width, size.height),
     { width: MIN_WINDOW_WIDTH, height: MIN_WINDOW_HEIGHT },
   );
-  await compactMaximizedWindow.dispose();
-  await narrowLeaf.getByLabel("Agrandir", { exact: true }).click();
-  await page.waitForFunction(
-    (targetPanelId) =>
-      document.querySelector(".split-layout")?.getAttribute("data-maximized-panel-id") ===
-      targetPanelId,
-    narrowPanelId,
-  );
+  await compactPanelWindow.dispose();
   assert.equal(
     await page.evaluate(() => {
       const bar = document.querySelector(".global-bar");
-      const restore = document.querySelector(".restore-pill");
-      if (!(bar instanceof HTMLElement) || !(restore instanceof HTMLElement)) return false;
-      const bounds = restore.getBoundingClientRect();
+      if (!(bar instanceof HTMLElement)) return false;
       return document.documentElement.scrollWidth <= window.innerWidth &&
         document.documentElement.scrollHeight <= window.innerHeight &&
         bar.scrollWidth <= bar.clientWidth &&
-        bounds.left >= 0 &&
-        bounds.right <= window.innerWidth;
+        document.querySelector('[aria-label="Agrandir"], [aria-label="Restaurer"]') === null &&
+        !document.querySelector(".split-layout")?.hasAttribute("data-maximized-panel-id");
     }),
     true,
-    "La restauration d’un panel agrandi doit rester visible sans débordement à 560 × 460.",
+    "L’agrandissement doit être absent sans créer de débordement à 560 × 460.",
   );
   await narrowLeaf.locator(".dashboard-panel").focus();
-  await page.keyboard.press("ArrowRight");
-  await page.keyboard.press("ArrowRight");
+  await narrowLeaf.locator(".dashboard-panel").evaluate((panel) => {
+    panel.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    panel.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+  });
   await page.waitForFunction(
     (targetPanelId) => {
-      const layout = document.querySelector(".split-layout");
       const panel = document.querySelector(
         `.split-layout__leaf[data-panel-id="${targetPanelId}"] .dashboard-panel`,
       );
-      return layout?.getAttribute("data-maximized-panel-id") === targetPanelId &&
-        document.activeElement === panel;
+      return document.activeElement === panel;
     },
     panelId,
   );
-  await page.keyboard.press("Escape");
-  await page.waitForFunction(
-    () => !document.querySelector(".split-layout")?.hasAttribute("data-maximized-panel-id"),
-  );
-  const maximizedRestoreWindow = await electronApp.browserWindow(page);
-  await maximizedRestoreWindow.evaluate((window) => window.setSize(900, 820));
-  await maximizedRestoreWindow.dispose();
+  const panelRestoreWindow = await electronApp.browserWindow(page);
+  await panelRestoreWindow.evaluate((window) => window.setSize(900, 820));
+  await panelRestoreWindow.dispose();
 
   const primaryTitle = panelLeaf.locator(".panel-title");
   const overflowTrigger = panelLeaf.getByLabel("Plus d’actions", { exact: true });
@@ -2675,7 +2760,7 @@ try {
   // la frame peut retarder — attendre le focus réel plutôt que l'instantané.
   await waitForDomFocus(
     page,
-    panelLeaf.getByLabel("Agrandir", { exact: true }),
+    panelLeaf.getByLabel("Fermer le panel", { exact: true }),
     "Tab doit fermer le menu portalisé et poursuivre sur le contrôle visible suivant",
   );
   await overflowTrigger.click();
