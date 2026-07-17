@@ -964,11 +964,22 @@ export default function App() {
     // restaurer la ligne même quand le pilote (ou VibeDeck) reste en arrière-plan.
     // Toute intention clavier ou pointeur explicite annule déjà la cible en
     // amont ; l’activeElement observé pendant le teardown natif est transitoire.
-    const frame = window.requestAnimationFrame(() => {
+    const restorePendingFocus = () => {
       if (readerReturnFocusRef.current !== target) return;
       restoreArticleFocus(target);
-    });
-    return () => window.cancelAnimationFrame(frame);
+    };
+    const frame = window.requestAnimationFrame(restorePendingFocus);
+    // Sous Windows, Chromium peut appliquer le focus natif de la surface
+    // sous le curseur après la frame qui suit la destruction de la vue. Ces
+    // reprises bornées gagnent cette course sans lutter contre l’utilisateur :
+    // toute intention explicite efface `readerReturnFocusRef` en amont.
+    const retries = [50, 150, 300].map((delay) =>
+      window.setTimeout(restorePendingFocus, delay)
+    );
+    return () => {
+      window.cancelAnimationFrame(frame);
+      for (const retry of retries) window.clearTimeout(retry);
+    };
   }, [linkPreview, readerSurfacePresent]);
 
   useEffect(() => {
