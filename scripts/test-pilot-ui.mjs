@@ -986,6 +986,16 @@ try {
     true,
     "La navigation roving doit déplacer le focus DOM.",
   );
+  const feedTitle = filPanel.locator(".panel-title");
+  await feedTitle.focus();
+  await page.keyboard.press("F2");
+  const feedTitleInput = filPanel.getByLabel(/Renommer le panel/);
+  await waitForDomFocus(
+    page,
+    feedTitleInput,
+    "renommer un Fil doit focaliser son champ de titre",
+  );
+  await page.keyboard.press("Escape");
   const allFilter = page.getByRole("button", { name: /^Toutes/ });
   await allFilter.focus();
   await page.keyboard.press("ArrowDown");
@@ -998,10 +1008,14 @@ try {
   await page.locator(".dashboard-panel").hover();
   assert.equal(
     await allFilter.evaluate((button) => document.activeElement === button),
-    true,
-    "Revenir à la souris dans un panel ne doit pas interrompre un contrôle actif.",
+    false,
+    "Survoler un Fil doit reprendre le focus depuis un de ses contrôles.",
   );
-  await allFilter.evaluate((button) => button.blur());
+  assert.equal(
+    await page.locator(".dashboard-panel").evaluate((panel) => document.activeElement === panel),
+    true,
+    "Le Fil survolé doit devenir le vrai focus DOM sans délai.",
+  );
   await page.locator(".global-bar").hover();
   // Hover a row distinct from the prior keyboard anchor (nth(1)) so the assertion
   // truly isolates hover-preselect: only onPointerMove can move the selection to nth(3).
@@ -1011,7 +1025,7 @@ try {
   assert.equal(
     await page.locator(".dashboard-panel").evaluate((panel) => document.activeElement === panel),
     true,
-    "Le survol doit rendre le panel prêt pour les raccourcis sans voler ensuite les contrôles.",
+    "Le survol doit rendre le Fil prêt pour les raccourcis.",
   );
   await page.waitForFunction(
     (articleId) => document.querySelector(".article-row--focused")?.id === articleId,
@@ -1421,6 +1435,161 @@ try {
     0,
     "L’agrandissement de panel doit être retiré, y compris dans un panel web compact.",
   );
+  await webSoundButton.focus();
+  await previewWebLeaf.locator(".panel-header").hover();
+  assert.equal(
+    await webSoundButton.evaluate((button) => document.activeElement === button),
+    true,
+    "Survoler un panel Page web ne doit pas interrompre son contrôle actif.",
+  );
+  await filPanel.hover();
+  assert.equal(
+    await webSoundButton.evaluate((button) => document.activeElement === button),
+    false,
+    "Survoler un Fil doit reprendre le focus depuis le contrôle d’un autre panel.",
+  );
+  assert.equal(
+    await filPanel.evaluate((panel) => document.activeElement === panel),
+    true,
+    "Le Fil doit recevoir le vrai focus DOM depuis un autre panel.",
+  );
+
+  await feedTitle.focus();
+  await page.keyboard.press("F2");
+  const staleFeedTitleInput = filPanel.getByLabel(/Renommer le panel/);
+  await waitForDomFocus(
+    page,
+    staleFeedTitleInput,
+    "le champ de titre doit précéder la prise de focus native",
+  );
+  const staleFeedTitleInputBox = await staleFeedTitleInput.boundingBox();
+  assert.ok(staleFeedTitleInputBox, "Le champ de titre stale doit être visible avant le focus natif.");
+  await electronApp.evaluate(({ ipcMain }) => {
+    globalThis.__vibedeckPilotDashboardFocusRequests = 0;
+    globalThis.__vibedeckPilotDashboardFocusListener = () => {
+      globalThis.__vibedeckPilotDashboardFocusRequests += 1;
+    };
+    ipcMain.on("dashboard:focus", globalThis.__vibedeckPilotDashboardFocusListener);
+  });
+  const nativeFocusProbe = await electronApp.evaluate(async ({ app, BrowserWindow }, expectedUrl) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    if (!window) throw new Error("La fenêtre pilote est introuvable.");
+    const view = window.contentView.children.find(
+      (candidate) => "webContents" in candidate && candidate.webContents.getURL() === expectedUrl,
+    );
+    if (!view || !("webContents" in view)) {
+      throw new Error("La vue web native à focaliser est introuvable.");
+    }
+    const windowFocused = window.isFocused();
+    if (windowFocused) {
+      view.webContents.focus();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return {
+      appActive: process.platform === "darwin" ? app.isActive() : null,
+      windowFocused,
+      dashboardFocused: window.webContents.isFocused(),
+      nativeFocused: view.webContents.isFocused(),
+    };
+  }, previewUrl);
+  if (nativeFocusProbe.windowFocused) {
+    assert.equal(
+      nativeFocusProbe.nativeFocused,
+      true,
+      "La vue web native doit posséder le focus avant le scénario de reprise.",
+    );
+  }
+  await page.mouse.move(
+    staleFeedTitleInputBox.x + staleFeedTitleInputBox.width / 2,
+    staleFeedTitleInputBox.y + staleFeedTitleInputBox.height / 2,
+  );
+  assert.equal(
+    await filPanel.evaluate((panel) => document.activeElement === panel),
+    true,
+    "Revenir directement sur un champ stale doit rendre le focus DOM au Fil.",
+  );
+  const nativeReturnRow = filPanel.locator(".article-row").nth(5);
+  const nativeReturnNextRow = filPanel.locator(".article-row").nth(6);
+  await hoverRow(nativeReturnRow);
+  assert.equal(
+    await filPanel.evaluate((panel) => document.activeElement === panel),
+    true,
+    "Survoler un Fil doit reprendre le vrai focus DOM depuis une vue web native.",
+  );
+  const dashboardFocusProbe = await electronApp.evaluate(async ({ app, BrowserWindow }, {
+    expectedUrl,
+    requireDashboardFocus,
+  }) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    if (!window) throw new Error("La fenêtre pilote est introuvable.");
+    const view = window.contentView.children.find(
+      (candidate) => "webContents" in candidate && candidate.webContents.getURL() === expectedUrl,
+    );
+    if (!view || !("webContents" in view)) {
+      throw new Error("La vue web native à vérifier est introuvable.");
+    }
+    if (requireDashboardFocus) {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if (window.webContents.isFocused() && !view.webContents.isFocused()) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+    return {
+      appActive: process.platform === "darwin" ? app.isActive() : null,
+      windowFocused: window.isFocused(),
+      dashboardFocused: window.webContents.isFocused(),
+      nativeFocused: view.webContents.isFocused(),
+    };
+  }, { expectedUrl: previewUrl, requireDashboardFocus: nativeFocusProbe.windowFocused });
+  const dashboardFocusRequests = await electronApp.evaluate(({ ipcMain }) => {
+    const listener = globalThis.__vibedeckPilotDashboardFocusListener;
+    if (typeof listener === "function") ipcMain.removeListener("dashboard:focus", listener);
+    const count = globalThis.__vibedeckPilotDashboardFocusRequests ?? 0;
+    delete globalThis.__vibedeckPilotDashboardFocusListener;
+    delete globalThis.__vibedeckPilotDashboardFocusRequests;
+    return count;
+  });
+  assert.ok(
+    dashboardFocusRequests > 0,
+    "Le survol du Fil doit demander au main process de rendre le clavier au dashboard.",
+  );
+  if (nativeFocusProbe.windowFocused) {
+    assert.deepEqual(
+      {
+        windowFocused: dashboardFocusProbe.windowFocused,
+        dashboardFocused: dashboardFocusProbe.dashboardFocused,
+        nativeFocused: dashboardFocusProbe.nativeFocused,
+      },
+      { windowFocused: true, dashboardFocused: true, nativeFocused: false },
+      "Le survol doit transférer le propriétaire Electron du clavier de la vue native au dashboard.",
+    );
+    await electronApp.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      if (!window) throw new Error("La fenêtre pilote est introuvable.");
+      window.webContents.sendInputEvent({ type: "keyDown", keyCode: "Down" });
+      window.webContents.sendInputEvent({ type: "keyUp", keyCode: "Down" });
+    });
+  } else {
+    assert.deepEqual(
+      {
+        appActive: dashboardFocusProbe.appActive,
+        windowFocused: dashboardFocusProbe.windowFocused,
+      },
+      {
+        appActive: nativeFocusProbe.appActive,
+        windowFocused: nativeFocusProbe.windowFocused,
+      },
+      "Le survol dans le pilote caché ne doit pas activer VibeDeck au niveau système.",
+    );
+    await page.keyboard.press("ArrowDown");
+  }
+  await waitForDomFocus(
+    page,
+    nativeReturnNextRow,
+    "la première flèche après une vue web native doit contrôler immédiatement le Fil",
+  );
+  await page.locator(".global-bar").hover();
+
   await webSoundButton.click();
   const webMuteButton = previewWebLeaf.getByLabel("Couper le son", { exact: true });
   await webMuteButton.waitFor({ state: "visible" });
@@ -1724,7 +1893,17 @@ try {
 
   const readerSourceRow = page.locator(".article-row").first();
   const readerSourceId = await readerSourceRow.getAttribute("id");
+  await page.evaluate(() => window.vibedeck.focusDashboard());
   await readerSourceRow.focus();
+  await waitForDomFocus(
+    page,
+    readerSourceRow,
+    "la ligne à ouvrir doit posséder le focus DOM après les scénarios de vues natives",
+  );
+  await page.waitForFunction(
+    (articleId) => document.querySelector(".article-row--focused")?.id === articleId,
+    readerSourceId,
+  );
   const readerDecisionStartedAt = performance.now();
   await page.keyboard.press("Enter");
   const compactReader = page.locator(".link-reader");
@@ -1743,6 +1922,10 @@ try {
   assert.ok(
     performance.now() - readerDecisionStartedAt < 1_000,
     "La décision du lecteur doit rester sous une seconde.",
+  );
+  await compactReader.getByRole("button", { name: "Ouvrir à l’extérieur" }).dispatchEvent(
+    "pointerdown",
+    { bubbles: true, pointerType: "mouse" },
   );
   // Fenêtre cachée : le focus OS n'existe pas, isFocused() reste faux côté
   // main process. Le contrat de focus est prouvé après Échap par le retour de
@@ -1826,6 +2009,7 @@ try {
     panelId,
   );
   const secondaryAction = panelLeaf.getByLabel("Réduire le texte de ce fil", { exact: true });
+  await page.evaluate(() => window.vibedeck.focusDashboard());
   await secondaryAction.focus();
   await waitForDomFocus(
     page,
@@ -2021,6 +2205,10 @@ try {
   );
   await publishUpdateState("up-to-date");
   await page.locator(".update-ready-cta").waitFor({ state: "detached" });
+  // Le contrat des Fils donne la priorité à la surface réellement survolée.
+  // Placer aussi le pointeur sur Réglages isole ici le contrat responsive :
+  // redimensionner seul ne doit pas faire perdre le focus à ce contrôle.
+  await globalSettingsButton.hover();
   await globalSettingsButton.focus();
   const compactWindow = await electronApp.browserWindow(page);
   await compactWindow.evaluate(
@@ -2290,6 +2478,11 @@ try {
   );
   await readerOverScrollableLayout.getByLabel("Retour au fil").click();
   await readerOverScrollableLayout.waitFor({ state: "detached" });
+  await waitForDomFocus(
+    page,
+    readerWithScrollbarRow,
+    "Retour au fil doit restaurer le vrai focus DOM sur la ligne d’origine",
+  );
 
   await page.evaluate(async () => {
     const state = await window.vibedeck.getState();
@@ -2686,13 +2879,68 @@ try {
     reader.sendInputEvent({ type: "keyUp", keyCode: "Escape" });
   }, `${origin}/articles/`);
   await page.locator(".link-reader").waitFor({ state: "detached" });
-  await page.waitForFunction(
-    ({ articleId, targetPanelId }) =>
-      document.activeElement?.id === articleId &&
-      document.activeElement?.closest(".split-layout__leaf")?.getAttribute("data-panel-id") ===
-        targetPanelId,
-    { articleId: sharedReaderSourceId, targetPanelId: narrowPanelId },
+  const readerPointerOverrideRow = panelLeaf
+    .locator(".article-row:not(.article-row--focused)")
+    .nth(10);
+  const readerPointerOverrideId = await readerPointerOverrideRow.getAttribute("id");
+  assert.ok(readerPointerOverrideId, "La ligne de reprise au pointeur doit être identifiable.");
+  const readerPointerOverrideNextId = await readerPointerOverrideRow.evaluate(
+    (row) => row.nextElementSibling?.id ?? null,
   );
+  assert.ok(readerPointerOverrideNextId, "La ligne suivante après la reprise doit exister.");
+  await readerPointerOverrideRow.evaluate((row) => {
+    const event = new PointerEvent("pointermove", { bubbles: true, pointerType: "mouse" });
+    Object.defineProperty(event, "movementX", { value: 1 });
+    row.dispatchEvent(event);
+  });
+  await page.waitForFunction(
+    (targetPanelId) => {
+      const panel = document.querySelector(
+        `.split-layout__leaf[data-panel-id="${targetPanelId}"] .dashboard-panel`,
+      );
+      return panel === document.activeElement;
+    },
+    panelId,
+  );
+  await page.keyboard.press("ArrowDown");
+  await page.waitForFunction(
+    (articleId) => document.activeElement?.id === articleId,
+    readerPointerOverrideNextId,
+  );
+
+  await page.keyboard.press("Enter");
+  await page.locator(".link-reader").waitFor({ state: "visible" });
+  await electronApp.evaluate(async ({ webContents }, articlePrefix) => {
+    let reader;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      reader = webContents
+        .getAllWebContents()
+        .find((contents) => contents.getURL().startsWith(articlePrefix));
+      if (reader) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    if (!reader) throw new Error("Le lecteur avant Nouveau est introuvable.");
+    reader.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
+    reader.sendInputEvent({ type: "keyUp", keyCode: "Escape" });
+  }, `${origin}/articles/`);
+  await page.locator(".link-reader").waitFor({ state: "detached" });
+  await page.getByRole("button", { name: "Nouveau panel", exact: true }).click();
+  const readerReturnDraft = page.locator('.split-layout__leaf[data-panel-id^="draft:"]');
+  await readerReturnDraft.waitFor({ state: "visible" });
+  const readerReturnDraftFocus = readerReturnDraft.locator("[data-autofocus]").first();
+  await waitForDomFocus(
+    page,
+    readerReturnDraftFocus,
+    "un clic global sur Nouveau doit primer sur la restauration du lecteur",
+  );
+  await page.waitForTimeout(1_100);
+  assert.equal(
+    await readerReturnDraftFocus.evaluate((control) => document.activeElement === control),
+    true,
+    "Les reprises bornées du lecteur ne doivent pas voler le focus du constructeur Nouveau.",
+  );
+  await readerReturnDraft.getByLabel("Fermer le panel", { exact: true }).click();
+  await readerReturnDraft.waitFor({ state: "detached" });
 
   const compactPanelWindow = await electronApp.browserWindow(page);
   await compactPanelWindow.evaluate(
@@ -3263,10 +3511,8 @@ try {
   await page.locator(".link-reader").waitFor({ state: "visible" });
   await page.keyboard.press("Escape");
   await page.locator(".link-reader").waitFor({ state: "detached" });
-  assert.equal(
-    await page.evaluate(() => document.activeElement?.classList.contains("article-row") ?? false),
-    true,
-    "Entrée puis Échap près de la fin doit rendre le vrai focus au fil virtuel.",
+  await page.waitForFunction(
+    () => document.activeElement?.classList.contains("article-row") ?? false,
   );
 
   console.log(`✓ baseline: ${baselineArticleCount} articles interclassés, roving tabindex actif`);
