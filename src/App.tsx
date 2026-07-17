@@ -2923,7 +2923,6 @@ function AdaptiveActionMenu({ actions }: { actions: PanelMenuAction[] }) {
         return;
       }
       if (!compact) return;
-      const active = document.activeElement;
       const remembered = lastSecondaryFocusRef.current;
       const rememberedSecondaryStillMounted = Boolean(
         remembered?.isConnected &&
@@ -2933,22 +2932,13 @@ function AdaptiveActionMenu({ actions }: { actions: PanelMenuAction[] }) {
       if (remembered && !rememberedSecondaryStillMounted) {
         lastSecondaryFocusRef.current = null;
       }
-      const secondaryStillFocused =
-        active instanceof HTMLElement &&
-        panel.contains(active) &&
-        active.closest(".panel-action--secondary");
-      if (!secondaryStillFocused && !rememberedSecondaryStillMounted) return;
-      window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
-        const current = lastSecondaryFocusRef.current;
-        const canTransfer = Boolean(
-          trigger.isConnected &&
-          trigger.getClientRects().length > 0 &&
-          current?.isConnected &&
-          panel.contains(current) &&
-          current.closest(".panel-action--secondary"),
-        );
-        if (canTransfer) trigger.focus({ preventScroll: true });
-      }));
+      if (
+        rememberedSecondaryStillMounted &&
+        trigger.isConnected &&
+        trigger.getClientRects().length > 0
+      ) {
+        trigger.focus({ preventScroll: true });
+      }
     });
     observer.observe(panel);
     return () => {
