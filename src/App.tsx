@@ -979,8 +979,6 @@ export default function App() {
     }
     const frame = window.requestAnimationFrame(() => {
       if (readerReturnFocusRef.current !== target) return;
-      readerReturnFocusRef.current = null;
-      readerOpenPointerPositionRef.current = null;
       if (!shouldPreserveCurrentFocus()) restoreArticleFocus(target);
     });
     return () => window.cancelAnimationFrame(frame);
@@ -2039,7 +2037,7 @@ export default function App() {
         if (!intent) {
           readerReturnFocusRef.current = null;
           readerOpenPointerPositionRef.current = null;
-          return;
+          return false;
         }
         const nextPosition = { x: intent.clientX, y: intent.clientY };
         const readerOpenPosition = readerOpenPointerPositionRef.current;
@@ -2054,7 +2052,9 @@ export default function App() {
         ) {
           readerReturnFocusRef.current = null;
           readerOpenPointerPositionRef.current = null;
+          return false;
         }
+        return readerReturnFocusRef.current !== null;
       },
       onSplit: (direction: "row" | "column") => beginDraft(panel.id, direction),
       onMaximize: () =>
@@ -2881,7 +2881,7 @@ interface PanelFrameProps {
   actionsDisabled?: boolean;
   canRename?: boolean;
   onFocus: () => void;
-  onPointerIntent?: (intent: PanelPointerIntent | null) => void;
+  onPointerIntent?: (intent: PanelPointerIntent | null) => boolean;
   onRename?: (name: string) => void | Promise<void>;
   onSplit?: (direction: "row" | "column") => void;
   onMove?: (offset: -1 | 1, identity: PanelFocusIdentity) => void;
@@ -3291,12 +3291,12 @@ function PanelFrame({
         focusFromPointer(event.currentTarget);
       }}
       onPointerEnter={(event) => {
-        onPointerIntent?.({
+        if (onPointerIntent?.({
           clientX: event.clientX,
           clientY: event.clientY,
           moved: event.movementX !== 0 || event.movementY !== 0,
           trusted: event.isTrusted,
-        });
+        })) return;
         if (
           (kind === "FIL" ||
             !document.hasFocus() ||
@@ -3307,12 +3307,12 @@ function PanelFrame({
         }
       }}
       onPointerMove={(event) => {
-        onPointerIntent?.({
+        if (onPointerIntent?.({
           clientX: event.clientX,
           clientY: event.clientY,
           moved: event.movementX !== 0 || event.movementY !== 0,
           trusted: event.isTrusted,
-        });
+        })) return;
         if (
           (kind === "FIL"
             ? event.movementX !== 0 || event.movementY !== 0
@@ -3514,7 +3514,7 @@ interface StandardPanelActions {
   maximized: boolean;
   actionsDisabled: boolean;
   onFocus: () => void;
-  onPointerIntent: (intent: PanelPointerIntent | null) => void;
+  onPointerIntent: (intent: PanelPointerIntent | null) => boolean;
   onSplit: (direction: "row" | "column") => void;
   onMove: (offset: -1 | 1, identity: PanelFocusIdentity) => void;
   onMaximize: () => void;
@@ -3537,6 +3537,7 @@ function FeedPanelView({
   textScale,
   textScaleOverride,
   onTextScale,
+  onPointerIntent,
   ...frame
 }: {
   panel: FeedPanel;
@@ -3786,7 +3787,13 @@ function FeedPanelView({
         onBlur={() => {
           if (!seen && !opened) onSeen([item.id]);
         }}
-        onPointerMove={() => {
+        onPointerMove={(event) => {
+          if (onPointerIntent({
+            clientX: event.clientX,
+            clientY: event.clientY,
+            moved: event.movementX !== 0 || event.movementY !== 0,
+            trusted: event.isTrusted,
+          })) return;
           if (ui.focusedItemId !== item.id) onUi({ focusedItemId: item.id });
           if (seen || opened) return;
           if (hoverSeenTimerRef.current?.id === item.id) return;
@@ -3958,6 +3965,7 @@ function FeedPanelView({
       kind="FIL"
       name={panel.name}
       {...frame}
+      onPointerIntent={onPointerIntent}
       style={
         textScaleOverride !== null
           ? ({ "--feed-text-scale": String(textScaleOverride) } as React.CSSProperties)
