@@ -1,0 +1,19 @@
+scripts/test-pilot-ui.mjs
+  s_3d711cb7f4319a::t_c648cb1f358f20 204-221,1999-2028
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "fb120894956dff0f8b21b4f6c5629e8a9b766bcb",
+  "prompts": {},
+  "sessions": {
+    "s_3d711cb7f4319a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f7001-77d8-7ff1-b621-6afe2dcafe1d",
+        "model": "unknown"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
