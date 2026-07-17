@@ -26,10 +26,12 @@ const PANEL_DRAG_MIME = "application/x-vibedeck-panel";
 
 export interface SplitLayoutProps {
   layout: LayoutNode | null;
+  disabled?: boolean;
   renderPanel: (panelId: string) => ReactNode;
   onRatioChange: (splitId: string, ratio: number) => void;
   onSwapPanels: (firstPanelId: string, secondPanelId: string) => void;
   onInteractionChange: (active: boolean) => void;
+  onPanelDragStateChange?: (panelId: string | null) => void;
 }
 
 export interface SplitPanelDragHandleProps {
@@ -118,6 +120,7 @@ interface DragState {
 
 interface BranchProps {
   node: LayoutNode;
+  disabled: boolean;
   renderPanel: (panelId: string) => ReactNode;
   dragState: DragState | null;
   onDropTargetChange: (panelId: string | null) => void;
@@ -129,6 +132,7 @@ interface BranchProps {
 
 function LayoutBranch({
   node,
+  disabled,
   renderPanel,
   dragState,
   onDropTargetChange,
@@ -153,6 +157,7 @@ function LayoutBranch({
         data-drop-target={isDropTarget || undefined}
         style={FILL_STYLE}
         onDragOver={(event) => {
+          if (disabled) return;
           const sourcePanelId = panelIdFromDrag(event, dragState?.sourcePanelId);
           if (!sourcePanelId || sourcePanelId === node.panelId) return;
           event.preventDefault();
@@ -160,11 +165,14 @@ function LayoutBranch({
           if (!isDropTarget) onDropTargetChange(node.panelId);
         }}
         onDragLeave={(event) => {
+          if (disabled) return;
           const nextTarget = event.relatedTarget;
           if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
           onDropTargetChange(null);
         }}
-        onDrop={(event) => onDropPanel(event, node.panelId)}
+        onDrop={(event) => {
+          if (!disabled) onDropPanel(event, node.panelId);
+        }}
       >
         {renderPanel(node.panelId)}
       </div>
@@ -188,6 +196,7 @@ function LayoutBranch({
   };
 
   const childProps = {
+    disabled,
     renderPanel,
     dragState,
     onDropTargetChange,
@@ -209,6 +218,7 @@ function LayoutBranch({
         <LayoutBranch node={node.children[0]} {...childProps} />
       </div>
       <SplitDivider
+        disabled={disabled}
         splitId={node.id}
         direction={node.direction}
         ratio={ratio}
@@ -227,6 +237,7 @@ function LayoutBranch({
 }
 
 interface SplitDividerProps {
+  disabled: boolean;
   splitId: string;
   direction: "row" | "column";
   ratio: number;
@@ -239,6 +250,7 @@ interface SplitDividerProps {
 }
 
 function SplitDivider({
+  disabled,
   splitId,
   direction,
   ratio,
@@ -308,6 +320,7 @@ function SplitDivider({
   );
 
   function updateFromPointer(event: ReactPointerEvent<HTMLDivElement>) {
+    if (disabled) return;
     if (pointerIdRef.current !== event.pointerId) return;
     const bounds = containerRef.current?.getBoundingClientRect();
     if (!bounds) return;
@@ -320,6 +333,7 @@ function SplitDivider({
   }
 
   function keyboardRatio(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (disabled) return null;
     const smallStep = event.altKey ? 0.01 : event.shiftKey ? 0.1 : 0.05;
     if (event.key === "Home") return limits.minimum;
     if (event.key === "End") return limits.maximum;
@@ -344,7 +358,8 @@ function SplitDivider({
     <div
       className={`split-layout__divider split-layout__divider--${orientation}`}
       role="separator"
-      tabIndex={0}
+      tabIndex={disabled ? -1 : 0}
+      aria-disabled={disabled || undefined}
       aria-label="Redimensionner les panels"
       aria-orientation={orientation}
       aria-valuemin={Math.round(limits.minimum * 100)}
@@ -353,10 +368,11 @@ function SplitDivider({
       aria-valuetext={`${Math.round(displayedRatio * 100)} %`}
       data-split-id={splitId}
       style={{
-        cursor: direction === "row" ? "col-resize" : "row-resize",
+        cursor: disabled ? "default" : direction === "row" ? "col-resize" : "row-resize",
         touchAction: "none",
       }}
       onPointerDown={(event) => {
+        if (disabled) return;
         if (event.button !== 0 || pointerIdRef.current !== null) return;
         event.preventDefault();
         event.stopPropagation();
@@ -373,6 +389,7 @@ function SplitDivider({
         endInteraction(resizeToken);
       }}
       onDoubleClick={(event) => {
+        if (disabled) return;
         event.preventDefault();
         beginInteraction(resizeToken);
         commitRatio(DEFAULT_RATIO);
@@ -409,10 +426,12 @@ const FILL_STYLE: CSSProperties = {
 
 export default function SplitLayout({
   layout,
+  disabled = false,
   renderPanel,
   onRatioChange,
   onSwapPanels,
   onInteractionChange,
+  onPanelDragStateChange = () => {},
 }: SplitLayoutProps) {
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [isInteracting, setIsInteracting] = useState(false);
@@ -449,23 +468,39 @@ export default function SplitLayout({
 
   const finishPanelDrag = useCallback(() => {
     setDragState(null);
+    onPanelDragStateChange(null);
     endInteraction("panel-drag");
-  }, [endInteraction]);
+  }, [endInteraction, onPanelDragStateChange]);
+
+  useEffect(() => {
+    if (!disabled) return;
+    setDragState(null);
+    onPanelDragStateChange(null);
+    if (interactionsRef.current.size === 0) return;
+    interactionsRef.current.clear();
+    setIsInteracting(false);
+    interactionCallbackRef.current(false);
+  }, [disabled, onPanelDragStateChange]);
 
   const makeHandleProps = useCallback<DragHandleFactory>(
     (panelId) => ({
-      draggable: true,
+      draggable: !disabled,
       "data-split-panel-drag-handle": panelId,
       onDragStart: (event) => {
+        if (disabled) {
+          event.preventDefault();
+          return;
+        }
         event.stopPropagation();
         event.dataTransfer.effectAllowed = "move";
         event.dataTransfer.setData(PANEL_DRAG_MIME, panelId);
         setDragState({ sourcePanelId: panelId, targetPanelId: null });
+        onPanelDragStateChange(panelId);
         beginInteraction("panel-drag");
       },
       onDragEnd: finishPanelDrag,
     }),
-    [beginInteraction, finishPanelDrag],
+    [beginInteraction, disabled, finishPanelDrag, onPanelDragStateChange],
   );
 
   const rootStyle: CSSProperties = layout
@@ -488,6 +523,7 @@ export default function SplitLayout({
         {layout && (
           <LayoutBranch
             node={layout}
+            disabled={disabled}
             renderPanel={renderPanel}
             dragState={dragState}
             onDropTargetChange={(targetPanelId) =>

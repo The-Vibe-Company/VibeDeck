@@ -11,7 +11,7 @@ const electronRuntime = require("electron");
 
 // New dashboards are capped at six persistent views. Extra headroom keeps
 // databases created by earlier versions usable alongside the article reader.
-export const MAX_WEB_PANEL_DESCRIPTORS = 16;
+export const MAX_WEB_PANEL_DESCRIPTORS = 12;
 const MAX_URL_LENGTH = 4_096;
 const MAX_TEXT_LENGTH = 512;
 const ZOOM_SHORTCUT_LEVEL_STEP = 0.5;
@@ -523,6 +523,7 @@ export function createWebPanelController({
   onState = () => {},
   onEscape = () => {},
   onOpenSearch = () => {},
+  onActivateTab = () => {},
   WebContentsViewClass = electronRuntime?.WebContentsView,
 } = {}) {
   if (!window || typeof window !== "object") {
@@ -544,6 +545,9 @@ export function createWebPanelController({
   }
   if (typeof onOpenSearch !== "function") {
     throw new TypeError("onOpenSearch doit être une fonction.");
+  }
+  if (typeof onActivateTab !== "function") {
+    throw new TypeError("onActivateTab doit être une fonction.");
   }
   if (typeof WebContentsViewClass !== "function") {
     throw new TypeError("WebContentsView n’est pas disponible dans ce processus.");
@@ -734,6 +738,7 @@ export function createWebPanelController({
 
     applyVisibleBounds(record);
     record.view.setVisible(record.visible);
+    record.contents.setAudioMuted(record.visible ? record.muted : true);
   }
 
   function shouldDisplay(record) {
@@ -801,6 +806,20 @@ export function createWebPanelController({
       preventUnsafeNavigation(record, event, legacyUrl));
     listen(record, "will-attach-webview", (event) => event.preventDefault?.());
     listen(record, "before-input-event", (event, input) => {
+      const primaryModifier = process.platform === "darwin"
+        ? Boolean(input?.meta) && !input?.control
+        : Boolean(input?.control) && !input?.meta;
+      const tabShortcut = input?.type === "keyDown" &&
+        primaryModifier &&
+        !input.alt &&
+        !input.shift &&
+        !input.isAutoRepeat &&
+        /^Digit[1-9]$/.test(input.code ?? "");
+      if (tabShortcut) {
+        event.preventDefault?.();
+        onActivateTab(Number(input.code.slice(-1)) - 1);
+        return;
+      }
       if (input?.type === "keyDown" && input.key === "Escape" && !input.isAutoRepeat) {
         if (record.kind === "reader" && !isDestroyed(window.webContents)) {
           try {
@@ -818,11 +837,6 @@ export function createWebPanelController({
         !input.isAutoRepeat
       ) {
         event.preventDefault?.();
-        if (record.visible) {
-          record.visible = false;
-          record.view.setVisible(false);
-          emit(record);
-        }
         onOpenSearch(record.panelId);
       }
       // Les rôles de zoom du menu par défaut sont retirés (main.mjs) au profit
@@ -1381,6 +1395,11 @@ export function createWebPanelController({
       }
       ids.add(descriptor.panelId);
     }
+    if (normalized.length + previewRecords.size > MAX_WEB_PANEL_DESCRIPTORS) {
+      throw new RangeError(
+        `Un maximum de ${MAX_WEB_PANEL_DESCRIPTORS} vues web est autorisé.`,
+      );
+    }
 
     for (const [panelId, record] of records) {
       if (!ids.has(panelId)) destroyRecord(record);
@@ -1420,7 +1439,7 @@ export function createWebPanelController({
     return load(requireWebRecord(panelId), cleanHttpUrl(url));
   }
 
-  function startPreview(descriptor) {
+  function startPreview(descriptor, { protectedPanelIds = new Set() } = {}) {
     assertWindowOpen();
     if (!descriptor || typeof descriptor !== "object" || Array.isArray(descriptor)) {
       throw new TypeError("Descripteur d’aperçu web invalide.");
@@ -1442,6 +1461,22 @@ export function createWebPanelController({
     }
 
     let record = previewRecords.get(normalized.panelId);
+    if (!record) {
+      while (activeRecords().length >= MAX_WEB_PANEL_DESCRIPTORS) {
+        const retainedRecord = [...records.values()].find(
+          (candidate) =>
+            candidate.kind === "web" &&
+            !candidate.visible &&
+            !protectedPanelIds.has(candidate.panelId),
+        );
+        if (!retainedRecord) {
+          throw new RangeError(
+            `Un maximum de ${MAX_WEB_PANEL_DESCRIPTORS} vues web est autorisé.`,
+          );
+        }
+        destroyRecord(retainedRecord, { focusHost: false });
+      }
+    }
     if (!record) return snapshot(createRecord(normalized));
 
     applyBounds(record, normalized);
@@ -1519,8 +1554,8 @@ export function createWebPanelController({
       throw new TypeError("L’état audio doit être un booléen.");
     }
     const record = requireWebRecord(panelId);
-    record.contents.setAudioMuted(muted);
     record.muted = muted;
+    record.contents.setAudioMuted(record.visible ? muted : true);
     return emit(record);
   }
 

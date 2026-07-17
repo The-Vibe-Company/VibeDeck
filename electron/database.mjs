@@ -24,6 +24,7 @@ const MAX_CONFIGURATION_BYTES = 512 * 1_024;
 const MAX_CONFIGURATION_PANELS = 64;
 const MAX_CONFIGURATION_SOURCES = 256;
 const MAX_CONFIGURATION_WEB_PANELS = 6;
+export const MAX_DASHBOARD_TABS = 9;
 const MAX_FEED_CONFIGURATION_CHECKPOINT_SOURCES = 4_096;
 export const MAX_FEED_PAGE_OFFSET =
   MAX_FEED_CONFIGURATION_CHECKPOINT_SOURCES * MAX_ITEMS_PER_SOURCE;
@@ -32,9 +33,10 @@ const MAX_SPLIT_RATIO = 0.9;
 const MIN_REFRESH_INTERVAL_SECONDS = 30;
 const MAX_REFRESH_INTERVAL_SECONDS = 3_600;
 const DEFAULT_REFRESH_INTERVAL_SECONDS = 60;
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 const CONFIGURATION_FORMAT = "vibedeck-dashboard";
-const CONFIGURATION_VERSION = 1;
+const CONFIGURATION_VERSION = 2;
+const LEGACY_CONFIGURATION_VERSION = 1;
 
 const LEGACY_CONNECTOR_BACKFILLS = Object.freeze([
   ["le-monde", "https://www.lemonde.fr/rss/en_continu.xml"],
@@ -47,6 +49,10 @@ function cleanPanelName(name) {
     throw new TypeError("Le nom du panel ne peut pas être vide.");
   }
   return name.trim().slice(0, MAX_PANEL_NAME_LENGTH);
+}
+
+function cleanTabName(name) {
+  return cleanPanelName(name);
 }
 
 function cleanSourceName(name) {
@@ -335,7 +341,7 @@ function normalizeConfiguration(input) {
   }
   if (
     configuration.format !== CONFIGURATION_FORMAT ||
-    configuration.version !== CONFIGURATION_VERSION
+    ![LEGACY_CONFIGURATION_VERSION, CONFIGURATION_VERSION].includes(configuration.version)
   ) {
     throw new TypeError("Format de configuration non pris en charge.");
   }
@@ -381,7 +387,6 @@ function normalizeConfiguration(input) {
 
   const panelIds = new Set();
   const referencedSourceIds = new Set();
-  let webPanelCount = 0;
   const panels = configuration.panels.map((panel) => {
     if (!panel || typeof panel !== "object" || Array.isArray(panel)) {
       throw new TypeError("Panel importé invalide.");
@@ -391,12 +396,6 @@ function normalizeConfiguration(input) {
     panelIds.add(id);
     const normalized = normalizePanelInput(panel);
     if (normalized.kind === "web") {
-      webPanelCount += 1;
-      if (webPanelCount > MAX_CONFIGURATION_WEB_PANELS) {
-        throw new RangeError(
-          `La configuration ne peut pas contenir plus de ${MAX_CONFIGURATION_WEB_PANELS} pages web.`,
-        );
-      }
       return { id, ...normalized, sourceIds: [] };
     }
     if (!Array.isArray(panel.sourceIds)) {
@@ -418,10 +417,19 @@ function normalizeConfiguration(input) {
     throw new Error("Chaque source importée doit être rattachée à au moins un panel.");
   }
 
-  const layout = assertPracticalDashboardLayout(
-    validateDashboardLayout(configuration.layout ?? null, [...panelIds]),
-  );
-  return { panels, sources, layout };
+  const rawTabs = configuration.version === LEGACY_CONFIGURATION_VERSION
+    ? [{ id: randomUUID(), name: "Onglet 1", layout: configuration.layout ?? null }]
+    : configuration.tabs;
+  if (configuration.version === CONFIGURATION_VERSION && !Array.isArray(rawTabs)) {
+    throw new TypeError("La configuration doit contenir ses onglets.");
+  }
+  const dashboard = validateDashboardTabs(rawTabs, [...panelIds], {
+    activeTabId: configuration.version === LEGACY_CONFIGURATION_VERSION
+      ? rawTabs[0].id
+      : configuration.activeTabId,
+    webPanelIds: panels.filter(({ kind }) => kind === "web").map(({ id }) => id),
+  });
+  return { panels, sources, ...dashboard };
 }
 
 function clampRatio(value) {
@@ -488,13 +496,14 @@ function removePanelFromLayout(layout, panelId) {
  * Treat renderer-provided layout data as untrusted. The returned tree is a
  * normalized clone and every persisted panel must occur exactly once.
  */
-export function validateDashboardLayout(layout, panelIds) {
+export function validateDashboardLayout(layout, panelIds, { requireAll = true } = {}) {
   const knownPanelIds = new Set(panelIds);
   if (knownPanelIds.size !== panelIds.length) throw new Error("Liste de panels invalide.");
   if (knownPanelIds.size === 0) {
     if (layout !== null) throw new Error("Un dashboard vide ne peut pas contenir de layout.");
     return null;
   }
+  if (layout === null && !requireAll) return null;
   if (!layout || typeof layout !== "object") {
     throw new Error("Le layout doit contenir tous les panels.");
   }
@@ -551,13 +560,74 @@ export function validateDashboardLayout(layout, panelIds) {
   };
 
   const normalized = visit(layout, 0);
-  if (seenPanelIds.size !== knownPanelIds.size) {
+  if (requireAll && seenPanelIds.size !== knownPanelIds.size) {
     throw new Error("Le layout doit contenir chaque panel exactement une fois.");
   }
   if (Buffer.byteLength(JSON.stringify(normalized), "utf8") > MAX_LAYOUT_BYTES) {
     throw new Error("Le layout est trop volumineux.");
   }
   return normalized;
+}
+
+function panelIdsInLayout(layout) {
+  if (!layout) return [];
+  if (layout.type === "panel") return [layout.panelId];
+  return [
+    ...panelIdsInLayout(layout.children[0]),
+    ...panelIdsInLayout(layout.children[1]),
+  ];
+}
+
+export function validateDashboardTabs(
+  tabs,
+  panelIds,
+  { activeTabId = null, webPanelIds = [] } = {},
+) {
+  if (!Array.isArray(tabs) || tabs.length < 1 || tabs.length > MAX_DASHBOARD_TABS) {
+    throw new RangeError(`Le dashboard doit contenir entre 1 et ${MAX_DASHBOARD_TABS} onglets.`);
+  }
+  const knownPanelIds = new Set(panelIds);
+  if (knownPanelIds.size !== panelIds.length) throw new Error("Liste de panels invalide.");
+  const knownWebPanelIds = new Set(webPanelIds);
+  const seenTabIds = new Set();
+  const seenPanelIds = new Set();
+  const normalized = tabs.map((tab) => {
+    if (!tab || typeof tab !== "object" || Array.isArray(tab)) {
+      throw new TypeError("Onglet de dashboard invalide.");
+    }
+    const id = cleanIdentifier(tab.id, "Identifiant d’onglet");
+    if (seenTabIds.has(id)) throw new Error("Identifiant d’onglet dupliqué.");
+    seenTabIds.add(id);
+    const layout = assertPracticalDashboardLayout(
+      validateDashboardLayout(tab.layout ?? null, panelIds, { requireAll: false }),
+    );
+    const tabPanelIds = panelIdsInLayout(layout);
+    let webPanelCount = 0;
+    for (const panelId of tabPanelIds) {
+      if (seenPanelIds.has(panelId)) {
+        throw new Error("Un panel ne peut apparaître que dans un seul onglet.");
+      }
+      seenPanelIds.add(panelId);
+      if (knownWebPanelIds.has(panelId)) webPanelCount += 1;
+    }
+    if (webPanelCount > MAX_CONFIGURATION_WEB_PANELS) {
+      throw new RangeError(
+        `Un onglet ne peut pas contenir plus de ${MAX_CONFIGURATION_WEB_PANELS} pages web.`,
+      );
+    }
+    return { id, name: cleanTabName(tab.name), layout };
+  });
+  if (seenPanelIds.size !== knownPanelIds.size) {
+    throw new Error("Chaque panel doit apparaître exactement une fois dans les onglets.");
+  }
+  const selectedId = activeTabId ?? normalized[0].id;
+  if (typeof selectedId !== "string" || !seenTabIds.has(selectedId)) {
+    throw new Error("L’onglet actif est introuvable.");
+  }
+  if (Buffer.byteLength(JSON.stringify(normalized), "utf8") > MAX_LAYOUT_BYTES) {
+    throw new Error("Les onglets sont trop volumineux.");
+  }
+  return { tabs: normalized, activeTabId: selectedId };
 }
 
 export function dashboardGridSpan(layout) {
@@ -755,6 +825,8 @@ export class LocalFeedDatabase {
         CREATE TABLE IF NOT EXISTS dashboard_state (
           id INTEGER PRIMARY KEY CHECK (id = 1),
           layout_json TEXT,
+          tabs_json TEXT,
+          active_tab_id TEXT,
           revision INTEGER NOT NULL DEFAULT 0,
           content_revision INTEGER NOT NULL DEFAULT 0,
           arrival_revision INTEGER NOT NULL DEFAULT 0,
@@ -992,6 +1064,12 @@ export class LocalFeedDatabase {
           "ALTER TABLE dashboard_state ADD COLUMN arrival_revision INTEGER NOT NULL DEFAULT 0;",
         );
       }
+      if (!dashboardColumns.has("tabs_json")) {
+        this.database.exec("ALTER TABLE dashboard_state ADD COLUMN tabs_json TEXT;");
+      }
+      if (!dashboardColumns.has("active_tab_id")) {
+        this.database.exec("ALTER TABLE dashboard_state ADD COLUMN active_tab_id TEXT;");
+      }
       if (!dashboard) {
         const panelIds = this.#listPanelIds();
         const layout = buildInitialLayout(panelIds);
@@ -1000,6 +1078,20 @@ export class LocalFeedDatabase {
             "INSERT INTO dashboard_state (id, layout_json, revision, updated_at) VALUES (1, ?, 0, ?)",
           )
           .run(layout ? JSON.stringify(layout) : null, new Date().toISOString());
+      }
+      const tabState = this.database
+        .prepare("SELECT layout_json, tabs_json, active_tab_id FROM dashboard_state WHERE id = 1")
+        .get();
+      if (!tabState.tabs_json || !tabState.active_tab_id) {
+        const tabId = randomUUID();
+        const tabs = [{
+          id: tabId,
+          name: "Onglet 1",
+          layout: tabState.layout_json ? JSON.parse(tabState.layout_json) : null,
+        }];
+        this.database
+          .prepare("UPDATE dashboard_state SET tabs_json = ?, active_tab_id = ? WHERE id = 1")
+          .run(JSON.stringify(tabs), tabId);
       }
 
       this.database.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`);
@@ -1017,13 +1109,21 @@ export class LocalFeedDatabase {
       .map(({ id }) => id);
   }
 
+  #listWebPanelIds() {
+    return this.database
+      .prepare("SELECT id FROM panels WHERE kind = 'web' ORDER BY position ASC, created_at ASC")
+      .all()
+      .map(({ id }) => id);
+  }
+
   #readDashboardState() {
     const row = this.database
-      .prepare("SELECT layout_json, revision FROM dashboard_state WHERE id = 1")
+      .prepare("SELECT tabs_json, active_tab_id, revision FROM dashboard_state WHERE id = 1")
       .get();
     if (!row) throw new Error("État du dashboard introuvable.");
     return {
-      layout: row.layout_json ? JSON.parse(row.layout_json) : null,
+      tabs: row.tabs_json ? JSON.parse(row.tabs_json) : [],
+      activeTabId: row.active_tab_id,
       revision: row.revision,
     };
   }
@@ -1057,12 +1157,21 @@ export class LocalFeedDatabase {
       .run();
   }
 
-  #writeDashboardState(layout, revision, now) {
+  #writeDashboardState(tabs, activeTabId, revision, now) {
+    const activeLayout = tabs.find(({ id }) => id === activeTabId)?.layout ?? null;
     this.database
       .prepare(
-        "UPDATE dashboard_state SET layout_json = ?, revision = ?, updated_at = ? WHERE id = 1",
+        `UPDATE dashboard_state
+         SET tabs_json = ?, active_tab_id = ?, layout_json = ?, revision = ?, updated_at = ?
+         WHERE id = 1`,
       )
-      .run(layout ? JSON.stringify(layout) : null, revision, now);
+      .run(
+        JSON.stringify(tabs),
+        activeTabId,
+        activeLayout ? JSON.stringify(activeLayout) : null,
+        revision,
+        now,
+      );
   }
 
   #reconcileDashboardLayout(now = new Date().toISOString()) {
@@ -1070,7 +1179,10 @@ export class LocalFeedDatabase {
     let dashboard;
     try {
       dashboard = this.#readDashboardState();
-      validateDashboardLayout(dashboard.layout, panelIds);
+      validateDashboardTabs(dashboard.tabs, panelIds, {
+        activeTabId: dashboard.activeTabId,
+        webPanelIds: this.#listWebPanelIds(),
+      });
       return;
     } catch {
       // A previous interrupted or pre-layout build must not strand panels.
@@ -1078,16 +1190,28 @@ export class LocalFeedDatabase {
 
     const revision = Number.isInteger(dashboard?.revision) ? dashboard.revision + 1 : 0;
     const layout = buildInitialLayout(panelIds);
+    const tabId = randomUUID();
+    const tabs = [{ id: tabId, name: "Onglet 1", layout }];
     this.database
       .prepare(`
-        INSERT INTO dashboard_state (id, layout_json, revision, updated_at)
-        VALUES (1, ?, ?, ?)
+        INSERT INTO dashboard_state (
+          id, layout_json, tabs_json, active_tab_id, revision, updated_at
+        )
+        VALUES (1, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           layout_json = excluded.layout_json,
+          tabs_json = excluded.tabs_json,
+          active_tab_id = excluded.active_tab_id,
           revision = excluded.revision,
           updated_at = excluded.updated_at
       `)
-      .run(layout ? JSON.stringify(layout) : null, revision, now);
+      .run(
+        layout ? JSON.stringify(layout) : null,
+        JSON.stringify(tabs),
+        tabId,
+        revision,
+        now,
+      );
   }
 
   #incrementPilotUsageDay(
@@ -1485,8 +1609,9 @@ export class LocalFeedDatabase {
       if (
         !placement ||
         typeof placement !== "object" ||
-        typeof placement.targetPanelId !== "string" ||
-        !["left", "right", "top", "bottom"].includes(placement.side)
+        (placement.tabId !== undefined && typeof placement.tabId !== "string") ||
+        (placement.targetPanelId !== undefined && typeof placement.targetPanelId !== "string") ||
+        (placement.side !== undefined && !["left", "right", "top", "bottom"].includes(placement.side))
       ) {
         throw new TypeError("Emplacement de panel invalide.");
       }
@@ -1496,6 +1621,20 @@ export class LocalFeedDatabase {
     this.database.exec("BEGIN IMMEDIATE;");
     try {
       const dashboard = this.#readDashboardState();
+      const targetTabId = placement?.tabId ?? dashboard.activeTabId;
+      const targetTabIndex = dashboard.tabs.findIndex(({ id }) => id === targetTabId);
+      if (targetTabIndex < 0) throw new Error("Onglet cible introuvable.");
+      const targetTab = dashboard.tabs[targetTabIndex];
+      if (normalized.kind === "web") {
+        const webPanelIds = new Set(this.#listWebPanelIds());
+        const webPanelCount = panelIdsInLayout(targetTab.layout)
+          .filter((panelId) => webPanelIds.has(panelId)).length;
+        if (webPanelCount >= MAX_CONFIGURATION_WEB_PANELS) {
+          throw new RangeError(
+            `Un onglet ne peut pas contenir plus de ${MAX_CONFIGURATION_WEB_PANELS} pages web.`,
+          );
+        }
+      }
       const position = this.database
         .prepare("SELECT COALESCE(MAX(position), -1) + 1 AS next_position FROM panels")
         .get().next_position;
@@ -1519,12 +1658,14 @@ export class LocalFeedDatabase {
 
       const newLeaf = { type: "panel", panelId: id };
       let nextLayout;
-      if (!dashboard.layout) {
-        if (placement) throw new Error("Le panel cible est introuvable.");
+      if (!targetTab.layout) {
+        if (placement?.targetPanelId || placement?.side) {
+          throw new Error("Le panel cible est introuvable.");
+        }
         nextLayout = newLeaf;
-      } else if (placement) {
+      } else if (placement?.targetPanelId && placement?.side) {
         const inserted = insertPanelIntoLayout(
-          dashboard.layout,
+          targetTab.layout,
           placement.targetPanelId,
           id,
           placement.side,
@@ -1537,15 +1678,26 @@ export class LocalFeedDatabase {
           id: randomUUID(),
           direction: "row",
           ratio: 0.5,
-          children: [dashboard.layout, newLeaf],
+          children: [targetTab.layout, newLeaf],
         };
       }
 
       const panelIds = [...this.#listPanelIds()];
       nextLayout = assertPracticalDashboardLayout(
-        validateDashboardLayout(nextLayout, panelIds),
+        validateDashboardLayout(nextLayout, panelIds, { requireAll: false }),
       );
-      this.#writeDashboardState(nextLayout, dashboard.revision + 1, now);
+      const nextTabs = dashboard.tabs.map((tab, index) =>
+        index === targetTabIndex ? { ...tab, layout: nextLayout } : tab);
+      const validated = validateDashboardTabs(nextTabs, panelIds, {
+        activeTabId: targetTabId,
+        webPanelIds: this.#listWebPanelIds(),
+      });
+      this.#writeDashboardState(
+        validated.tabs,
+        validated.activeTabId,
+        dashboard.revision + 1,
+        now,
+      );
       this.database.exec("COMMIT;");
     } catch (error) {
       this.database.exec("ROLLBACK;");
@@ -1577,11 +1729,20 @@ export class LocalFeedDatabase {
       const dashboard = this.#readDashboardState();
       const result = this.database.prepare("DELETE FROM panels WHERE id = ?").run(panelId);
       if (result.changes === 0) throw new Error("Panel introuvable.");
-      const nextLayout = validateDashboardLayout(
-        removePanelFromLayout(dashboard.layout, panelId),
-        this.#listPanelIds(),
+      const nextTabs = dashboard.tabs.map((tab) => ({
+        ...tab,
+        layout: removePanelFromLayout(tab.layout, panelId),
+      }));
+      const validated = validateDashboardTabs(nextTabs, this.#listPanelIds(), {
+        activeTabId: dashboard.activeTabId,
+        webPanelIds: this.#listWebPanelIds(),
+      });
+      this.#writeDashboardState(
+        validated.tabs,
+        validated.activeTabId,
+        dashboard.revision + 1,
+        now,
       );
-      this.#writeDashboardState(nextLayout, dashboard.revision + 1, now);
       this.#incrementContentRevision();
       this.database.exec("COMMIT;");
     } catch (error) {
@@ -1592,33 +1753,194 @@ export class LocalFeedDatabase {
 
   getDashboardState() {
     const dashboard = this.#readDashboardState();
-    return {
-      layout: validateDashboardLayout(dashboard.layout, this.#listPanelIds()),
-      revision: dashboard.revision,
-    };
+    const validated = validateDashboardTabs(dashboard.tabs, this.#listPanelIds(), {
+      activeTabId: dashboard.activeTabId,
+      webPanelIds: this.#listWebPanelIds(),
+    });
+    return { ...validated, revision: dashboard.revision };
   }
 
-  saveDashboardLayout(layout, expectedRevision, now = new Date().toISOString()) {
+  saveDashboardLayout(tabId, layout, expectedRevision, now = new Date().toISOString()) {
     if (!Number.isInteger(expectedRevision) || expectedRevision < 0) {
       throw new TypeError("Révision de dashboard invalide.");
     }
+    const normalizedTabId = cleanIdentifier(tabId, "Onglet");
+    const dashboard = this.#readDashboardState();
+    if (dashboard.revision !== expectedRevision) throw this.#revisionConflict();
+    const tabIndex = dashboard.tabs.findIndex(({ id }) => id === normalizedTabId);
+    if (tabIndex < 0) throw new Error("Onglet introuvable.");
+    const tabPanelIds = panelIdsInLayout(dashboard.tabs[tabIndex].layout);
     const normalized = assertPracticalDashboardLayout(
-      validateDashboardLayout(layout, this.#listPanelIds()),
+      validateDashboardLayout(layout, tabPanelIds),
     );
-    const serialized = normalized ? JSON.stringify(normalized) : null;
-    const result = this.database
-      .prepare(`
-        UPDATE dashboard_state
-        SET layout_json = ?, revision = revision + 1, updated_at = ?
-        WHERE id = 1 AND revision = ?
-      `)
-      .run(serialized, now, expectedRevision);
-    if (result.changes === 0) {
-      const error = new Error("Le dashboard a changé. Rechargez sa disposition avant de réessayer.");
-      error.code = "DASHBOARD_REVISION_CONFLICT";
+    const nextTabs = dashboard.tabs.map((tab, index) =>
+      index === tabIndex ? { ...tab, layout: normalized } : tab);
+    const validated = validateDashboardTabs(nextTabs, this.#listPanelIds(), {
+      activeTabId: dashboard.activeTabId,
+      webPanelIds: this.#listWebPanelIds(),
+    });
+    this.#writeDashboardState(validated.tabs, validated.activeTabId, expectedRevision + 1, now);
+    return this.getDashboardState();
+  }
+
+  #revisionConflict() {
+    const error = new Error("Le dashboard a changé. Rechargez sa disposition avant de réessayer.");
+    error.code = "DASHBOARD_REVISION_CONFLICT";
+    return error;
+  }
+
+  createDashboardTab(name, expectedRevision, now = new Date().toISOString()) {
+    const dashboard = this.#readDashboardState();
+    if (dashboard.revision !== expectedRevision) throw this.#revisionConflict();
+    if (dashboard.tabs.length >= MAX_DASHBOARD_TABS) {
+      throw new RangeError(`Le dashboard accepte au maximum ${MAX_DASHBOARD_TABS} onglets.`);
+    }
+    const tab = { id: randomUUID(), name: cleanTabName(name), layout: null };
+    const tabs = [...dashboard.tabs, tab];
+    this.#writeDashboardState(tabs, tab.id, expectedRevision + 1, now);
+    return this.getDashboardState();
+  }
+
+  renameDashboardTab(tabId, name, expectedRevision, now = new Date().toISOString()) {
+    const id = cleanIdentifier(tabId, "Onglet");
+    const dashboard = this.#readDashboardState();
+    if (dashboard.revision !== expectedRevision) throw this.#revisionConflict();
+    if (!dashboard.tabs.some((tab) => tab.id === id)) throw new Error("Onglet introuvable.");
+    const tabs = dashboard.tabs.map((tab) =>
+      tab.id === id ? { ...tab, name: cleanTabName(name) } : tab);
+    this.#writeDashboardState(tabs, dashboard.activeTabId, expectedRevision + 1, now);
+    return this.getDashboardState();
+  }
+
+  reorderDashboardTabs(tabIds, expectedRevision, now = new Date().toISOString()) {
+    if (!Array.isArray(tabIds)) throw new TypeError("Ordre des onglets invalide.");
+    const dashboard = this.#readDashboardState();
+    if (dashboard.revision !== expectedRevision) throw this.#revisionConflict();
+    const ids = tabIds.map((id) => cleanIdentifier(id, "Onglet"));
+    if (
+      ids.length !== dashboard.tabs.length ||
+      new Set(ids).size !== ids.length ||
+      ids.some((id) => !dashboard.tabs.some((tab) => tab.id === id))
+    ) {
+      throw new Error("L’ordre doit contenir chaque onglet exactement une fois.");
+    }
+    const byId = new Map(dashboard.tabs.map((tab) => [tab.id, tab]));
+    this.#writeDashboardState(
+      ids.map((id) => byId.get(id)),
+      dashboard.activeTabId,
+      expectedRevision + 1,
+      now,
+    );
+    return this.getDashboardState();
+  }
+
+  selectDashboardTab(tabId, now = new Date().toISOString()) {
+    const id = cleanIdentifier(tabId, "Onglet");
+    const dashboard = this.#readDashboardState();
+    if (!dashboard.tabs.some((tab) => tab.id === id)) throw new Error("Onglet introuvable.");
+    this.#writeDashboardState(dashboard.tabs, id, dashboard.revision, now);
+    return this.getDashboardState();
+  }
+
+  deleteDashboardTab(tabId, expectedRevision, now = new Date().toISOString()) {
+    const id = cleanIdentifier(tabId, "Onglet");
+    this.database.exec("BEGIN IMMEDIATE;");
+    try {
+      const dashboard = this.#readDashboardState();
+      if (dashboard.revision !== expectedRevision) throw this.#revisionConflict();
+      if (dashboard.tabs.length <= 1) throw new Error("Le dernier onglet ne peut pas être supprimé.");
+      const tabIndex = dashboard.tabs.findIndex((tab) => tab.id === id);
+      if (tabIndex < 0) throw new Error("Onglet introuvable.");
+      const panelIds = panelIdsInLayout(dashboard.tabs[tabIndex].layout);
+      const removePanel = this.database.prepare("DELETE FROM panels WHERE id = ?");
+      for (const panelId of panelIds) removePanel.run(panelId);
+      const tabs = dashboard.tabs.filter((tab) => tab.id !== id);
+      const activeTabId = dashboard.activeTabId === id
+        ? tabs[Math.min(tabIndex, tabs.length - 1)].id
+        : dashboard.activeTabId;
+      const validated = validateDashboardTabs(tabs, this.#listPanelIds(), {
+        activeTabId,
+        webPanelIds: this.#listWebPanelIds(),
+      });
+      this.#writeDashboardState(validated.tabs, activeTabId, expectedRevision + 1, now);
+      if (panelIds.length > 0) this.#incrementContentRevision();
+      this.database.exec("COMMIT;");
+    } catch (error) {
+      this.database.exec("ROLLBACK;");
       throw error;
     }
-    return this.getDashboardState();
+    return this.getState(now);
+  }
+
+  movePanelToTab(
+    panelId,
+    destinationTabId,
+    placement,
+    expectedRevision,
+    now = new Date().toISOString(),
+  ) {
+    const id = cleanIdentifier(panelId, "Panel");
+    const targetTabId = cleanIdentifier(destinationTabId, "Onglet cible");
+    if (!placement || typeof placement !== "object" || Array.isArray(placement)) {
+      throw new TypeError("Placement de panel invalide.");
+    }
+    this.database.exec("BEGIN IMMEDIATE;");
+    try {
+      const dashboard = this.#readDashboardState();
+      if (dashboard.revision !== expectedRevision) throw this.#revisionConflict();
+      const sourceIndex = dashboard.tabs.findIndex((tab) => panelIdsInLayout(tab.layout).includes(id));
+      const targetIndex = dashboard.tabs.findIndex((tab) => tab.id === targetTabId);
+      if (sourceIndex < 0 || targetIndex < 0) throw new Error("Panel ou onglet cible introuvable.");
+      if (sourceIndex === targetIndex) throw new Error("Le panel appartient déjà à cet onglet.");
+      const target = dashboard.tabs[targetIndex];
+      let targetLayout;
+      if (!target.layout) {
+        if (placement.targetPanelId != null || placement.side != null) {
+          throw new Error("Un onglet vide n’accepte pas de zone relative.");
+        }
+        targetLayout = { type: "panel", panelId: id };
+      } else {
+        const targetPanelId = cleanIdentifier(placement.targetPanelId, "Panel cible");
+        if (!["left", "right", "top", "bottom"].includes(placement.side)) {
+          throw new TypeError("Côté de placement invalide.");
+        }
+        const inserted = insertPanelIntoLayout(target.layout, targetPanelId, id, placement.side);
+        if (!inserted.found) throw new Error("Zone de placement introuvable.");
+        targetLayout = inserted.layout;
+      }
+      const tabs = dashboard.tabs.map((tab, index) => {
+        if (index === sourceIndex) return { ...tab, layout: removePanelFromLayout(tab.layout, id) };
+        if (index === targetIndex) return { ...tab, layout: targetLayout };
+        return tab;
+      });
+      const validated = validateDashboardTabs(tabs, this.#listPanelIds(), {
+        activeTabId: targetTabId,
+        webPanelIds: this.#listWebPanelIds(),
+      });
+      this.#writeDashboardState(validated.tabs, targetTabId, expectedRevision + 1, now);
+      this.database.exec("COMMIT;");
+    } catch (error) {
+      this.database.exec("ROLLBACK;");
+      throw error;
+    }
+    return this.getState(now);
+  }
+
+  resetDashboard(expectedRevision, now = new Date().toISOString()) {
+    this.database.exec("BEGIN IMMEDIATE;");
+    try {
+      const dashboard = this.#readDashboardState();
+      if (dashboard.revision !== expectedRevision) throw this.#revisionConflict();
+      this.database.prepare("DELETE FROM panels").run();
+      const tab = { id: randomUUID(), name: "Onglet 1", layout: null };
+      this.#writeDashboardState([tab], tab.id, expectedRevision + 1, now);
+      this.#incrementContentRevision();
+      this.database.exec("COMMIT;");
+    } catch (error) {
+      this.database.exec("ROLLBACK;");
+      throw error;
+    }
+    return this.getState(now);
   }
 
   previewDashboardConfig(input) {
@@ -1629,6 +1951,7 @@ export class LocalFeedDatabase {
       if (panel.kind === "web" && panel.webUrl) hosts.add(new URL(panel.webUrl).hostname);
     }
     return {
+      tabs: normalized.tabs.length,
       panels: normalized.panels.length,
       feedPanels: normalized.panels.filter(({ kind }) => kind === "feed").length,
       webPanels: normalized.panels.filter(({ kind }) => kind === "web").length,
@@ -1645,7 +1968,8 @@ export class LocalFeedDatabase {
     const configuration = {
       format: CONFIGURATION_FORMAT,
       version: CONFIGURATION_VERSION,
-      layout: state.dashboard.layout,
+      activeTabId: state.dashboard.activeTabId,
+      tabs: state.dashboard.tabs,
       panels: state.panels.map((panel) =>
         panel.kind === "web"
           ? { id: panel.id, kind: "web", name: panel.name, url: panel.url }
@@ -1756,7 +2080,12 @@ export class LocalFeedDatabase {
         });
       });
 
-      this.#writeDashboardState(normalized.layout, dashboard.revision + 1, normalizedNow);
+      this.#writeDashboardState(
+        normalized.tabs,
+        normalized.activeTabId,
+        dashboard.revision + 1,
+        normalizedNow,
+      );
       this.#incrementContentRevision();
       this.#appendPilotEvent(
         "configuration_imported",

@@ -1292,9 +1292,56 @@ export class FeedEngine {
     return this.#operationState();
   }
 
-  async saveDashboardLayout(layout, expectedRevision) {
+  async saveDashboardLayout(tabId, layout, expectedRevision) {
     this.#assertFeedConfigurationMutationIdle();
-    this.database.saveDashboardLayout(layout, expectedRevision, this.#nowIso());
+    this.database.saveDashboardLayout(tabId, layout, expectedRevision, this.#nowIso());
+    return this.#operationState();
+  }
+
+  async createDashboardTab(name, expectedRevision) {
+    this.#assertFeedConfigurationMutationIdle();
+    this.database.createDashboardTab(name, expectedRevision, this.#nowIso());
+    return this.#operationState();
+  }
+
+  async renameDashboardTab(tabId, name, expectedRevision) {
+    this.#assertFeedConfigurationMutationIdle();
+    this.database.renameDashboardTab(tabId, name, expectedRevision, this.#nowIso());
+    return this.#operationState();
+  }
+
+  async reorderDashboardTabs(tabIds, expectedRevision) {
+    this.#assertFeedConfigurationMutationIdle();
+    this.database.reorderDashboardTabs(tabIds, expectedRevision, this.#nowIso());
+    return this.#operationState();
+  }
+
+  async selectDashboardTab(tabId) {
+    this.database.selectDashboardTab(tabId, this.#nowIso());
+    return this.#operationState();
+  }
+
+  async deleteDashboardTab(tabId, expectedRevision) {
+    this.#assertFeedConfigurationMutationIdle();
+    this.database.deleteDashboardTab(tabId, expectedRevision, this.#nowIso());
+    return this.#operationState();
+  }
+
+  async movePanelToTab(panelId, destinationTabId, placement, expectedRevision) {
+    this.#assertFeedConfigurationMutationIdle();
+    this.database.movePanelToTab(
+      panelId,
+      destinationTabId,
+      placement,
+      expectedRevision,
+      this.#nowIso(),
+    );
+    return this.#operationState();
+  }
+
+  async resetDashboard(expectedRevision) {
+    this.#assertFeedConfigurationMutationIdle();
+    this.database.resetDashboard(expectedRevision, this.#nowIso());
     return this.#operationState();
   }
 

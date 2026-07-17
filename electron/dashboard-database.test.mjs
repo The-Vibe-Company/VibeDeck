@@ -44,6 +44,10 @@ function layoutPanelIds(layout) {
   return [...layoutPanelIds(layout.children[0]), ...layoutPanelIds(layout.children[1])];
 }
 
+function activeLayout(state) {
+  return state.dashboard.tabs.find(({ id }) => id === state.dashboard.activeTabId)?.layout ?? null;
+}
+
 function layoutForPanelIds(panelIds) {
   return panelIds.reduce((layout, panelId, index) => {
     const panel = { type: "panel", panelId };
@@ -179,7 +183,7 @@ test("migrates every legacy panel into a feed layout without losing sources or a
         ["panel-c", "feed"],
       ],
     );
-    assert.deepEqual(layoutPanelIds(state.dashboard.layout).sort(), [
+    assert.deepEqual(layoutPanelIds(activeLayout(state)).sort(), [
       "panel-a",
       "panel-b",
       "panel-c",
@@ -192,7 +196,7 @@ test("migrates every legacy panel into a feed layout without losing sources or a
       database.getEndpointCache("https://cache.test/feed").finalUrl,
       "https://cache.test/feed",
     );
-    assert.equal(database.database.prepare("PRAGMA user_version").get().user_version, 8);
+    assert.equal(database.database.prepare("PRAGMA user_version").get().user_version, 9);
     assert.deepEqual(
       database.database.prepare("PRAGMA table_info(panels)").all().map(({ name }) => name),
       [
@@ -252,6 +256,47 @@ test("migrates every legacy panel into a feed layout without losing sources or a
   }
 });
 
+test("migrates empty and populated version 8 dashboards into one identical selected tab", () => {
+  for (const populated of [false, true]) {
+    const { databasePath, cleanup } = temporaryDatabase();
+    const version9 = createLocalFeedDatabase(databasePath);
+    let expectedPanelIds = [];
+    try {
+      if (populated) {
+        version9.createPanel({ kind: "feed", name: "Fil v8" });
+        version9.createPanel(
+          { kind: "web", name: "Page v8", url: "https://example.test/" },
+          { targetPanelId: version9.getState().panels[0].id, side: "right" },
+        );
+      }
+      expectedPanelIds = layoutPanelIds(activeLayout(version9.getState()));
+    } finally {
+      version9.close();
+    }
+
+    const raw = new DatabaseSync(databasePath);
+    raw.exec(`
+      ALTER TABLE dashboard_state DROP COLUMN tabs_json;
+      ALTER TABLE dashboard_state DROP COLUMN active_tab_id;
+      PRAGMA user_version = 8;
+    `);
+    raw.close();
+
+    const migrated = createLocalFeedDatabase(databasePath);
+    try {
+      const state = migrated.getState();
+      assert.equal(state.dashboard.tabs.length, 1);
+      assert.equal(state.dashboard.tabs[0].name, "Onglet 1");
+      assert.equal(state.dashboard.activeTabId, state.dashboard.tabs[0].id);
+      assert.deepEqual(layoutPanelIds(state.dashboard.tabs[0].layout), expectedPanelIds);
+      assert.equal(migrated.database.prepare("PRAGMA user_version").get().user_version, 9);
+    } finally {
+      migrated.close();
+      cleanup();
+    }
+  }
+});
+
 test("upgrades a version 4 database through daily pilot usage without changing its dashboard", () => {
   const { databasePath, cleanup } = temporaryDatabase();
   const initial = createLocalFeedDatabase(databasePath);
@@ -271,7 +316,7 @@ test("upgrades a version 4 database through daily pilot usage without changing i
 
   const migrated = createLocalFeedDatabase(databasePath);
   try {
-    assert.equal(migrated.database.prepare("PRAGMA user_version").get().user_version, 8);
+    assert.equal(migrated.database.prepare("PRAGMA user_version").get().user_version, 9);
     assert.equal(migrated.getState().panels[0].id, panel.id);
     assert.equal(
       migrated.database
@@ -313,7 +358,7 @@ test("migrates version 5 session totals to their local start day without losing 
     usageTimeZone: "Europe/Paris",
   });
   try {
-    assert.equal(migrated.database.prepare("PRAGMA user_version").get().user_version, 8);
+    assert.equal(migrated.database.prepare("PRAGMA user_version").get().user_version, 9);
     const diagnostics = migrated.getPilotDiagnostics("2026-07-12T08:00:00.000Z");
     assert.deepEqual(diagnostics.usage, {
       totalActiveDurationMs: 1_050_000,
@@ -423,7 +468,7 @@ test("migrates version 6 catch-up arrivals into shared minute batches without lo
   const migrated = createLocalFeedDatabase(databasePath);
   try {
     const state = migrated.getState("2026-07-15T09:10:00.000Z");
-    assert.equal(migrated.database.prepare("PRAGMA user_version").get().user_version, 8);
+    assert.equal(migrated.database.prepare("PRAGMA user_version").get().user_version, 9);
     assert.equal(state.panels.find(({ id }) => id === panelId).sourceIds.length, 2);
     assert.equal(state.items.length, 2);
     assert.deepEqual(state.items.map(({ sourceId }) => sourceId), [sourceB, sourceA]);
@@ -450,14 +495,16 @@ test("migrates version 6 catch-up arrivals into shared minute batches without lo
 test("creates, splits, resizes and removes feed and web panels with revisions", async () => {
   const engine = createFeedEngine();
   try {
-    assert.deepEqual(engine.getState().dashboard, { layout: null, revision: 0 });
+    assert.equal(engine.getState().dashboard.tabs.length, 1);
+    assert.equal(activeLayout(engine.getState()), null);
+    assert.equal(engine.getState().dashboard.revision, 0);
     assert.deepEqual(engine.getState().panels, []);
 
     let state = await engine.createPanel({ kind: "feed", name: "Actualités" });
     const feedPanel = state.panels[0];
     assert.equal(feedPanel.kind, "feed");
     assert.equal(feedPanel.defaultRefreshIntervalSeconds, 60);
-    assert.deepEqual(state.dashboard.layout, { type: "panel", panelId: feedPanel.id });
+    assert.deepEqual(activeLayout(state), { type: "panel", panelId: feedPanel.id });
 
     state = await engine.createPanel(
       { kind: "web", name: "BFM TV", url: "https://www.bfmtv.com/" },
@@ -465,16 +512,16 @@ test("creates, splits, resizes and removes feed and web panels with revisions", 
     );
     const webPanel = state.panels.find(({ kind }) => kind === "web");
     assert.equal(webPanel.url, "https://www.bfmtv.com/");
-    assert.equal(state.dashboard.layout.type, "split");
-    assert.equal(state.dashboard.layout.direction, "row");
-    assert.deepEqual(layoutPanelIds(state.dashboard.layout), [feedPanel.id, webPanel.id]);
+    assert.equal(activeLayout(state).type, "split");
+    assert.equal(activeLayout(state).direction, "row");
+    assert.deepEqual(layoutPanelIds(activeLayout(state)), [feedPanel.id, webPanel.id]);
 
-    const resized = { ...state.dashboard.layout, ratio: 0.63 };
-    const saved = await engine.saveDashboardLayout(resized, state.dashboard.revision);
-    assert.equal(saved.dashboard.layout.ratio, 0.63);
+    const resized = { ...activeLayout(state), ratio: 0.63 };
+    const saved = await engine.saveDashboardLayout(state.dashboard.activeTabId, resized, state.dashboard.revision);
+    assert.equal(activeLayout(saved).ratio, 0.63);
     assert.equal(saved.dashboard.revision, state.dashboard.revision + 1);
     await assert.rejects(
-      engine.saveDashboardLayout(resized, state.dashboard.revision),
+      engine.saveDashboardLayout(state.dashboard.activeTabId, resized, state.dashboard.revision),
       (error) => error.code === "DASHBOARD_REVISION_CONFLICT",
     );
 
@@ -486,9 +533,9 @@ test("creates, splits, resizes and removes feed and web panels with revisions", 
     );
 
     state = await engine.deletePanel(feedPanel.id);
-    assert.deepEqual(state.dashboard.layout, { type: "panel", panelId: webPanel.id });
+    assert.deepEqual(activeLayout(state), { type: "panel", panelId: webPanel.id });
     state = await engine.deletePanel(webPanel.id);
-    assert.deepEqual(state.dashboard.layout, null);
+    assert.deepEqual(activeLayout(state), null);
     assert.deepEqual(state.panels, []);
   } finally {
     engine.close();
@@ -505,11 +552,12 @@ test("rejects incomplete, duplicated and malformed dashboard layouts", async () 
     const revision = state.dashboard.revision;
 
     await assert.rejects(
-      engine.saveDashboardLayout({ type: "panel", panelId: firstId }, revision),
+      engine.saveDashboardLayout(state.dashboard.activeTabId, { type: "panel", panelId: firstId }, revision),
       /chaque panel/,
     );
     await assert.rejects(
       engine.saveDashboardLayout(
+        state.dashboard.activeTabId,
         {
           type: "split",
           id: "duplicate",
@@ -526,6 +574,7 @@ test("rejects incomplete, duplicated and malformed dashboard layouts", async () 
     );
     await assert.rejects(
       engine.saveDashboardLayout(
+        state.dashboard.activeTabId,
         {
           type: "split",
           id: "bad-ratio",
@@ -541,6 +590,74 @@ test("rejects incomplete, duplicated and malformed dashboard layouts", async () 
       /Ratio/,
     );
     assert.equal(engine.getState().dashboard.revision, revision);
+  } finally {
+    engine.close();
+  }
+});
+
+test("creates, reorders, selects and atomically moves panels between bounded tabs", async () => {
+  const engine = createFeedEngine();
+  try {
+    let state = await engine.createPanel({ kind: "feed", name: "Médias" });
+    const mediaPanelId = state.panels[0].id;
+    const firstTabId = state.dashboard.activeTabId;
+
+    state = await engine.createDashboardTab("X", state.dashboard.revision);
+    const secondTabId = state.dashboard.activeTabId;
+    assert.equal(state.dashboard.tabs.length, 2);
+    assert.equal(activeLayout(state), null);
+
+    state = await engine.createPanel(
+      { kind: "web", name: "Liste X", url: "https://x.com/i/lists/1" },
+      { tabId: secondTabId },
+    );
+    const webPanelId = state.panels.find(({ kind }) => kind === "web").id;
+    state = await engine.movePanelToTab(
+      mediaPanelId,
+      secondTabId,
+      { targetPanelId: webPanelId, side: "left" },
+      state.dashboard.revision,
+    );
+    assert.ok(Array.isArray(state.sourceCatalog), "une mutation doit retourner l’état renderer complet");
+    assert.deepEqual(layoutPanelIds(activeLayout(state)), [mediaPanelId, webPanelId]);
+    assert.equal(
+      state.dashboard.tabs.find(({ id }) => id === firstTabId).layout,
+      null,
+    );
+
+    state = await engine.renameDashboardTab(secondTabId, "Réseaux", state.dashboard.revision);
+    state = await engine.reorderDashboardTabs(
+      [secondTabId, firstTabId],
+      state.dashboard.revision,
+    );
+    assert.deepEqual(state.dashboard.tabs.map(({ id }) => id), [secondTabId, firstTabId]);
+    state = await engine.selectDashboardTab(firstTabId);
+    assert.equal(state.dashboard.activeTabId, firstTabId);
+
+    state = await engine.deleteDashboardTab(secondTabId, state.dashboard.revision);
+    assert.equal(state.dashboard.tabs.length, 1);
+    assert.deepEqual(state.panels, []);
+    await assert.rejects(
+      engine.deleteDashboardTab(firstTabId, state.dashboard.revision),
+      /dernier onglet/,
+    );
+  } finally {
+    engine.close();
+  }
+});
+
+test("limits a dashboard to nine tabs", async () => {
+  const engine = createFeedEngine();
+  try {
+    let state = engine.getState();
+    for (let index = 2; index <= 9; index += 1) {
+      state = await engine.createDashboardTab(`Onglet ${index}`, state.dashboard.revision);
+    }
+    assert.equal(state.dashboard.tabs.length, 9);
+    await assert.rejects(
+      engine.createDashboardTab("Onglet 10", state.dashboard.revision),
+      /au maximum 9 onglets/,
+    );
   } finally {
     engine.close();
   }
@@ -1288,20 +1405,30 @@ test("exports and transactionally imports configuration without articles or brow
       { kind: "web", name: "Direct", url: "https://direct.test/" },
       { targetPanelId: feedPanelId, side: "right" },
     );
+    const webPanelId = state.panels.find(({ kind }) => kind === "web").id;
+    state = await sourceEngine.createDashboardTab("Directs", state.dashboard.revision);
+    state = await sourceEngine.movePanelToTab(
+      webPanelId,
+      state.dashboard.activeTabId,
+      {},
+      state.dashboard.revision,
+    );
     const configuration = sourceEngine.exportDashboardConfig();
     assert.deepEqual(Object.keys(configuration).sort(), [
+      "activeTabId",
       "format",
-      "layout",
       "panels",
       "sources",
+      "tabs",
       "version",
     ]);
-    assert.equal(configuration.version, 1);
+    assert.equal(configuration.version, 2);
     assert.equal(configuration.sources.length, 1);
     assert.equal(Object.hasOwn(configuration, "items"), false);
     assert.equal(Object.hasOwn(configuration, "cookies"), false);
     assert.equal(Object.hasOwn(configuration, "cache"), false);
     assert.deepEqual(sourceEngine.previewDashboardConfig(configuration), {
+      tabs: 2,
       panels: 2,
       feedPanels: 1,
       webPanels: 1,
@@ -1313,9 +1440,23 @@ test("exports and transactionally imports configuration without articles or brow
     assert.equal(diagnosticsText.includes("Source test"), false);
     assert.equal(diagnosticsText.includes("source.test"), false);
 
+    const legacyConfiguration = {
+      format: "vibedeck-dashboard",
+      version: 1,
+      layout: configuration.tabs.find(({ name }) => name === "Onglet 1").layout,
+      panels: configuration.panels.filter(({ id }) => id === feedPanelId),
+      sources: configuration.sources,
+    };
+    const legacyImported = await targetEngine.importDashboardConfig(legacyConfiguration);
+    assert.equal(legacyImported.dashboard.tabs.length, 1);
+    assert.equal(legacyImported.dashboard.tabs[0].name, "Onglet 1");
+    assert.equal(legacyImported.dashboard.activeTabId, legacyImported.dashboard.tabs[0].id);
+    assert.deepEqual(layoutPanelIds(legacyImported.dashboard.tabs[0].layout), [feedPanelId]);
+
     const imported = await targetEngine.importDashboardConfig(JSON.stringify(configuration));
     assert.deepEqual(imported.panels, state.panels);
-    assert.deepEqual(imported.dashboard.layout, state.dashboard.layout);
+    assert.deepEqual(imported.dashboard.tabs, state.dashboard.tabs);
+    assert.equal(imported.dashboard.activeTabId, state.dashboard.activeTabId);
     assert.equal(imported.items.length, 0);
     assert.equal(imported.sources.length, 1);
     assert.equal(imported.sources[0].status, "idle");
@@ -1365,7 +1506,7 @@ test("exports and transactionally imports configuration without articles or brow
         panels: webPanels,
         sources: [],
       }),
-      /plus de 6 pages web/,
+      /plus de 6 pages web|au maximum 3 panels/,
     );
     assert.deepEqual(targetEngine.getState(), beforeRejectedImport);
   } finally {

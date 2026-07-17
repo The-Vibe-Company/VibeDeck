@@ -85,6 +85,34 @@ test("forwards all catalog source arguments in the documented order", async () =
   ]);
 });
 
+test("exposes only narrow dashboard-tab mutations", async () => {
+  const { api, calls } = await loadPreloadApi();
+  const layout = { type: "panel", panelId: "panel-1" };
+  const placement = { targetPanelId: "panel-2", side: "right" };
+
+  await api.saveDashboardLayout("tab-1", layout, 4);
+  await api.createDashboardTab("Économie", 5);
+  await api.renameDashboardTab("tab-2", "International", 6);
+  await api.reorderDashboardTabs(["tab-2", "tab-1"], 7);
+  await api.selectDashboardTab("tab-2");
+  await api.movePanelToTab("panel-1", "tab-2", placement, 8);
+  await api.deleteDashboardTab("tab-1", 9);
+  await api.resetDashboard(10);
+
+  assert.deepEqual(calls, [
+    ["aggregator:save-dashboard-layout", "tab-1", layout, 4],
+    ["dashboard-tabs:create", "Économie", 5],
+    ["dashboard-tabs:rename", "tab-2", "International", 6],
+    ["dashboard-tabs:reorder", ["tab-2", "tab-1"], 7],
+    ["dashboard-tabs:select", "tab-2"],
+    ["dashboard-tabs:move-panel", "panel-1", "tab-2", placement, 8],
+    ["dashboard-tabs:delete", "tab-1", 9],
+    ["dashboard-tabs:reset", 10],
+  ]);
+  assert.equal(api.database, undefined);
+  assert.equal(api.restoreDashboardCheckpoint, undefined);
+});
+
 test("exposes a bounded source probe without panel or persistence primitives", async () => {
   const { api, calls } = await loadPreloadApi();
   const probeId = "123e4567-e89b-42d3-a456-426614174000";
@@ -102,7 +130,7 @@ test("exposes a bounded source probe without panel or persistence primitives", a
 
 test("controls a web preview through a temporary id and commits only its name and placement", async () => {
   const { api, calls } = await loadPreloadApi();
-  const placement = { targetPanelId: "panel-1", side: "right" };
+  const placement = { tabId: "tab-1", targetPanelId: "panel-1", side: "right" };
 
   await api.startWebPreview(
     "draft:123e4567-e89b-42d3-a456-426614174000",

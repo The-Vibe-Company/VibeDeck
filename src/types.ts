@@ -87,8 +87,15 @@ export type LayoutNode =
       children: [LayoutNode, LayoutNode];
     };
 
-export interface DashboardState {
+export interface DashboardTab {
+  id: string;
+  name: string;
   layout: LayoutNode | null;
+}
+
+export interface DashboardState {
+  tabs: DashboardTab[];
+  activeTabId: string;
   revision: number;
 }
 
@@ -129,8 +136,14 @@ export type CreatePanelInput =
   | { kind: "web"; name: string; url: string };
 
 export interface PanelPlacement {
-  targetPanelId: string;
-  side: "left" | "right" | "top" | "bottom";
+  tabId: string;
+  targetPanelId?: string;
+  side?: "left" | "right" | "top" | "bottom";
+}
+
+export interface CrossTabPanelPlacement {
+  targetPanelId?: string;
+  side?: "left" | "right" | "top" | "bottom";
 }
 
 export interface AddSourceResult {
@@ -310,9 +323,26 @@ export interface VibeDeckApi {
   setWebPanelUrl: (panelId: string, url: string) => Promise<AppState>;
   deletePanel: (panelId: string) => Promise<AppState>;
   saveDashboardLayout: (
+    tabId: string,
     layout: LayoutNode | null,
     expectedRevision: number,
   ) => Promise<AppState>;
+  createDashboardTab: (name: string, expectedRevision: number) => Promise<AppState>;
+  renameDashboardTab: (
+    tabId: string,
+    name: string,
+    expectedRevision: number,
+  ) => Promise<AppState>;
+  reorderDashboardTabs: (tabIds: string[], expectedRevision: number) => Promise<AppState>;
+  selectDashboardTab: (tabId: string) => Promise<AppState>;
+  deleteDashboardTab: (tabId: string, expectedRevision: number) => Promise<AppState>;
+  movePanelToTab: (
+    panelId: string,
+    destinationTabId: string,
+    placement: CrossTabPanelPlacement,
+    expectedRevision: number,
+  ) => Promise<AppState>;
+  resetDashboard: (expectedRevision: number) => Promise<AppState>;
   addCatalogSource: (
     panelId: string,
     catalogId: string,
@@ -389,4 +419,5 @@ export interface VibeDeckApi {
     callback: (status: SemanticSearchStatus) => void,
   ) => () => void;
   onOpenGlobalSearch: (callback: (nativeOrigin: boolean) => void) => () => void;
+  onActivateDashboardTab: (callback: (index: number) => void) => () => void;
 }
