@@ -1,0 +1,25 @@
+scripts/test-pilot-ui.mjs
+  s_3d711cb7f4319a::t_d3799977d68bb7 1999-2014,2016,2021
+  s_3d711cb7f4319a::t_75435f2f994f7e 2015
+  s_3d711cb7f4319a::t_56e25cd89250f5 2017-2020
+  s_3d711cb7f4319a::t_e5cea94963bca7 2022-2024
+  s_3d711cb7f4319a::t_3190e21af3f299 2025
+src/App.tsx
+  s_3d711cb7f4319a::t_b69fac2a71b11c 958-968,979,981
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "cee8a4fbfe9d6f7ea21fa6bcfbd121a4c0b00d3a",
+  "prompts": {},
+  "sessions": {
+    "s_3d711cb7f4319a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f7001-77d8-7ff1-b621-6afe2dcafe1d",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
