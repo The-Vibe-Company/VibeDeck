@@ -134,8 +134,50 @@ jobs:
             release/latest-mac.yml
           if-no-files-found: error
 
-  windows:
-    if: vars.ENABLE_WINDOWS_RELEASE == 'true'
+  windows_unsigned:
+    if: vars.ENABLE_WINDOWS_SIGNING != 'true'
+    needs: validate
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Build unsigned Windows assets
+        shell: pwsh
+        run: npm run dist:win
+      - run: npm run verify:packaged-fuses
+      - run: npm run test:packaged
+      - name: Verify unsigned Windows installer and update metadata
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem release -File -Filter *.exe)
+          if ($installers.Count -ne 1) { throw "Un installateur Windows est requis" }
+          $blockmaps = @(Get-ChildItem release -File -Filter *.blockmap)
+          if ($blockmaps.Count -ne 1) { throw "Une blockmap Windows est requise" }
+          if (-not (Test-Path release/latest.yml)) { throw "latest.yml introuvable" }
+          $signature = Get-AuthenticodeSignature $installers[0].FullName
+          if ($signature.Status -ne "NotSigned") {
+            throw "L'installateur Windows temporaire doit être non signé: $($signature.Status)"
+          }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-windows
+          path: |
+            release/*.exe
+            release/*.blockmap
+            release/latest.yml
+          if-no-files-found: error
+
+  windows_signed:
+    if: vars.ENABLE_WINDOWS_SIGNING == 'true'
     needs: validate
     runs-on: windows-latest
     timeout-minutes: 60
@@ -168,10 +210,12 @@ jobs:
       - name: Verify Windows Authenticode signature and update metadata
         shell: pwsh
         run: |
-          $installer = Get-ChildItem release -Filter *.exe | Select-Object -First 1
-          if (-not $installer) { throw "Installateur Windows introuvable" }
+          $installers = @(Get-ChildItem release -File -Filter *.exe)
+          if ($installers.Count -ne 1) { throw "Un installateur Windows est requis" }
+          $blockmaps = @(Get-ChildItem release -File -Filter *.blockmap)
+          if ($blockmaps.Count -ne 1) { throw "Une blockmap Windows est requise" }
           if (-not (Test-Path release/latest.yml)) { throw "latest.yml introuvable" }
-          $signature = Get-AuthenticodeSignature $installer.FullName
+          $signature = Get-AuthenticodeSignature $installers[0].FullName
           if ($signature.Status -ne "Valid") {
             throw "Signature Authenticode invalide: $($signature.Status)"
           }
@@ -185,12 +229,15 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [validate, macos, windows]
+    needs: [validate, macos, windows_unsigned, windows_signed]
     if: >-
       always() &&
       needs.validate.result == 'success' &&
       needs.macos.result == 'success' &&
-      (needs.windows.result == 'success' || needs.windows.result == 'skipped')
+      (
+        (needs.windows_unsigned.result == 'success' && needs.windows_signed.result == 'skipped') ||
+        (needs.windows_unsigned.result == 'skipped' && needs.windows_signed.result == 'success')
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -209,21 +256,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
-          WINDOWS_RELEASE_ENABLED: ${{ vars.ENABLE_WINDOWS_RELEASE == 'true' }}
         run: |
           set -euo pipefail
           test "$(find release -maxdepth 1 -type f -name '*.dmg' | wc -l | tr -d ' ')" = 1
           test "$(find release -maxdepth 1 -type f -name '*.zip' | wc -l | tr -d ' ')" = 1
           test -f release/latest-mac.yml
-          if [ "$WINDOWS_RELEASE_ENABLED" = true ]; then
-            test "$(find release -maxdepth 1 -type f -name '*.exe' | wc -l | tr -d ' ')" = 1
-            test -f release/latest.yml
-            test "$(find release -maxdepth 1 -type f -name '*.blockmap' | wc -l | tr -d ' ')" = 3
-          else
-            test "$(find release -maxdepth 1 -type f -name '*.exe' | wc -l | tr -d ' ')" = 0
-            test ! -e release/latest.yml
-            test "$(find release -maxdepth 1 -type f -name '*.blockmap' | wc -l | tr -d ' ')" = 2
-          fi
+          test "$(find release -maxdepth 1 -type f -name '*.exe' | wc -l | tr -d ' ')" = 1
+          test -f release/latest.yml
+          test "$(find release -maxdepth 1 -type f -name '*.blockmap' | wc -l | tr -d ' ')" = 3
           test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
           npm run checksums:release
           npm run verify:checksums

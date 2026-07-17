@@ -21,6 +21,15 @@ const releaseWorkflow = readFileSync(
 const releaseValidationJob = releaseWorkflow.match(
   /\n  validate:[\s\S]*?(?=\n  macos:)/,
 )?.[0] ?? "";
+const releaseWindowsUnsignedJob = releaseWorkflow.match(
+  /\n  windows_unsigned:[\s\S]*?(?=\n  windows_signed:)/,
+)?.[0] ?? "";
+const releaseWindowsSignedJob = releaseWorkflow.match(
+  /\n  windows_signed:[\s\S]*?(?=\n  publish:)/,
+)?.[0] ?? "";
+const releasePublishJob = releaseWorkflow.match(
+  /\n  publish:[\s\S]*$/,
+)?.[0] ?? "";
 const releasePleaseWorkflow = readFileSync(
   path.join(root, ".github/workflows/release-please.yml"),
   "utf8",
@@ -34,6 +43,7 @@ const releasePleaseManifest = JSON.parse(
 const license = readFileSync(path.join(root, "LICENSE"), "utf8");
 const viteConfig = readFileSync(path.join(root, "vite.config.ts"), "utf8");
 const indexHtml = readFileSync(path.join(root, "index.html"), "utf8");
+const siteLandingHtml = readFileSync(path.join(root, "site/index.html"), "utf8");
 const afterSignHook = readFileSync(path.join(root, "scripts/after-sign.mjs"), "utf8");
 const windowsSigningScript = readFileSync(
   path.join(root, "scripts/build-windows-signed.mjs"),
@@ -445,8 +455,26 @@ assert.match(
 );
 assert.match(
   releaseWorkflow,
-  /windows:[\s\S]*?environment:\s*signed-release\s*\n\s*permissions:\s*\n\s*contents: read/,
+  /windows_signed:[\s\S]*?environment:\s*signed-release\s*\n\s*permissions:\s*\n\s*contents: read/,
   "Le job Windows ne doit pas garder de permission d’écriture après la désactivation de la publication directe",
+);
+assert.ok(releaseWindowsUnsignedJob, "Le job Windows non signé est introuvable");
+assert.ok(releaseWindowsSignedJob, "Le job Windows signé est introuvable");
+assert.ok(releasePublishJob, "Le job final de publication est introuvable");
+assert.doesNotMatch(
+  releaseWindowsUnsignedJob,
+  /environment:\s*signed-release|secrets\.|AZURE_|WIN_PUBLISHER_NAME/,
+  "Le build Windows non signé ne doit accéder à aucun secret de signature",
+);
+assert.match(
+  releaseWindowsUnsignedJob,
+  /if: vars\.ENABLE_WINDOWS_SIGNING != 'true'[\s\S]*run: npm run dist:win/,
+  "Windows doit être construit sans signature tant que la signature Azure n’est pas activée",
+);
+assert.match(
+  releaseWindowsSignedJob,
+  /if: vars\.ENABLE_WINDOWS_SIGNING == 'true'[\s\S]*npm run dist:win:signed -- --publish never/,
+  "La variable Azure doit sélectionner exclusivement le build Windows signé",
 );
 assert.doesNotMatch(
   releaseWorkflow,
@@ -535,24 +563,29 @@ assert.match(
   "Le bundle réellement contenu dans le DMG doit être monté puis lancé",
 );
 assert.match(
-  releaseWorkflow,
-  /Get-AuthenticodeSignature/,
-  "Le workflow Windows doit vérifier la signature Authenticode",
+  releaseWindowsUnsignedJob,
+  /Get-AuthenticodeSignature[\s\S]*Status -ne "NotSigned"/,
+  "Le workflow Windows temporaire doit refuser un statut autre que NotSigned",
 );
 assert.match(
-  releaseWorkflow,
-  /windows:\s*\n\s*if: vars\.ENABLE_WINDOWS_RELEASE == 'true'/,
-  "La publication Windows doit rester derrière son interrupteur explicite",
+  releaseWindowsSignedJob,
+  /Get-AuthenticodeSignature[\s\S]*Status -ne "Valid"/,
+  "Le workflow Windows Azure doit exiger une signature Authenticode valide",
 );
 assert.match(
-  releaseWorkflow,
-  /needs\.windows\.result == 'success' \|\| needs\.windows\.result == 'skipped'/,
-  "La publication macOS doit accepter un job Windows explicitement désactivé",
+  releasePublishJob,
+  /needs: \[validate, macos, windows_unsigned, windows_signed\][\s\S]*needs\.windows_unsigned\.result == 'success'[\s\S]*needs\.windows_signed\.result == 'skipped'[\s\S]*needs\.windows_unsigned\.result == 'skipped'[\s\S]*needs\.windows_signed\.result == 'success'/,
+  "La release doit exiger exactement un des deux builds Windows",
 );
 assert.match(
+  releasePublishJob,
+  /-name '\*\.exe'[\s\S]*= 1[\s\S]*test -f release\/latest\.yml[\s\S]*-name '\*\.blockmap'[\s\S]*= 3/,
+  "Chaque release doit contenir exactement l’installateur et les métadonnées Windows attendus",
+);
+assert.doesNotMatch(
   releaseWorkflow,
-  /WINDOWS_RELEASE_ENABLED[\s\S]*-name '\*\.blockmap'[\s\S]*= 2/,
-  "Le mode macOS seul doit exiger exactement les deux blockmaps Apple",
+  /ENABLE_WINDOWS_RELEASE|WINDOWS_RELEASE_ENABLED/,
+  "L’ancien interrupteur de publication Windows ne doit plus permettre une release macOS seule",
 );
 assert.equal(
   (releaseWorkflow.match(/npm run test:pilot-ui/g) ?? []).length,
@@ -561,8 +594,8 @@ assert.equal(
 );
 assert.equal(
   (releaseWorkflow.match(/npm run test:packaged/g) ?? []).length,
-  2,
-  "Chaque build signé doit lancer l’application réellement empaquetée",
+  3,
+  "Chaque branche de build plateforme doit lancer l’application réellement empaquetée",
 );
 assert.equal(
   (releaseWorkflow.match(/npm audit --omit=dev/g) ?? []).length,
@@ -609,9 +642,29 @@ assert.doesNotMatch(
   /WIN_CSC_(?:LINK|KEY_PASSWORD)/,
   "La signature Windows ne doit plus dépendre d’une clé exportée",
 );
+assert.doesNotMatch(
+  siteLandingHtml,
+  /Windows arrive bientôt/,
+  "Le site ne doit plus annoncer Windows comme indisponible",
+);
+assert.match(
+  siteLandingHtml,
+  />Télécharger VibeDeck</,
+  "Le CTA principal doit couvrir les deux plateformes",
+);
+assert.match(
+  siteLandingHtml,
+  /Disponible pour macOS et Windows\./,
+  "Le site doit annoncer les deux plateformes prises en charge",
+);
+assert.equal(
+  (siteLandingHtml.match(/https:\/\/github\.com\/The-Vibe-Company\/VibeDeck\/releases\/latest/g) ?? []).length,
+  2,
+  "Les deux boutons plateforme doivent pointer vers la dernière release GitHub",
+);
 
 console.log(`✓ Configuration de diffusion VibeDeck ${packageJson.version}`);
 console.log("✓ Electron : fuses production durcis, cookies chiffrés et ASAR vérifié");
 console.log("✓ macOS : hardened runtime, entitlements, signature obligatoire en release");
-console.log("✓ Windows : NSIS, signature obligatoire en release");
+console.log("✓ Windows : NSIS obligatoire, signature Azure activable sans changer les artefacts");
 console.log("ℹ Les certificats et identifiants de notarisation restent des prérequis externes.");

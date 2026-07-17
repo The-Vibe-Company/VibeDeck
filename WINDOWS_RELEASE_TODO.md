@@ -1,10 +1,10 @@
-# Publication Windows — reste à faire
+# Signature Windows — reste à faire
 
 ## État actuel
 
-La publication Windows est temporairement désactivée. La variable GitHub de dépôt `ENABLE_WINDOWS_RELEASE` doit rester à `false` jusqu’à ce que la chaîne Azure soit validée par une vraie build Windows signée.
+La publication Windows est active à partir de la première version postérieure à `v0.10.0`. Tant que la variable GitHub de dépôt `ENABLE_WINDOWS_SIGNING` est absente ou différente de `true`, chaque release contient un installateur NSIS x64 explicitement non signé, sa blockmap et `latest.yml`. Le workflow exige le statut Authenticode `NotSigned`, vérifie les fuses et lance le paquet réel avant publication.
 
-Les releases publiques créées pendant cette période contiennent uniquement les artefacts macOS : DMG universel, ZIP universel, leurs deux blockmaps, `latest-mac.yml` et `SHA256SUMS.txt`. Une release publique est immuable ; ne jamais lui ajouter un installateur Windows après publication. La première diffusion Windows utilisera une version SemVer supérieure.
+La release `v0.10.0` reste inchangée et limitée à macOS. Une release publique est immuable : ne jamais ajouter ni remplacer un installateur après publication. Les sommes de contrôle couvrent les artefacts macOS et Windows, et l’auto-mise à jour Windows utilise temporairement ce canal non signé.
 
 ## Azure Artifact Signing
 
@@ -43,7 +43,7 @@ Ne jamais consigner la valeur du secret client, une clé privée ou un jeton dan
    - lancement du paquet réel et protocole `vibedeck-app://` ;
    - installation, mise à jour vers une version supérieure et conservation exacte des données locales ;
    - `latest.yml`, blockmap et sommes SHA-256.
-6. Mettre la variable GitHub de dépôt `ENABLE_WINDOWS_RELEASE` à `true` avant de fusionner la Release PR de la prochaine version.
+6. Mettre la variable GitHub de dépôt `ENABLE_WINDOWS_SIGNING` à `true` avant de fusionner la Release PR de la prochaine version.
 7. Vérifier que cette release contient exactement un EXE, sa blockmap et `latest.yml`, en plus des artefacts macOS.
 
 Si la validation Azure passe à `Action Required`, répondre avec les documents demandés. Si elle reste bloquée au-delà de 20 jours ouvrés, ouvrir un ticket Azure Support avec l’identifiant de validation. Ne pas créer plusieurs validations concurrentes pour la même entité.

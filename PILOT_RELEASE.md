@@ -82,7 +82,7 @@ La diffusion directe exige un certificat `Developer ID Application` et des ident
 
 Le workflow `pilot-build` exécute les tests et audits, construit les distributions macOS et Windows non signées, monte le DMG, lance les paquets réels et termine par le check stable `CI required`. Ce check est obligatoire sur `main`, branche à jour comprise, y compris pour les administrateurs et les Release PRs. `test:live` reste une recette réseau séparée et ne participe pas à ce check déterministe.
 
-Release Please maintient la Release PR, `package.json`, `package-lock.json`, `.release-please-manifest.json` et `CHANGELOG.md`. Il ne s’exécute qu’après un `pilot-build` réussi sur un push de `main`. Après fusion de la Release PR et nouveau passage vert sur `main`, il crée un tag `vX.Y.Z` et une GitHub Release non publique. Le workflow signé exige que le SHA tagué possède le check `CI required` réussi et émis par GitHub Actions, puis la publie comme `latest` seulement après validation exacte des artefacts macOS et de leurs checksums. Tant que `ENABLE_WINDOWS_RELEASE` vaut `false`, le tag déclenche uniquement le build macOS signé et les artefacts sont ajoutés à cette release avant sa publication. Le secret d’organisation `RELEASE_PLEASE_TOKEN` doit être autorisé uniquement pour ce dépôt et disposer des permissions Contents, Pull Requests et Issues en écriture.
+Release Please maintient la Release PR, `package.json`, `package-lock.json`, `.release-please-manifest.json` et `CHANGELOG.md`. Il ne s’exécute qu’après un `pilot-build` réussi sur un push de `main`. Après fusion de la Release PR et nouveau passage vert sur `main`, il crée un tag `vX.Y.Z` et une GitHub Release non publique. Le workflow de diffusion exige que le SHA tagué possède le check `CI required` réussi et émis par GitHub Actions, puis la publie comme `latest` seulement après validation exacte des artefacts macOS et Windows et de leurs checksums. Windows est construit sans signature tant que `ENABLE_WINDOWS_SIGNING` n’est pas exactement `true`; cette variable sélectionne ensuite la branche Azure signée sans changer le jeu d’artefacts. Le secret d’organisation `RELEASE_PLEASE_TOKEN` doit être autorisé uniquement pour ce dépôt et disposer des permissions Contents, Pull Requests et Issues en écriture.
 
 Le secret `APPLE_API_KEY` accepte le contenu brut du fichier `.p8` ou sa version encodée en base64. `MAC_CSC_LINK` contient le certificat `.p12` encodé en base64 ; les mots de passe et identifiants ne sont jamais stockés dans le dépôt.
 
@@ -96,34 +96,36 @@ npm run checksums:release
 npm run verify:checksums
 ```
 
-Le job `release-signed` refuse de produire une version de diffusion si le certificat est absent. Ses actions tierces sont épinglées par SHA, le tag doit correspondre exactement à la version de `package.json`, pointer sur l’historique de `main` et avoir déjà franchi `CI required`. Les tests fonctionnels et audits ne sont donc pas repoussés après la création du tag. Le bundle contenu dans le DMG est monté, vérifié puis réellement lancé avant publication. Le ZIP et `latest-mac.yml` sont publiés avec le DMG pour permettre l’auto-mise à jour.
+Le job macOS de `release-signed` refuse de produire une version de diffusion si le certificat est absent. Ses actions tierces sont épinglées par SHA, le tag doit correspondre exactement à la version de `package.json`, pointer sur l’historique de `main` et avoir déjà franchi `CI required`. Les tests fonctionnels et audits ne sont donc pas repoussés après la création du tag. Le bundle contenu dans le DMG est monté, vérifié puis réellement lancé avant publication. Le ZIP et `latest-mac.yml` sont publiés avec le DMG pour permettre l’auto-mise à jour.
 
-Les secrets de signature doivent vivre uniquement dans l’environnement GitHub `signed-release`, sans reviewer obligatoire et avec sa politique de déploiement limitée aux tags `v*`. La fusion manuelle de la Release PR est le seul geste humain : le tag, la release non publique, la signature, la notarisation, les contrôles, l’upload des artefacts puis la publication comme `latest` s’enchaînent ensuite automatiquement. Le dépôt doit être public seulement après un scan de secrets de tout son historique ; `main` et les tags `v*` restent protégés. Les certificats ne doivent pas être provisionnés tant que ces règles sont en place.
+Les secrets de signature doivent vivre uniquement dans l’environnement GitHub `signed-release`, sans reviewer obligatoire et avec sa politique de déploiement limitée aux tags `v*`. Le job Windows non signé n’utilise pas cet environnement et ne reçoit aucun secret Azure. La fusion manuelle de la Release PR est le seul geste humain : le tag, la release non publique, les builds plateforme, les contrôles, l’upload des artefacts puis la publication comme `latest` s’enchaînent ensuite automatiquement. Le dépôt doit être public seulement après un scan de secrets de tout son historique ; `main` et les tags `v*` restent protégés. Les certificats ne doivent pas être provisionnés tant que ces règles sont en place.
 
 Sur un dossier synchronisé par iCloud/FileProvider, macOS peut réattacher des attributs étendus au bundle et invalider une vérification locale stricte. Construire et vérifier la version de diffusion sur le disque temporaire du runner CI ou dans un dossier local non synchronisé, puis vérifier également l’application réellement contenue dans le DMG. Ce phénomène ne doit jamais être contourné en relâchant les contrôles de signature.
 
 ## Windows
 
-La publication Windows est temporairement désactivée avec la variable GitHub `ENABLE_WINDOWS_RELEASE=false`. Voir [WINDOWS_RELEASE_TODO.md](./WINDOWS_RELEASE_TODO.md) pour le blocage Azure et la procédure de réactivation. Une release déjà publiée en mode macOS uniquement reste immuable : Windows doit être activé avant le tag d’une version SemVer supérieure.
+À partir de la première version postérieure à `v0.10.0`, chaque release contient Windows. Tant que `ENABLE_WINDOWS_SIGNING` est absente ou différente de `true`, le runner Windows produit l’installateur x64 non signé, exige le statut Authenticode `NotSigned`, vérifie ses fuses et le lance avant de l’attacher à la release. Voir [WINDOWS_RELEASE_TODO.md](./WINDOWS_RELEASE_TODO.md) pour le blocage Azure et la procédure d’activation de la signature. La release `v0.10.0` reste immuable et limitée à macOS.
 
 Le build x64 et l’installateur doivent être produits sur une machine Windows ou par le job CI Windows.
 
 ```powershell
 npm ci
-npm run dist:win:signed
+npm run dist:win
 npm run verify:packaged-fuses
-Get-AuthenticodeSignature "release\vibedeck-setup-0.2.0.exe"
+Get-AuthenticodeSignature "release\vibedeck-setup-X.Y.Z.exe"
 npm run checksums:release
 npm run verify:checksums
 ```
 
 Vérifier installation, premier lancement, installation d’une version supérieure, désinstallation et absence de données résiduelles non documentées. Tester au moins Windows 11 x64 sur un poste géré AFP.
 
-La variable d’environnement GitHub `WIN_PUBLISHER_NAME` doit contenir exactement le nom juridique validé par Azure Artifact Signing. Le job Windows s’authentifie avec une application Entra limitée au rôle `Artifact Signing Certificate Profile Signer`, puis electron-builder signe l’application et l’installateur avec le profil public configuré. L’installateur, sa blockmap et `latest.yml` sont attachés à la même release que les artefacts macOS. Le job final valide l’ensemble avant de marquer la release comme `latest`.
+L’installateur, sa blockmap et `latest.yml` sont toujours attachés à la même release que les artefacts macOS. Le job final exige cet ensemble, recalcule les checksums et garde la release en brouillon si l’un des deux builds Windows échoue ou si les deux branches sont dans le même état.
+
+Après validation Azure, la variable d’environnement GitHub `WIN_PUBLISHER_NAME` doit contenir exactement le nom juridique validé par Azure Artifact Signing et `ENABLE_WINDOWS_SIGNING` doit valoir `true`. Le job Windows signé s’authentifie alors avec une application Entra limitée au rôle `Artifact Signing Certificate Profile Signer`, puis electron-builder signe l’application et l’installateur avec le profil public configuré. La vérification Authenticode exige `Valid` avant publication.
 
 ## Mise à jour automatique
 
-À partir de la version 0.3.0, l’application installée vérifie le canal stable public au démarrage puis toutes les six heures. Une nouvelle version est téléchargée en arrière-plan, mais son installation reste une action explicite « Redémarrer ». Avant de lancer l’installeur, le main process annule les rafraîchissements, attend les mutations actives, ferme les vues web puis SQLite. La version 0.2.0 ne contient pas ce mécanisme et doit donc être remplacée une dernière fois manuellement.
+À partir de la version 0.3.0, l’application installée vérifie le canal stable public au démarrage puis toutes les six heures. Une nouvelle version est téléchargée en arrière-plan, mais son installation reste une action explicite « Redémarrer ». Avant de lancer l’installeur, le main process annule les rafraîchissements, attend les mutations actives, ferme les vues web puis SQLite. Tant que la signature Azure n’est pas activée, Windows utilise volontairement `latest.yml` et les sommes publiées sans preuve Authenticode de l’éditeur. La version 0.2.0 ne contient pas ce mécanisme et doit donc être remplacée une dernière fois manuellement.
 
 Une release publiée est immuable. En cas de défaut, publier une version SemVer supérieure ; ne jamais remplacer un installateur ou un fichier `latest*.yml` existant. Un workflow manuel peut reprendre une release associée à un tag existant, mais refuse de remplacer un artefact déjà attaché.
 
@@ -142,6 +144,6 @@ Avant le premier shift :
 - configuration du desk installable en moins d’une minute ;
 - domaines contactés par cette configuration relus et acceptés dans l’aperçu d’import ;
 - export du diagnostic validé sur un cas sain et un cas en erreur ;
-- application signée sur la plateforme distribuée.
+- application macOS signée et notarisée ; installateur Windows explicitement `NotSigned` jusqu’à l’activation Azure documentée.
 
 Pendant le pilote, consigner chaque jour : durée d’usage, sources en erreur, signaux utiles, éléments manqués et maintien éventuel des anciens onglets Chrome.
