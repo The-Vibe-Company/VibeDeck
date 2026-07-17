@@ -1,0 +1,59 @@
+site/downloads.js
+  s_153b5c56d1f5be::t_20cff5af276bc1 16,177
+  s_153b5c56d1f5be::t_9555c0cd4db63d 1-15,17-176,178-224
+  s_3d711cb7f4319a::t_c51adc558cf6aa 225-298
+site/README.md
+  s_153b5c56d1f5be::t_9555c0cd4db63d 3
+site/index.html
+  s_153b5c56d1f5be::t_9555c0cd4db63d 29-30,34,36,212-214,216,233
+scripts/verify-release-config.mjs
+  s_153b5c56d1f5be::t_9555c0cd4db63d 50,694-712
+  s_f5770da73f46cd::t_472901d214b370 713-716
+package.json
+  s_153b5c56d1f5be::t_9555c0cd4db63d 22
+site/downloads.test.mjs
+  s_153b5c56d1f5be::t_20cff5af276bc1 92,140
+  s_153b5c56d1f5be::t_9555c0cd4db63d 1-91,93-139,141-162
+  s_153b5c56d1f5be::t_2ab00fe30ea567 163-165
+  s_b1cfec40248133::t_7bb2d4c192132f 166-262
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "5a5ff4febd4618209deb4fcc5b8c8b6ebf8d252c",
+  "prompts": {},
+  "sessions": {
+    "s_153b5c56d1f5be": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6ffe-39ec-7892-be61-ce49b7a2e33f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    },
+    "s_3d711cb7f4319a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f7001-77d8-7ff1-b621-6afe2dcafe1d",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    },
+    "s_b1cfec40248133": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f7018-6579-7402-928e-88604aa5b7db",
+        "model": "unknown"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    },
+    "s_f5770da73f46cd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6f77-824c-7a20-b437-950aa1575650",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
