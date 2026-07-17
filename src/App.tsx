@@ -968,7 +968,9 @@ export default function App() {
         activeElement.id !== target.rowId &&
         !activeElement.matches(".dashboard-panel");
     };
-    if (!document.hasFocus() || shouldPreserveCurrentFocus()) {
+    // Le focus DOM interne n’active pas la fenêtre native : on peut donc
+    // restaurer la ligne même quand le pilote (ou VibeDeck) reste en arrière-plan.
+    if (shouldPreserveCurrentFocus()) {
       if (readerReturnFocusRef.current === target) {
         readerReturnFocusRef.current = null;
         readerOpenPointerPositionRef.current = null;
