@@ -1,0 +1,42 @@
+src/App.tsx
+  s_4bc577046b3948::t_5b5ccfe8bfa72d 205-211,561-562,969-972,978,1493,1754,2006-2013,2015-2017,2019-2025,2852,3230,3240-3245,3256-3261,3463
+  s_4bc577046b3948::t_65b4eae9907adb 2026,3156,3229,3237-3238
+  s_4bc577046b3948::t_f051c3a15c9803 1750-1753,1755
+  s_4bc577046b3948::t_d2f6169daeeb49 960-967,975,979-981,3735
+  s_4bc577046b3948::t_09d767cf460595 2014,2018
+  s_4bc577046b3948::t_448320b921807f 955,957-958
+  s_4bc577046b3948::t_4b8b4499bbe724 951-952,956,968,976-977,982
+  s_4bc577046b3948::t_81e2cbed5f5d9f 3231-3236
+  s_b0ff9c66f583cd::t_37e2ec09189e65 959
+scripts/test-pilot-ui.mjs
+  s_4bc577046b3948::t_65b4eae9907adb 2672-2673
+  s_4bc577046b3948::t_dbdece1573d6bc 3260-3261
+  s_4bc577046b3948::t_09d767cf460595 2663
+  s_4bc577046b3948::t_fb368f30b664ef 2650-2654
+  s_4bc577046b3948::t_8f43c50fc2164e 2659-2662
+  s_4bc577046b3948::t_9b3e53b7d64871 2655-2658,2664-2671,2675-2676
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "887bfd7b43902d4ce2e982e2d0ab7e7f1c30a9b7",
+  "prompts": {},
+  "sessions": {
+    "s_4bc577046b3948": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6ea2-2812-7951-8153-6317b88fded7",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    },
+    "s_b0ff9c66f583cd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6f1d-1b2d-7202-aa7d-14776dcd3680",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
