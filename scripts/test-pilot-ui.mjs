@@ -2880,6 +2880,40 @@ try {
     readerPointerOverrideNextId,
   );
 
+  await page.keyboard.press("Enter");
+  await page.locator(".link-reader").waitFor({ state: "visible" });
+  await electronApp.evaluate(async ({ webContents }, articlePrefix) => {
+    let reader;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      reader = webContents
+        .getAllWebContents()
+        .find((contents) => contents.getURL().startsWith(articlePrefix));
+      if (reader) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    if (!reader) throw new Error("Le lecteur avant Nouveau est introuvable.");
+    reader.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
+    reader.sendInputEvent({ type: "keyUp", keyCode: "Escape" });
+  }, `${origin}/articles/`);
+  await page.locator(".link-reader").waitFor({ state: "detached" });
+  await page.getByRole("button", { name: "Nouveau panel", exact: true }).click();
+  const readerReturnDraft = page.locator('.split-layout__leaf[data-panel-id^="draft:"]');
+  await readerReturnDraft.waitFor({ state: "visible" });
+  const readerReturnDraftFocus = readerReturnDraft.locator("[data-autofocus]").first();
+  await waitForDomFocus(
+    page,
+    readerReturnDraftFocus,
+    "un clic global sur Nouveau doit primer sur la restauration du lecteur",
+  );
+  await page.waitForTimeout(1_100);
+  assert.equal(
+    await readerReturnDraftFocus.evaluate((control) => document.activeElement === control),
+    true,
+    "Les reprises bornées du lecteur ne doivent pas voler le focus du constructeur Nouveau.",
+  );
+  await readerReturnDraft.getByLabel("Fermer le panel", { exact: true }).click();
+  await readerReturnDraft.waitFor({ state: "detached" });
+
   const compactPanelWindow = await electronApp.browserWindow(page);
   await compactPanelWindow.evaluate(
     (window, size) => window.setSize(size.width, size.height),

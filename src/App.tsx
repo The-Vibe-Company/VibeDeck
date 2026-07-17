@@ -971,6 +971,17 @@ export default function App() {
   }, [linkPreview, readerSurfacePresent]);
 
   useEffect(() => {
+    const cancelReaderReturnForPointerDown = () => {
+      readerReturnFocusRef.current = null;
+      readerOpenPointerPositionRef.current = null;
+    };
+    document.addEventListener("pointerdown", cancelReaderReturnForPointerDown, true);
+    return () => {
+      document.removeEventListener("pointerdown", cancelReaderReturnForPointerDown, true);
+    };
+  }, []);
+
+  useEffect(() => {
     const timer = window.setInterval(() => setClock(new Date()), 15_000);
     return () => window.clearInterval(timer);
   }, []);
