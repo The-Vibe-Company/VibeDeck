@@ -3,6 +3,13 @@ import { mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Worker } from "node:worker_threads";
+import {
+  adoptLegacySemanticModel,
+  removeSemanticModelPaths,
+  replaceSemanticModel,
+  semanticModelBytes,
+  validSemanticModelFile,
+} from "./semantic-model-storage.mjs";
 
 export const SEMANTIC_MODEL_ID = "Xenova/multilingual-e5-small";
 export const SEMANTIC_MODEL_REVISION = "761b726dd34fb83930e26aab4e9ac3899aa1fa78";
@@ -200,19 +207,39 @@ function workerRequest(worker, action, payload, transferList = []) {
 }
 
 export class SemanticSearchService {
-  constructor({ rootPath, getDocuments, getItems, download, testMode = false }) {
+  constructor({
+    rootPath,
+    modelPath = path.join(rootPath, "model"),
+    legacyModelPaths = [],
+    getDocuments,
+    getItems,
+    download,
+    testMode = false,
+    modelFiles = MODEL_FILES,
+    workerFactory = () => new Worker(new URL("./semantic-search-worker.mjs", import.meta.url)),
+    removeRootPath = (candidate) => rm(candidate, { force: true, recursive: true }),
+    removeModelPaths = removeSemanticModelPaths,
+  }) {
     this.rootPath = rootPath;
-    this.modelPath = path.join(rootPath, "model");
+    this.modelPath = modelPath;
+    this.legacyModelPaths = legacyModelPaths;
     this.indexPath = path.join(rootPath, "index.sqlite3");
     this.getDocuments = getDocuments;
     this.getItems = getItems;
     this.download = download;
     this.testMode = testMode;
+    this.modelFiles = modelFiles;
+    this.workerFactory = workerFactory;
+    this.removeRootPath = removeRootPath;
+    this.removeModelPaths = removeModelPaths;
     this.status = { phase: "not-installed", progress: 0, message: null, bytes: 0 };
     this.listeners = new Set();
     this.worker = null;
     this.initialization = null;
     this.preparation = null;
+    this.removal = null;
+    this.syncTask = null;
+    this.syncPending = false;
     this.cancelled = false;
     this.downloadController = null;
     this.activeOperations = new Set();
@@ -231,6 +258,9 @@ export class SemanticSearchService {
   }
 
   initialize() {
+    if (this.stopping) {
+      return Promise.reject(new Error("La recherche locale est en cours de fermeture ou de suppression."));
+    }
     if (this.initialization) return this.initialization;
     this.initialization = this.#track(this.#initialize()).finally(() => {
       this.initialization = null;
@@ -244,7 +274,7 @@ export class SemanticSearchService {
       return this.getStatus();
     }
     await mkdir(this.rootPath, { recursive: true });
-    const installed = await this.#modelIsInstalled();
+    const installed = await this.#adoptLegacyModel();
     if (!installed || this.stopping) return this.getStatus();
     try {
       this.#openIndex();
@@ -258,14 +288,25 @@ export class SemanticSearchService {
   }
 
   async prepare() {
+    if (this.stopping) {
+      throw new Error("La recherche locale est en cours de fermeture ou de suppression.");
+    }
     if (this.initialization) await this.initialization;
+    if (this.stopping) {
+      throw new Error("La recherche locale est en cours de fermeture ou de suppression.");
+    }
     if (this.testMode) {
       this.#setStatus({ phase: "ready", progress: 1, message: null, bytes: 0 });
       return this.getStatus();
     }
     if (this.preparation) return this.preparation;
     this.cancelled = false;
-    this.preparation = this.#track(this.#prepare()).finally(() => { this.preparation = null; });
+    this.preparation = this.#track(this.#prepare()).finally(() => {
+      this.preparation = null;
+      if (this.syncPending && !this.stopping && this.status.phase === "ready") {
+        void this.sync().catch(() => {});
+      }
+    });
     return this.preparation;
   }
 
@@ -276,11 +317,12 @@ export class SemanticSearchService {
 
   async #prepare() {
     try {
-      if (!(await this.#modelIsInstalled())) await this.#downloadModel();
+      await mkdir(this.rootPath, { recursive: true });
+      if (!(await this.#adoptLegacyModel())) await this.#downloadModel();
       if (this.cancelled) throw new Error("Téléchargement de la recherche locale annulé.");
       this.#openIndex();
       await this.#startWorker();
-      await this.sync({ initial: true });
+      await this.#sync({ initial: true });
       if (this.cancelled || this.stopping) throw new Error("Indexation annulée.");
       this.#setStatus({ phase: "ready", progress: 1, message: null, bytes: await this.#usedBytes() });
       return this.getStatus();
@@ -297,44 +339,45 @@ export class SemanticSearchService {
 
   async #downloadModel() {
     this.downloadController = new AbortController();
-    await mkdir(this.modelPath, { recursive: true });
+    const preparedModelPath = `${this.modelPath}.downloading`;
+    await rm(preparedModelPath, { force: true, recursive: true });
     let completed = 0;
-    const total = MODEL_FILES.reduce((sum, entry) => sum + entry.size, 0);
+    const total = this.modelFiles.reduce((sum, entry) => sum + entry.size, 0);
     this.#setStatus({ phase: "downloading", progress: 0, message: null });
-    for (const entry of MODEL_FILES) {
-      if (this.cancelled) throw new Error("Téléchargement de la recherche locale annulé.");
-      const destination = path.join(this.modelPath, entry.file);
-      await mkdir(path.dirname(destination), { recursive: true });
-      if (await this.#validFile(destination, entry)) { completed += entry.size; continue; }
-      const part = `${destination}.part`;
-      await rm(part, { force: true });
-      const url = `https://huggingface.co/${SEMANTIC_MODEL_ID}/resolve/${SEMANTIC_MODEL_REVISION}/${entry.file}`;
-      await this.download(url, part, {
-        expectedBytes: entry.size,
-        expectedSha256: entry.sha256,
-        cancelled: () => this.cancelled,
-        signal: this.downloadController.signal,
-      });
-      if (!(await this.#validFile(part, entry))) {
-        throw new Error("La vérification du modèle a échoué.");
+    try {
+      for (const entry of this.modelFiles) {
+        if (this.cancelled) throw new Error("Téléchargement de la recherche locale annulé.");
+        const destination = path.join(preparedModelPath, entry.file);
+        await mkdir(path.dirname(destination), { recursive: true });
+        const part = `${destination}.part-${process.pid}-${randomUUID()}`;
+        await rm(part, { force: true });
+        const url = `https://huggingface.co/${SEMANTIC_MODEL_ID}/resolve/${SEMANTIC_MODEL_REVISION}/${entry.file}`;
+        await this.download(url, part, {
+          expectedBytes: entry.size,
+          expectedSha256: entry.sha256,
+          cancelled: () => this.cancelled,
+          signal: this.downloadController.signal,
+        });
+        if (!(await this.#validFile(part, entry))) {
+          throw new Error("La vérification du modèle a échoué.");
+        }
+        await rename(part, destination);
+        await rm(part, { force: true });
+        completed += entry.size;
+        this.#setStatus({ phase: "downloading", progress: completed / total, bytes: completed });
       }
-      await rm(destination, { force: true });
-      await rename(part, destination);
-      completed += entry.size;
-      this.#setStatus({ phase: "downloading", progress: completed / total, bytes: completed });
+      await replaceSemanticModel({
+        modelPath: this.modelPath,
+        preparedModelPath,
+        modelFiles: this.modelFiles,
+      });
+    } finally {
+      await rm(preparedModelPath, { force: true, recursive: true });
     }
     this.downloadController = null;
   }
 
-  async #validFile(file, entry) {
-    try {
-      if ((await stat(file)).size !== entry.size) return false;
-      const digest = createHash("sha256");
-      const { createReadStream } = await import("node:fs");
-      await new Promise((resolve, reject) => createReadStream(file).on("data", (chunk) => digest.update(chunk)).on("end", resolve).on("error", reject));
-      return digest.digest("hex") === entry.sha256;
-    } catch { return false; }
-  }
+  async #validFile(file, entry) { return validSemanticModelFile(file, entry); }
 
   #openIndex() {
     if (this.database) return;
@@ -357,7 +400,7 @@ export class SemanticSearchService {
 
   async #startWorker() {
     if (this.worker) return;
-    const worker = new Worker(new URL("./semantic-search-worker.mjs", import.meta.url));
+    const worker = this.workerFactory();
     this.worker = worker;
     worker.once("exit", (code) => {
       if (code !== 0 && !this.stopping) {
@@ -377,8 +420,28 @@ export class SemanticSearchService {
     );
   }
 
-  sync(options = {}) {
-    return this.#track(this.#sync(options));
+  sync() {
+    if (this.testMode || this.stopping) return Promise.resolve();
+    this.syncPending = true;
+    if (this.preparation) {
+      return this.preparation.then(() => undefined, () => undefined);
+    }
+    if (this.syncTask) return this.syncTask;
+    const task = this.#track(this.#drainSyncs()).finally(() => {
+      this.syncTask = null;
+      if (this.syncPending && !this.stopping && !this.preparation) {
+        void this.sync().catch(() => {});
+      }
+    });
+    this.syncTask = task;
+    return task;
+  }
+
+  async #drainSyncs() {
+    while (this.syncPending && !this.stopping && !this.preparation) {
+      this.syncPending = false;
+      await this.#sync();
+    }
   }
 
   async #sync({ initial = false } = {}) {
@@ -386,8 +449,7 @@ export class SemanticSearchService {
     if (
       !this.database ||
       !this.worker ||
-      this.status.phase === "not-installed" ||
-      (!initial && this.status.phase === "error")
+      (!initial && !["ready", "updating"].includes(this.status.phase))
     ) return;
     const documents = this.getDocuments();
     const current = new Map(this.database.prepare("SELECT item_id, source_id, content_hash FROM documents").all().map((row) => [`${row.source_id}\u0000${row.item_id}`, row]));
@@ -507,36 +569,85 @@ export class SemanticSearchService {
     return this.#track(this.hybridSearchQueue.enqueue({ normalized, sourceIds, lexical }));
   }
 
-  async removeData() {
+  removeData() {
+    if (this.removal) return this.removal;
     this.cancelled = true;
     if (this.testMode) {
       this.#setStatus({ phase: "not-installed", progress: 0, message: null, bytes: 0 });
-      return;
+      return Promise.resolve();
     }
     this.stopping = true;
+    this.syncPending = false;
     this.downloadController?.abort();
     this.hybridSearchQueue.close(new Error("La recherche locale a été supprimée."));
-    const worker = this.worker;
-    this.worker = null;
-    await worker?.terminate();
-    await Promise.allSettled([...this.activeOperations]);
-    this.database?.close();
-    this.database = null;
-    this.hybridSearchQueue = new LatestTaskQueue((payload) => this.#runHybridSearch(payload));
-    await rm(this.rootPath, { force: true, recursive: true });
-    this.downloadController = null;
-    this.cancelled = false;
-    this.stopping = false;
-    this.#setStatus({ phase: "not-installed", progress: 0, message: null, bytes: 0 });
+    this.removal = this.#removeData().finally(() => {
+      this.removal = null;
+    });
+    return this.removal;
+  }
+
+  async #removeData() {
+    try {
+      const worker = this.worker;
+      this.worker = null;
+      await worker?.terminate();
+      await Promise.allSettled([...this.activeOperations]);
+      const lateWorker = this.worker;
+      this.worker = null;
+      await lateWorker?.terminate();
+      this.database?.close();
+      this.database = null;
+      this.hybridSearchQueue = new LatestTaskQueue((payload) => this.#runHybridSearch(payload));
+      const removalErrors = [];
+      try {
+        await this.removeRootPath(this.rootPath);
+      } catch (error) {
+        removalErrors.push(error);
+      }
+      try {
+        await this.removeModelPaths([this.modelPath, ...this.legacyModelPaths]);
+      } catch (error) {
+        removalErrors.push(error);
+      }
+      if (removalErrors.length > 0) {
+        throw new AggregateError(removalErrors, "Les données de recherche locale n’ont pas pu être entièrement supprimées.");
+      }
+      this.#setStatus({ phase: "not-installed", progress: 0, message: null, bytes: 0 });
+    } catch (error) {
+      this.#setStatus({
+        phase: "error",
+        progress: 0,
+        message: "Les données de recherche locale n’ont pas pu être entièrement supprimées.",
+        bytes: await this.#usedBytes(),
+      });
+      throw error;
+    } finally {
+      this.downloadController = null;
+      this.cancelled = false;
+      this.stopping = false;
+    }
   }
 
   async #resetIndex() { this.database?.close(); this.database = null; await rm(this.indexPath, { force: true }); await rm(`${this.indexPath}-wal`, { force: true }); await rm(`${this.indexPath}-shm`, { force: true }); }
-  async #modelIsInstalled() { for (const entry of MODEL_FILES) if (!(await this.#validFile(path.join(this.modelPath, entry.file), entry))) return false; return true; }
-  async #usedBytes() { let bytes = 0; for (const file of [this.indexPath, `${this.indexPath}-wal`, `${this.indexPath}-shm`]) { try { bytes += (await stat(file)).size; } catch {} } for (const entry of MODEL_FILES) { try { bytes += (await stat(path.join(this.modelPath, entry.file))).size; } catch {} } return bytes; }
+  async #adoptLegacyModel() {
+    return adoptLegacySemanticModel({
+      modelPath: this.modelPath,
+      legacyModelPaths: this.legacyModelPaths,
+      modelFiles: this.modelFiles,
+    });
+  }
+  async #usedBytes() {
+    let bytes = await semanticModelBytes(this.modelPath, this.modelFiles);
+    for (const file of [this.indexPath, `${this.indexPath}-wal`, `${this.indexPath}-shm`]) {
+      try { bytes += (await stat(file)).size; } catch {}
+    }
+    return bytes;
+  }
   async close() {
     this.cancelled = true;
     if (this.testMode) return;
     this.stopping = true;
+    this.syncPending = false;
     this.downloadController?.abort();
     this.hybridSearchQueue.close(new Error("La recherche locale est fermée."));
     const worker = this.worker;
