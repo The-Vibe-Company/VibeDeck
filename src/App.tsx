@@ -2923,7 +2923,28 @@ function AdaptiveActionMenu({ actions }: { actions: PanelMenuAction[] }) {
         lastSecondaryFocusRef.current = null;
       }
     };
+    const restoreFocusFromHiddenSecondary = (event: FocusEvent) => {
+      const target = event.target;
+      if (
+        !(target instanceof HTMLElement) ||
+        !panel.contains(target) ||
+        !target.closest(".panel-action--secondary")
+      ) {
+        return;
+      }
+      window.requestAnimationFrame(() => {
+        const compact = panel.clientWidth <= PANEL_OVERFLOW_BREAKPOINT;
+        const style = window.getComputedStyle(target);
+        const hidden = target.getClientRects().length === 0 ||
+          style.display === "none" ||
+          style.visibility === "hidden";
+        if (compact && hidden) {
+          trigger.focus({ preventScroll: true });
+        }
+      });
+    };
     document.addEventListener("focusin", rememberFocus, true);
+    document.addEventListener("focusout", restoreFocusFromHiddenSecondary, true);
     document.addEventListener("pointerdown", clearRememberedFocus, true);
     const observer = new ResizeObserver(([entry]) => {
       const compact = (entry?.contentRect.width ?? panel.getBoundingClientRect().width) <=
@@ -2958,6 +2979,7 @@ function AdaptiveActionMenu({ actions }: { actions: PanelMenuAction[] }) {
     return () => {
       observer.disconnect();
       document.removeEventListener("focusin", rememberFocus, true);
+      document.removeEventListener("focusout", restoreFocusFromHiddenSecondary, true);
       document.removeEventListener("pointerdown", clearRememberedFocus, true);
     };
   }, []);
