@@ -1662,7 +1662,13 @@ try {
 
   const readerSourceRow = page.locator(".article-row").first();
   const readerSourceId = await readerSourceRow.getAttribute("id");
+  await page.evaluate(() => window.vibedeck.focusDashboard());
   await readerSourceRow.focus();
+  await waitForDomFocus(
+    page,
+    readerSourceRow,
+    "la ligne à ouvrir doit posséder le focus DOM après les scénarios de vues natives",
+  );
   const readerDecisionStartedAt = performance.now();
   await page.keyboard.press("Enter");
   const compactReader = page.locator(".link-reader");
