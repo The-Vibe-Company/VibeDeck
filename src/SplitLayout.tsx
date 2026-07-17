@@ -27,7 +27,6 @@ const PANEL_DRAG_MIME = "application/x-vibedeck-panel";
 export interface SplitLayoutProps {
   layout: LayoutNode | null;
   renderPanel: (panelId: string) => ReactNode;
-  maximizedPanelId?: string | null;
   onRatioChange: (splitId: string, ratio: number) => void;
   onSwapPanels: (firstPanelId: string, secondPanelId: string) => void;
   onInteractionChange: (active: boolean) => void;
@@ -411,7 +410,6 @@ const FILL_STYLE: CSSProperties = {
 export default function SplitLayout({
   layout,
   renderPanel,
-  maximizedPanelId = null,
   onRatioChange,
   onSwapPanels,
   onInteractionChange,
@@ -456,13 +454,9 @@ export default function SplitLayout({
 
   const makeHandleProps = useCallback<DragHandleFactory>(
     (panelId) => ({
-      draggable: !maximizedPanelId,
+      draggable: true,
       "data-split-panel-drag-handle": panelId,
       onDragStart: (event) => {
-        if (maximizedPanelId) {
-          event.preventDefault();
-          return;
-        }
         event.stopPropagation();
         event.dataTransfer.effectAllowed = "move";
         event.dataTransfer.setData(PANEL_DRAG_MIME, panelId);
@@ -471,34 +465,29 @@ export default function SplitLayout({
       },
       onDragEnd: finishPanelDrag,
     }),
-    [beginInteraction, finishPanelDrag, maximizedPanelId],
+    [beginInteraction, finishPanelDrag],
   );
 
-  const visibleLayout =
-    maximizedPanelId && findPanel(layout, maximizedPanelId)
-      ? ({ type: "panel", panelId: maximizedPanelId } satisfies LayoutNode)
-      : layout;
-  const rootStyle: CSSProperties = visibleLayout
+  const rootStyle: CSSProperties = layout
     ? {
         ...FILL_STYLE,
-        minWidth: minimumBranchSpan(visibleLayout, "row"),
-        minHeight: minimumBranchSpan(visibleLayout, "column"),
+        minWidth: minimumBranchSpan(layout, "row"),
+        minHeight: minimumBranchSpan(layout, "column"),
       }
     : FILL_STYLE;
 
   return (
     <DragHandleContext.Provider value={makeHandleProps}>
       <div
-        className={`split-layout${visibleLayout ? "" : " split-layout--empty"}${
+        className={`split-layout${layout ? "" : " split-layout--empty"}${
           isInteracting ? " split-layout--interacting" : ""
         }`}
         data-interacting={isInteracting || undefined}
-        data-maximized-panel-id={maximizedPanelId ?? undefined}
         style={rootStyle}
       >
-        {visibleLayout && (
+        {layout && (
           <LayoutBranch
-            node={visibleLayout}
+            node={layout}
             renderPanel={renderPanel}
             dragState={dragState}
             onDropTargetChange={(targetPanelId) =>

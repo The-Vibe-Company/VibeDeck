@@ -65,6 +65,8 @@ contextBridge.exposeInMainWorld("vibedeck", {
     ipcRenderer.invoke("web-session:clear-data", { scope: "all" }).then(() => undefined),
   startWebPreview: (previewId, url) =>
     ipcRenderer.invoke("web-preview:start", previewId, url),
+  startXPreview: (previewId, url) =>
+    ipcRenderer.invoke("x-preview:start", previewId, url),
   commitWebPreview: (previewId, name, placement) =>
     ipcRenderer.invoke("web-preview:commit", previewId, name, placement),
   cancelWebPreview: (previewId) =>

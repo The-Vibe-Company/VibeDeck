@@ -1,19 +1,21 @@
 import {
+  AtSign,
   ArrowLeft,
   ArrowRight,
   ArrowUpRight,
   Check,
   ChevronDown,
   Columns2,
+  Database,
   Download,
   Ellipsis,
   ExternalLink,
   Globe2,
+  HardDrive,
   Home,
+  LifeBuoy,
   ListFilter,
   LoaderCircle,
-  Maximize2,
-  Minimize2,
   Plus,
   RefreshCw,
   Rows2,
@@ -92,6 +94,8 @@ import type {
   WebPanelDescriptor,
   WebPanelRuntimeState,
 } from "./types";
+
+const MAX_PANEL_NAME_LENGTH = 80;
 
 const LINK_READER_ID = "reader:article";
 // Temps de survol immobile sur une ligne avant de la marquer « vue ».
@@ -224,11 +228,14 @@ type SemanticSearchRestoreState = {
 
 type PendingCustomSource = Required<Pick<SourceRequest, "url" | "connectorKind">>;
 
+type SettingsSection = "general" | "data" | "storage" | "support";
+type SettingsPendingOperation = "import" | "export" | "diagnostics" | "update" | null;
+
 type ModalState =
   | { kind: "configure-feed"; panelId: string }
   | { kind: "close-panel"; panelId: string }
   | { kind: "clear-dashboard" }
-  | { kind: "pilot-tools" };
+  | { kind: "settings-confirm"; action: "web-data" | "semantic-search" };
 
 function cleanError(error: unknown) {
   if (error instanceof Error) {
@@ -402,7 +409,6 @@ export default function App() {
   const [drafts, setDrafts] = useState<Record<string, DraftPanel>>({});
   const [webPreviewDrafts, setWebPreviewDrafts] = useState<Record<string, WebPreviewDraft>>({});
   const [focusedPanelId, setFocusedPanelId] = useState<string | null>(null);
-  const [maximizedPanelId, setMaximizedPanelId] = useState<string | null>(null);
   const [feedUi, setFeedUi] = useState<Record<string, FeedPanelUi>>({});
   const [webStates, setWebStates] = useState<Record<string, WebPanelRuntimeState>>({});
   const [linkPreview, setLinkPreview] = useState<LinkPreview | null>(null);
@@ -416,8 +422,12 @@ export default function App() {
   const [updateState, setUpdateState] = useState<UpdateState | null>(null);
   const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState<string | null>(null);
   const [updateInstallConfirmationOpen, setUpdateInstallConfirmationOpen] = useState(false);
-  const [restorePilotToolsUpdateFocus, setRestorePilotToolsUpdateFocus] = useState(false);
-  const [restoreGlobalToolsFocus, setRestoreGlobalToolsFocus] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
+  const [settingsPendingOperation, setSettingsPendingOperation] =
+    useState<SettingsPendingOperation>(null);
+  const [restoreSettingsUpdateFocus, setRestoreSettingsUpdateFocus] = useState(false);
+  const [restoreGlobalSettingsFocus, setRestoreGlobalSettingsFocus] = useState(false);
   const [semanticSearchStatus, setSemanticSearchStatus] = useState<SemanticSearchStatus>({
     phase: "not-installed", progress: 0, message: null, bytes: 0,
   });
@@ -435,6 +445,7 @@ export default function App() {
   const updateNoticeVisible = readyUpdateVersion !== null && !updateNoticeDeferred;
   const nativeWebSurfacesBlocked =
     Boolean(modal) ||
+    settingsOpen ||
     semanticSearchOpen ||
     updateInstallConfirmationOpen ||
     interactionActive ||
@@ -462,16 +473,15 @@ export default function App() {
 
   useEffect(() => {
     if (updateInstallConfirmationOpen && !readyUpdateVersion) {
-      if (!restorePilotToolsUpdateFocus) setRestoreGlobalToolsFocus(true);
+      if (!restoreSettingsUpdateFocus) setRestoreGlobalSettingsFocus(true);
       setUpdateInstallConfirmationOpen(false);
     }
-  }, [readyUpdateVersion, restorePilotToolsUpdateFocus, updateInstallConfirmationOpen]);
+  }, [readyUpdateVersion, restoreSettingsUpdateFocus, updateInstallConfirmationOpen]);
 
   const layoutRef = useRef<LayoutNode | null>(null);
-  const pilotToolsUpdateActionRef = useRef<HTMLButtonElement>(null);
-  const globalToolsButtonRef = useRef<HTMLButtonElement>(null);
-  const globalTextScaleGroupRef = useRef<HTMLDivElement>(null);
-  const globalTextScaleHadFocusRef = useRef(false);
+  const settingsUpdateActionRef = useRef<HTMLButtonElement>(null);
+  const globalSettingsButtonRef = useRef<HTMLButtonElement>(null);
+  const settingsBackButtonRef = useRef<HTMLButtonElement>(null);
   const linkPreviewRef = useRef<LinkPreview | null>(null);
   const feedUiRef = useRef<Record<string, FeedPanelUi>>({});
   const draftsRef = useRef<Record<string, DraftPanel>>({});
@@ -486,59 +496,26 @@ export default function App() {
 
   useEffect(() => {
     if (
-      !restorePilotToolsUpdateFocus ||
-      modal?.kind !== "pilot-tools" ||
+      !restoreSettingsUpdateFocus ||
+      !settingsOpen ||
       updateInstallConfirmationOpen
     ) return;
     const frame = window.requestAnimationFrame(() => {
-      pilotToolsUpdateActionRef.current?.focus({ preventScroll: true });
-      setRestorePilotToolsUpdateFocus(false);
+      (settingsUpdateActionRef.current ?? settingsBackButtonRef.current)?.focus({ preventScroll: true });
+      setRestoreSettingsUpdateFocus(false);
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [modal, restorePilotToolsUpdateFocus, updateInstallConfirmationOpen]);
+  }, [restoreSettingsUpdateFocus, settingsOpen, updateInstallConfirmationOpen]);
 
   useEffect(() => {
-    if (restoreGlobalToolsFocus && !updateInstallConfirmationOpen) {
+    if (restoreGlobalSettingsFocus && !updateInstallConfirmationOpen) {
       const frame = window.requestAnimationFrame(() => {
-        globalToolsButtonRef.current?.focus({ preventScroll: true });
-        setRestoreGlobalToolsFocus(false);
+        globalSettingsButtonRef.current?.focus({ preventScroll: true });
+        setRestoreGlobalSettingsFocus(false);
       });
       return () => window.cancelAnimationFrame(frame);
     }
-  }, [restoreGlobalToolsFocus, updateInstallConfirmationOpen]);
-
-  const preserveGlobalTextScaleFocus = useCallback(() => {
-    const group = globalTextScaleGroupRef.current;
-    if (!group || group.getClientRects().length > 0) return;
-    const active = document.activeElement;
-    if (
-      globalTextScaleHadFocusRef.current ||
-      (active instanceof HTMLElement && group.contains(active))
-    ) {
-      globalTextScaleHadFocusRef.current = false;
-      globalToolsButtonRef.current?.focus({ preventScroll: true });
-    }
-  }, []);
-
-  useEffect(() => {
-    preserveGlobalTextScaleFocus();
-  });
-
-  useEffect(() => {
-    const trackGlobalTextScaleFocus = (event: FocusEvent) => {
-      const group = globalTextScaleGroupRef.current;
-      globalTextScaleHadFocusRef.current = Boolean(
-        group && event.target instanceof Node && group.contains(event.target),
-      );
-    };
-    const preserveAfterResize = () => requestAnimationFrame(preserveGlobalTextScaleFocus);
-    document.addEventListener("focusin", trackGlobalTextScaleFocus, true);
-    window.addEventListener("resize", preserveAfterResize);
-    return () => {
-      document.removeEventListener("focusin", trackGlobalTextScaleFocus, true);
-      window.removeEventListener("resize", preserveAfterResize);
-    };
-  }, [preserveGlobalTextScaleFocus]);
+  }, [restoreGlobalSettingsFocus, updateInstallConfirmationOpen]);
   const pendingRatioLayoutRef = useRef<LayoutNode | null>(null);
   const saveChainRef = useRef<Promise<void>>(Promise.resolve());
   const toastTimerRef = useRef<number | null>(null);
@@ -616,7 +593,7 @@ export default function App() {
     if (focusDashboardPanelRoot(pendingPanelId, true)) {
       pendingKeyboardPanelFocusRef.current = null;
     }
-  }, [focusedPanelId, layout, maximizedPanelId]);
+  }, [focusedPanelId, layout]);
 
   const panelById = useMemo(
     () => new Map(state?.panels.map((panel) => [panel.id, panel]) ?? []),
@@ -637,6 +614,21 @@ export default function App() {
     if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
     toastTimerRef.current = window.setTimeout(() => setToast(null), 2_600);
   }, []);
+
+  const closeSettings = useCallback((restoreFocus = true) => {
+    if (settingsPendingOperation) return false;
+    setSettingsOpen(false);
+    if (restoreFocus) setRestoreGlobalSettingsFocus(true);
+    return true;
+  }, [settingsPendingOperation]);
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const frame = window.requestAnimationFrame(() => {
+      settingsBackButtonRef.current?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [settingsOpen]);
 
   // useLayoutEffect : appliquer l'échelle avant le premier paint pour éviter
   // un flash à 100 % quand une valeur est restaurée du stockage.
@@ -913,7 +905,6 @@ export default function App() {
       }
       setLinkPreview((current) => {
         if (current) return null;
-        setMaximizedPanelId(null);
         return current;
       });
     });
@@ -1088,7 +1079,7 @@ export default function App() {
       workspace?.removeEventListener("scroll", scheduleSync);
       window.removeEventListener("resize", scheduleSync);
     };
-  }, [layout, maximizedPanelId, syncWebPanels]);
+  }, [layout, syncWebPanels]);
 
   const persistLayout = useCallback(
     (nextLayout: LayoutNode | null) => {
@@ -1119,11 +1110,12 @@ export default function App() {
     targetPanelId: string | null = null,
     direction: "row" | "column" = "row",
   ) {
+    if (settingsOpen && settingsPendingOperation) return null;
+    setSettingsOpen(false);
     setLinkPreview(null);
     const existingDraftId = Object.keys(draftsRef.current)[0];
     if (existingDraftId) {
       setFocusedPanelId(existingDraftId);
-      setMaximizedPanelId(null);
       return existingDraftId;
     }
     const draftId = `draft:${crypto.randomUUID()}`;
@@ -1169,7 +1161,6 @@ export default function App() {
     setLayout(nextLayout);
     layoutRef.current = nextLayout;
     setFocusedPanelId(draftId);
-    setMaximizedPanelId(null);
     return draftId;
   }
 
@@ -1185,10 +1176,27 @@ export default function App() {
   }
 
   async function startWebPreview(draftId: string, url: string) {
+    return startPreview(draftId, url, (previewId, previewUrl) =>
+      window.vibedeck.startWebPreview(previewId, previewUrl));
+  }
+
+  async function startXPreview(draftId: string, url: string) {
+    return startPreview(draftId, url, (previewId, previewUrl) =>
+      window.vibedeck.startXPreview(previewId, previewUrl));
+  }
+
+  async function startPreview(
+    draftId: string,
+    url: string,
+    start: (
+      previewId: string,
+      previewUrl: string,
+    ) => Promise<{ previewId: string; normalizedUrl: string }>,
+  ) {
     if (!draftsRef.current[draftId]) {
       throw new Error("Ce nouveau panel n’est plus disponible.");
     }
-    const preview = await window.vibedeck.startWebPreview(draftId, url);
+    const preview = await start(draftId, url);
     if (!draftsRef.current[draftId]) {
       await window.vibedeck.cancelWebPreview(preview.previewId);
       throw new Error("Ce nouveau panel a été fermé pendant le chargement.");
@@ -1217,6 +1225,14 @@ export default function App() {
         return copy;
       });
     }
+  }
+
+  async function reloadWebPreview(draftId: string) {
+    const preview = webPreviewDraftsRef.current[draftId];
+    if (!preview) {
+      throw new Error("Cet aperçu web n’est plus disponible.");
+    }
+    await window.vibedeck.reloadWebPanel(preview.previewId);
   }
 
   async function startCompetitorTemplate() {
@@ -1391,7 +1407,6 @@ export default function App() {
       const nextState = await window.vibedeck.deletePanel(panelId);
       applyServerState(nextState, true);
       setModal(null);
-      setMaximizedPanelId((current) => (current === panelId ? null : current));
       setFocusedPanelId(layoutPanelIds(nextState.dashboard.layout)[0] ?? null);
       showToast("Panel fermé");
     } catch (error) {
@@ -1413,7 +1428,6 @@ export default function App() {
       setDrafts({});
       setModal(null);
       setFocusedPanelId(null);
-      setMaximizedPanelId(null);
       setLinkPreview(null);
       showToast("Dashboard vidé");
     } catch (error) {
@@ -1647,6 +1661,8 @@ export default function App() {
   }
 
   function openSemanticSearch(scope: SemanticSearchScope, nativeOrigin = false) {
+    if (settingsOpen && settingsPendingOperation) return;
+    setSettingsOpen(false);
     captureSemanticSearchOrigin();
     semanticSearchNativeOriginRef.current = nativeOrigin;
     setSemanticSearchScope(scope);
@@ -1726,11 +1742,13 @@ export default function App() {
           closeSemanticSearchPalette();
         }
         else if (isTypingTarget(event.target)) return;
+        else if (!modal && settingsOpen) {
+          closeSettings();
+        }
         else if (!modal && linkPreview) setLinkPreview(null);
         else if (Object.values(feedUi).some(({ searchItemIds }) => searchItemIds !== null)) {
           clearSemanticSearchFilter();
         }
-        else if (!modal && maximizedPanelId) setMaximizedPanelId(null);
         return;
       }
       if (modal) return;
@@ -1744,6 +1762,7 @@ export default function App() {
         beginDraft();
         return;
       }
+      if (settingsOpen) return;
       // event.code pour le zéro : sur AZERTY la touche 0 non shiftée produit
       // event.key === "à" ; !altKey pour laisser passer AltGr (ctrl+alt) ;
       // "Insert" exclu car Numpad0 sans NumLock = Ctrl+Insert (copie).
@@ -1809,7 +1828,6 @@ export default function App() {
             const nextPanelId = panelIds[nextIndex];
             pendingKeyboardPanelFocusRef.current = nextPanelId;
             setFocusedPanelId(nextPanelId);
-            if (maximizedPanelId) setMaximizedPanelId(nextPanelId);
             if (focusDashboardPanelRoot(nextPanelId, true)) {
               pendingKeyboardPanelFocusRef.current = null;
             }
@@ -1957,6 +1975,8 @@ export default function App() {
           onFocus={() => setFocusedPanelId(panelId)}
           onClose={() => closeDraft(panelId)}
           onStartWebPreview={(url) => startWebPreview(panelId, url)}
+          onStartXPreview={(url) => startXPreview(panelId, url)}
+          onReloadWebPreview={() => reloadWebPreview(panelId)}
           onCancelWebPreview={() => cancelWebPreview(panelId)}
           onComplete={(input, catalogIds, customSources) =>
             completeDraft(panelId, input, catalogIds, customSources)
@@ -1968,12 +1988,9 @@ export default function App() {
     if (!panel) return <MissingPanel panelId={panelId} />;
     const common = {
       focused: focusedPanelId === panel.id,
-      maximized: maximizedPanelId === panel.id,
       actionsDisabled: Object.keys(drafts).length > 0,
       onFocus: () => setFocusedPanelId(panel.id),
       onSplit: (direction: "row" | "column") => beginDraft(panel.id, direction),
-      onMaximize: () =>
-        setMaximizedPanelId((current) => (current === panel.id ? null : panel.id)),
       onClose: () => setModal({ kind: "close-panel", panelId: panel.id }),
       onRename: (name: string) => renamePanel(panel.id, name),
       onMove: (offset: -1 | 1, identity: PanelFocusIdentity) =>
@@ -2060,7 +2077,10 @@ export default function App() {
         <button
           type="button"
           className="quiet-button global-search"
-          disabled={!state.panels.some((panel) => panel.kind === "feed")}
+          disabled={
+            !state.panels.some((panel) => panel.kind === "feed") ||
+            Boolean(settingsPendingOperation)
+          }
           aria-label="Rechercher"
           title="Rechercher"
           onClick={() => {
@@ -2069,42 +2089,6 @@ export default function App() {
         >
           <Search size={13} /> <span className="global-action-label">Rechercher</span>
         </button>
-        <div
-          ref={globalTextScaleGroupRef}
-          className="text-scale-group"
-          role="group"
-          aria-label="Taille du texte des fils"
-        >
-          <button
-            type="button"
-            className="quiet-button text-scale-button"
-            aria-disabled={feedTextScale <= FEED_TEXT_SCALE_MIN || undefined}
-            onClick={() => adjustFeedTextScale(-1)}
-            aria-label="Réduire le texte des fils"
-            title={`Réduire la taille par défaut du texte des fils (${isMac ? "⌘" : "Ctrl"} −)`}
-          >
-            A−
-          </button>
-          <button
-            type="button"
-            className="quiet-button text-scale-reset"
-            onClick={() => adjustFeedTextScale(0)}
-            aria-label="Réinitialiser la taille du texte des fils"
-            title={`Taille par défaut du texte des fils : ${Math.round(feedTextScale * 100)} % — cliquer pour revenir à 100 % (${isMac ? "⌘" : "Ctrl"} 0). Chaque fil peut la surcharger via A−/A+ dans son en-tête.`}
-          >
-            {Math.round(feedTextScale * 100)} %
-          </button>
-          <button
-            type="button"
-            className="quiet-button text-scale-button"
-            aria-disabled={feedTextScale >= FEED_TEXT_SCALE_MAX || undefined}
-            onClick={() => adjustFeedTextScale(1)}
-            aria-label="Agrandir le texte des fils"
-            title={`Agrandir la taille par défaut du texte des fils (${isMac ? "⌘" : "Ctrl"} +)`}
-          >
-            A+
-          </button>
-        </div>
         {linkPreview && (
           <button
             type="button"
@@ -2114,15 +2098,6 @@ export default function App() {
             }}
           >
             Retour au fil <kbd>Échap</kbd>
-          </button>
-        )}
-        {!linkPreview && maximizedPanelId && (
-          <button
-            type="button"
-            className="restore-pill"
-            onClick={() => setMaximizedPanelId(null)}
-          >
-            Panel agrandi · restaurer <kbd>Échap</kbd>
           </button>
         )}
         {updateNoticeVisible && (
@@ -2139,32 +2114,29 @@ export default function App() {
           </button>
         )}
         <button
-          ref={globalToolsButtonRef}
+          ref={globalSettingsButtonRef}
           type="button"
-          className="quiet-button global-tools"
+          className={`quiet-button global-settings${settingsOpen ? " is-active" : ""}`}
           aria-label={updateNoticeDeferred
-            ? `Outils — mise à jour ${readyUpdateVersion} prête`
-            : "Outils"}
-          title="Outils"
-          onClick={() => setModal({ kind: "pilot-tools" })}
+            ? `Réglages — mise à jour ${readyUpdateVersion} prête`
+            : "Réglages"}
+          aria-pressed={settingsOpen}
+          title="Réglages"
+          disabled={Boolean(settingsPendingOperation)}
+          onClick={() => {
+            if (settingsOpen) closeSettings();
+            else setSettingsOpen(true);
+          }}
         >
-          <SlidersHorizontal size={13} /> <span className="global-action-label">Outils</span>
-          {updateNoticeDeferred && <span className="tools-update-signal" aria-hidden="true" />}
+          <SlidersHorizontal size={13} /> <span className="global-action-label">Réglages</span>
+          {updateNoticeDeferred && <span className="settings-update-signal" aria-hidden="true" />}
         </button>
-        {state.panels.length > 0 && Object.keys(drafts).length === 0 && (
-          <button
-            type="button"
-            className="quiet-button global-clear"
-            onClick={() => setModal({ kind: "clear-dashboard" })}
-          >
-            Vider
-          </button>
-        )}
         <button
           type="button"
           className="primary-button global-add"
           aria-label="Nouveau panel"
           title="Nouveau panel"
+          disabled={Boolean(settingsPendingOperation)}
           onClick={() => beginDraft()}
         >
           <Plus size={14} /> <span className="global-action-label">Nouveau panel</span>
@@ -2172,10 +2144,10 @@ export default function App() {
       </header>
 
       <main
-        className="dashboard-stage"
+        className={`dashboard-stage${settingsOpen ? " dashboard-stage--settings-hidden" : ""}`}
         aria-label="Dashboard de veille"
-        aria-hidden={modal || semanticSearchOpen || updateInstallConfirmationOpen ? true : undefined}
-        inert={modal || semanticSearchOpen || updateInstallConfirmationOpen ? true : undefined}
+        aria-hidden={settingsOpen || modal || semanticSearchOpen || updateInstallConfirmationOpen ? true : undefined}
+        inert={settingsOpen || modal || semanticSearchOpen || updateInstallConfirmationOpen ? true : undefined}
       >
         <div
           className="dashboard-workspace"
@@ -2186,7 +2158,6 @@ export default function App() {
             <SplitLayout
               layout={layout}
               renderPanel={renderPanel}
-              maximizedPanelId={maximizedPanelId}
               onRatioChange={(splitId, ratio) => {
                 const next = updateSplitRatio(layoutRef.current, splitId, ratio);
                 setLayout(next);
@@ -2225,6 +2196,54 @@ export default function App() {
           />
         )}
       </main>
+
+      {settingsOpen && (
+        <SettingsPage
+          activeSection={settingsSection}
+          onSectionChange={setSettingsSection}
+          onClose={() => closeSettings()}
+          pending={settingsPendingOperation}
+          onPendingChange={setSettingsPendingOperation}
+          backButtonRef={settingsBackButtonRef}
+          updateState={updateState}
+          onUpdateState={setUpdateState}
+          onRequestRestart={() => {
+            setRestoreSettingsUpdateFocus(true);
+            setUpdateInstallConfirmationOpen(true);
+          }}
+          updateActionRef={settingsUpdateActionRef}
+          feedTextScale={feedTextScale}
+          onTextScale={adjustFeedTextScale}
+          hasPanels={state.panels.length > 0}
+          onClearDashboard={() => setModal({ kind: "clear-dashboard" })}
+          onRequestClearWebData={() =>
+            setModal({ kind: "settings-confirm", action: "web-data" })}
+          onRequestRemoveSemanticData={() =>
+            setModal({ kind: "settings-confirm", action: "semantic-search" })}
+          onImported={(nextState, backupCreated) => {
+            const destinationPanelId = layoutPanelIds(nextState.dashboard.layout)[0] ?? null;
+            applyServerState(nextState, true, true);
+            setSettingsPendingOperation(null);
+            setSettingsOpen(false);
+            setFocusedPanelId(destinationPanelId);
+            window.requestAnimationFrame(() => {
+              window.requestAnimationFrame(() => {
+                if (!destinationPanelId || !focusDashboardPanelRoot(destinationPanelId, true)) {
+                  globalSettingsButtonRef.current?.focus({ preventScroll: true });
+                }
+              });
+            });
+            showToast(
+              backupCreated
+                ? "Dashboard importé · sauvegarde précédente créée"
+                : "Dashboard importé",
+            );
+          }}
+          onToast={showToast}
+          semanticStatus={semanticSearchStatus}
+          blocked={Boolean(modal) || semanticSearchOpen || updateInstallConfirmationOpen}
+        />
+      )}
 
       {modal?.kind === "configure-feed" && (() => {
         const panel = panelById.get(modal.panelId);
@@ -2265,30 +2284,30 @@ export default function App() {
         />
       )}
 
-      {modal?.kind === "pilot-tools" && !updateInstallConfirmationOpen && (
-        <PilotToolsModal
-          updateState={updateState}
-          onUpdateState={setUpdateState}
-          onRequestRestart={() => {
-            setRestorePilotToolsUpdateFocus(true);
-            setUpdateInstallConfirmationOpen(true);
-          }}
-          updateActionRef={pilotToolsUpdateActionRef}
-          onClose={() => setModal(null)}
-          onImported={(nextState, backupCreated) => {
-            applyServerState(nextState, true, true);
-            setModal(null);
-            showToast(
-              backupCreated
-                ? "Dashboard importé · sauvegarde précédente créée"
-                : "Dashboard importé",
-            );
-          }}
-          onToast={showToast}
-          semanticStatus={semanticSearchStatus}
-          onRemoveSemanticData={async () => {
-            clearSemanticSearchFilter();
-            await window.vibedeck.removeSemanticSearchData();
+      {modal?.kind === "settings-confirm" && (
+        <ConfirmModal
+          title={modal.action === "web-data"
+            ? "Effacer les données des pages web ?"
+            : "Supprimer la recherche locale ?"}
+          body={modal.action === "web-data"
+            ? "Les cookies et le cache des pages intégrées seront effacés. Vous pourrez être déconnecté des sites actuellement ouverts."
+            : "Le modèle et l’index dérivé seront supprimés de ce poste. Les articles et la configuration du dashboard resteront intacts."}
+          confirmLabel={modal.action === "web-data" ? "Effacer les données" : "Supprimer la recherche"}
+          onCancel={() => setModal(null)}
+          onConfirm={async () => {
+            try {
+              if (modal.action === "web-data") {
+                await window.vibedeck.clearWebData();
+                showToast("Données des pages web effacées");
+              } else {
+                clearSemanticSearchFilter();
+                await window.vibedeck.removeSemanticSearchData();
+                showToast("Recherche locale supprimée");
+              }
+              setModal(null);
+            } catch (error) {
+              showToast(cleanError(error));
+            }
           }}
         />
       )}
@@ -2298,7 +2317,7 @@ export default function App() {
           version={readyUpdateVersion}
           onLater={() => {
             setDismissedUpdateVersion(readyUpdateVersion);
-            if (!restorePilotToolsUpdateFocus) setRestoreGlobalToolsFocus(true);
+            if (!restoreSettingsUpdateFocus) setRestoreGlobalSettingsFocus(true);
             setUpdateInstallConfirmationOpen(false);
           }}
           onClose={() => setUpdateInstallConfirmationOpen(false)}
@@ -2792,14 +2811,12 @@ interface PanelFrameProps {
   kind: "FIL" | "PAGE WEB" | "NOUVEAU";
   name: string;
   focused: boolean;
-  maximized?: boolean;
   actionsDisabled?: boolean;
   canRename?: boolean;
   onFocus: () => void;
   onRename?: (name: string) => void | Promise<void>;
   onSplit?: (direction: "row" | "column") => void;
   onMove?: (offset: -1 | 1, identity: PanelFocusIdentity) => void;
-  onMaximize?: () => void;
   onClose: () => void;
   closeDisabled?: boolean;
   headerContext?: React.ReactNode;
@@ -2903,7 +2920,28 @@ function AdaptiveActionMenu({ actions }: { actions: PanelMenuAction[] }) {
         lastSecondaryFocusRef.current = null;
       }
     };
+    const restoreFocusFromHiddenSecondary = (event: FocusEvent) => {
+      const target = event.target;
+      if (
+        !(target instanceof HTMLElement) ||
+        !panel.contains(target) ||
+        !target.closest(".panel-action--secondary")
+      ) {
+        return;
+      }
+      window.requestAnimationFrame(() => {
+        const compact = panel.clientWidth <= PANEL_OVERFLOW_BREAKPOINT;
+        const style = window.getComputedStyle(target);
+        const hidden = target.getClientRects().length === 0 ||
+          style.display === "none" ||
+          style.visibility === "hidden";
+        if (compact && hidden) {
+          trigger.focus({ preventScroll: true });
+        }
+      });
+    };
     document.addEventListener("focusin", rememberFocus, true);
+    document.addEventListener("focusout", restoreFocusFromHiddenSecondary, true);
     document.addEventListener("pointerdown", clearRememberedFocus, true);
     const observer = new ResizeObserver(([entry]) => {
       const compact = (entry?.contentRect.width ?? panel.getBoundingClientRect().width) <=
@@ -2954,6 +2992,7 @@ function AdaptiveActionMenu({ actions }: { actions: PanelMenuAction[] }) {
     return () => {
       observer.disconnect();
       document.removeEventListener("focusin", rememberFocus, true);
+      document.removeEventListener("focusout", restoreFocusFromHiddenSecondary, true);
       document.removeEventListener("pointerdown", clearRememberedFocus, true);
     };
   }, []);
@@ -3121,14 +3160,12 @@ function PanelFrame({
   kind,
   name,
   focused,
-  maximized,
   actionsDisabled = false,
   canRename = true,
   onFocus,
   onRename,
   onSplit,
   onMove,
-  onMaximize,
   onClose,
   closeDisabled = false,
   headerContext,
@@ -3333,15 +3370,6 @@ function PanelFrame({
             </>
           )}
           <AdaptiveActionMenu actions={panelMenuActions} />
-          {onMaximize && (
-            <IconButton
-              label={maximized ? "Restaurer" : "Agrandir"}
-              disabled={actionsDisabled}
-              onClick={onMaximize}
-            >
-              {maximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
-            </IconButton>
-          )}
           <IconButton
             label="Fermer le panel"
             disabled={closeDisabled || actionsDisabled}
@@ -3402,12 +3430,10 @@ function IconButton({
 
 interface StandardPanelActions {
   focused: boolean;
-  maximized: boolean;
   actionsDisabled: boolean;
   onFocus: () => void;
   onSplit: (direction: "row" | "column") => void;
   onMove: (offset: -1 | 1, identity: PanelFocusIdentity) => void;
-  onMaximize: () => void;
   onClose: () => void;
   onRename: (name: string) => void | Promise<void>;
 }
@@ -4934,6 +4960,8 @@ function DraftPanelView({
   onFocus,
   onClose,
   onStartWebPreview,
+  onStartXPreview,
+  onReloadWebPreview,
   onCancelWebPreview,
   onComplete,
 }: {
@@ -4945,6 +4973,8 @@ function DraftPanelView({
   onFocus: () => void;
   onClose: () => void;
   onStartWebPreview: (url: string) => Promise<void>;
+  onStartXPreview: (url: string) => Promise<void>;
+  onReloadWebPreview: () => Promise<void>;
   onCancelWebPreview: () => Promise<void>;
   onComplete: (
     input: CreatePanelInput,
@@ -4953,7 +4983,10 @@ function DraftPanelView({
   ) => Promise<void>;
 }) {
   const contentRef = useRef<HTMLDivElement>(null);
-  const [step, setStep] = useState<"type" | "web" | "feed">("type");
+  const webUrlInputRef = useRef<HTMLInputElement>(null);
+  const xUrlInputRef = useRef<HTMLInputElement>(null);
+  const previewErrorFocusRef = useRef<"web" | "x" | null>(null);
+  const [step, setStep] = useState<"type" | "web" | "x" | "feed">("type");
   const [pending, setPending] = useState(false);
   const [previewPending, setPreviewPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -4966,6 +4999,18 @@ function DraftPanelView({
   const [sourceResolutionPending, setSourceResolutionPending] = useState(false);
   const busy = pending || previewPending || draft.pending;
   const feedBusy = busy || sourceResolutionPending;
+
+  function openUrlStep(nextStep: "web" | "x") {
+    setError(null);
+    setWebName("");
+    setWebUrl("");
+    setStep(nextStep);
+  }
+
+  function returnToTypeStep() {
+    setError(null);
+    setStep("type");
+  }
 
   useLayoutEffect(() => {
     if (draft.pending) return;
@@ -4980,6 +5025,17 @@ function DraftPanelView({
     return () => window.cancelAnimationFrame(frame);
   }, [draft.pending, step, webPreview?.previewId]);
 
+  useLayoutEffect(() => {
+    if (previewPending || webPreview || !error) return;
+    const focusTarget = previewErrorFocusRef.current;
+    previewErrorFocusRef.current = null;
+    if (focusTarget === "web") {
+      webUrlInputRef.current?.focus({ preventScroll: true });
+    } else if (focusTarget === "x") {
+      xUrlInputRef.current?.focus({ preventScroll: true });
+    }
+  }, [error, previewPending, webPreview]);
+
   async function previewWeb(name: string, url: string) {
     if (!url.trim() || busy) return;
     setWebName(name.trim());
@@ -4989,6 +5045,23 @@ function DraftPanelView({
     try {
       await onStartWebPreview(url.trim());
     } catch (caught) {
+      previewErrorFocusRef.current = "web";
+      setError(cleanError(caught));
+    } finally {
+      setPreviewPending(false);
+    }
+  }
+
+  async function previewX(name: string, url: string) {
+    if (!url.trim() || busy) return;
+    setWebName(name.trim());
+    setWebUrl(url.trim());
+    setPreviewPending(true);
+    setError(null);
+    try {
+      await onStartXPreview(url.trim());
+    } catch (caught) {
+      previewErrorFocusRef.current = "x";
       setError(cleanError(caught));
     } finally {
       setPreviewPending(false);
@@ -5002,7 +5075,10 @@ function DraftPanelView({
     try {
       await onComplete({
         kind: "web",
-        name: webName.trim() || webPreviewRuntime?.title.trim() || hostLabel(webPreview.normalizedUrl),
+        name: webName.trim() || (
+          webPreviewRuntime?.title.trim() ||
+          (step === "x" ? "X" : hostLabel(webPreview.normalizedUrl))
+        ).slice(0, MAX_PANEL_NAME_LENGTH),
         url: webPreview.normalizedUrl,
       });
     } catch (caught) {
@@ -5055,7 +5131,13 @@ function DraftPanelView({
         {draft.pending && (
           <div className="panel-empty" role="status">
             <LoaderCircle className="is-spinning" size={20} />
-            <strong>{step === "web" ? "Création de la page web…" : "Création du fil…"}</strong>
+            <strong>
+              {step === "web"
+                ? "Création de la page web…"
+                : step === "x"
+                  ? "Création du panel X…"
+                  : "Création du fil…"}
+            </strong>
             <span>La configuration est vérifiée et enregistrée localement.</span>
           </div>
         )}
@@ -5064,15 +5146,23 @@ function DraftPanelView({
             <span className="step-kicker">Nouveau panel</span>
             <h2>Que voulez-vous afficher ici ?</h2>
             <div className="panel-type-grid">
-              <button type="button" data-autofocus onClick={() => setStep("web")}>
+              <button type="button" data-autofocus onClick={() => openUrlStep("web")}>
                 <Globe2 size={21} />
                 <strong>Page web</strong>
                 <span>Un site ou une chaîne d’information affiché directement dans l’app.</span>
               </button>
-              <button type="button" onClick={() => setStep("feed")}>
+              <button type="button" onClick={() => {
+                setError(null);
+                setStep("feed");
+              }}>
                 <Rss size={21} />
                 <strong>Fil agrégé</strong>
                 <span>Plusieurs sources fusionnées dans un même fil chronologique.</span>
+              </button>
+              <button type="button" onClick={() => openUrlStep("x")}>
+                <AtSign size={21} />
+                <strong>X (Twitter)</strong>
+                <span>Votre accueil, une liste, un profil, une recherche ou un post.</span>
               </button>
             </div>
           </div>
@@ -5080,7 +5170,7 @@ function DraftPanelView({
 
         {!draft.pending && step === "web" && !webPreview && (
           <div className="draft-step">
-            <button type="button" className="back-button" onClick={() => setStep("type")}>
+            <button type="button" className="back-button" onClick={returnToTypeStep}>
               ‹ Type de panel
             </button>
             <h2>Page web</h2>
@@ -5121,7 +5211,10 @@ function DraftPanelView({
               <div>
                 <input
                   id={`${draft.id}-web-url`}
+                  ref={webUrlInputRef}
                   aria-label="URL de la page web"
+                  aria-invalid={Boolean(error)}
+                  aria-describedby={error ? `${draft.id}-web-error` : undefined}
                   value={webUrl}
                   placeholder="bfmtv.com/en-direct"
                   inputMode="url"
@@ -5132,11 +5225,71 @@ function DraftPanelView({
                 </button>
               </div>
             </form>
-            {error && <p className="form-error" role="alert">{error}</p>}
+            {error && <p id={`${draft.id}-web-error`} className="form-error" role="alert">{error}</p>}
           </div>
         )}
 
-        {!draft.pending && step === "web" && webPreview && (
+        {!draft.pending && step === "x" && !webPreview && (
+          <div className="draft-step">
+            <button type="button" className="back-button" onClick={returnToTypeStep}>
+              ‹ Type de panel
+            </button>
+            <h2>X (Twitter)</h2>
+            <p className="draft-step__intro">
+              Connectez-vous dans l’aperçu. La session restera disponible pour tous vos panels X.
+            </p>
+            <span className="form-section-label">Connexion</span>
+            <div className="preset-list">
+              <button
+                type="button"
+                data-autofocus
+                onClick={() => void previewX("X", "https://x.com/home")}
+              >
+                <span>
+                  <strong>Ouvrir X et me connecter</strong>
+                  <small>https://x.com/home</small>
+                </span>
+              </button>
+            </div>
+            <span className="form-section-label">Ou ouvrir directement une adresse X</span>
+            <form
+              className="inline-url-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void previewX(webName, webUrl);
+              }}
+            >
+              <label htmlFor={`${draft.id}-x-name`}>Nom du panel</label>
+              <input
+                id={`${draft.id}-x-name`}
+                aria-label="Nom du panel X"
+                value={webName}
+                placeholder="Nom du panel (facultatif)"
+                onChange={(event) => setWebName(event.target.value)}
+              />
+              <label htmlFor={`${draft.id}-x-url`}>Adresse X</label>
+              <div>
+                <input
+                  id={`${draft.id}-x-url`}
+                  ref={xUrlInputRef}
+                  aria-label="Adresse X"
+                  aria-invalid={Boolean(error)}
+                  aria-describedby={error ? `${draft.id}-x-error` : undefined}
+                  value={webUrl}
+                  placeholder="https://x.com/i/lists/123456789"
+                  inputMode="url"
+                  onChange={(event) => setWebUrl(event.target.value)}
+                />
+                <button type="submit" className="primary-button" disabled={!webUrl.trim() || busy}>
+                  {previewPending && <LoaderCircle className="is-spinning" size={13} />} Prévisualiser
+                </button>
+              </div>
+            </form>
+            {error && <p id={`${draft.id}-x-error`} className="form-error" role="alert">{error}</p>}
+          </div>
+        )}
+
+        {!draft.pending && (step === "web" || step === "x") && webPreview && (
           <div className="draft-step web-preview-step">
             <div className="web-preview-step__heading" data-web-preview-controls={draft.id}>
               <button
@@ -5148,10 +5301,14 @@ function DraftPanelView({
               >
                 ‹ Modifier l’adresse
               </button>
-              <h2>{webPreviewRuntime?.title || webName || hostLabel(webPreview.normalizedUrl)}</h2>
+              <h2>
+                {webPreviewRuntime?.title || webName ||
+                  (step === "x" ? "X" : hostLabel(webPreview.normalizedUrl))}
+              </h2>
               <p>
-                Vérifiez le site et connectez-vous si nécessaire. Cookies et préférences resteront
-                disponibles pour les autres panels de ce domaine.
+                {step === "x"
+                  ? "Connectez-vous si nécessaire, puis actualisez X avant de créer le panel. La session restera partagée entre vos panels X."
+                  : "Vérifiez le site et connectez-vous si nécessaire. Cookies et préférences resteront disponibles pour les autres panels de ce domaine."}
               </p>
             </div>
             <div className="web-preview-frame">
@@ -5180,6 +5337,18 @@ function DraftPanelView({
             </div>
             {error && <p className="form-error" role="alert">{error}</p>}
             <div className="web-preview-step__footer" data-web-preview-controls={draft.id}>
+              {step === "x" && (
+                <button
+                  type="button"
+                  className="quiet-button"
+                  onClick={() => {
+                    setError(null);
+                    void onReloadWebPreview().catch((caught) => setError(cleanError(caught)));
+                  }}
+                >
+                  <RefreshCw size={13} /> Actualiser X
+                </button>
+              )}
               <button
                 type="button"
                 className="quiet-button"
@@ -5202,7 +5371,7 @@ function DraftPanelView({
 
         {!draft.pending && step === "feed" && (
           <form className="draft-step feed-builder" onSubmit={createFeed}>
-            <button type="button" className="back-button" onClick={() => setStep("type")}>
+            <button type="button" className="back-button" onClick={returnToTypeStep}>
               ‹ Type de panel
             </button>
             <h2>Fil agrégé</h2>
@@ -5578,222 +5747,414 @@ function updateStateAnnouncement(state: UpdateState | null) {
   }
 }
 
-function PilotToolsModal({
+function SettingsPage({
+  activeSection,
+  onSectionChange,
   updateState,
   onUpdateState,
   onRequestRestart,
   updateActionRef,
   onClose,
+  backButtonRef,
+  pending,
+  onPendingChange,
+  feedTextScale,
+  onTextScale,
+  hasPanels,
+  onClearDashboard,
+  onRequestClearWebData,
+  onRequestRemoveSemanticData,
   onImported,
   onToast,
   semanticStatus,
-  onRemoveSemanticData,
+  blocked,
 }: {
+  activeSection: SettingsSection;
+  onSectionChange: (section: SettingsSection) => void;
   updateState: UpdateState | null;
   onUpdateState: (state: UpdateState) => void;
   onRequestRestart: () => void;
   updateActionRef: RefObject<HTMLButtonElement | null>;
   onClose: () => void;
+  backButtonRef: RefObject<HTMLButtonElement | null>;
+  pending: SettingsPendingOperation;
+  onPendingChange: (pending: SettingsPendingOperation) => void;
+  feedTextScale: number;
+  onTextScale: (direction: -1 | 0 | 1) => void;
+  hasPanels: boolean;
+  onClearDashboard: () => void;
+  onRequestClearWebData: () => void;
+  onRequestRemoveSemanticData: () => void;
   onImported: (state: AppState, backupCreated: boolean) => void;
   onToast: (message: string) => void;
   semanticStatus: SemanticSearchStatus;
-  onRemoveSemanticData: () => Promise<void>;
+  blocked: boolean;
 }) {
-  const [pending, setPending] = useState<
-    "import" | "export" | "diagnostics" | "web" | "search" | "update" | "restart" | null
-  >(null);
   const [error, setError] = useState<string | null>(null);
-  const [confirmWebReset, setConfirmWebReset] = useState(false);
-  const [confirmSearchReset, setConfirmSearchReset] = useState(false);
+  const contentRef = useRef<HTMLElement>(null);
+
+  const sections: Array<{
+    id: SettingsSection;
+    label: string;
+    description: string;
+    icon: React.ReactNode;
+  }> = [
+    {
+      id: "general",
+      label: "Général",
+      description: "Apparence et mises à jour",
+      icon: <SlidersHorizontal size={15} />,
+    },
+    {
+      id: "data",
+      label: "Données",
+      description: "Importer, exporter et repartir à zéro",
+      icon: <Database size={15} />,
+    },
+    {
+      id: "storage",
+      label: "Stockage",
+      description: "Données web et recherche locale",
+      icon: <HardDrive size={15} />,
+    },
+    {
+      id: "support",
+      label: "Support",
+      description: "Diagnostic local et assistance",
+      icon: <LifeBuoy size={15} />,
+    },
+  ];
+  const activeSectionDetails = sections.find(({ id }) => id === activeSection) ?? sections[0];
+  const semanticStatusText = semanticStatus.phase === "not-installed"
+    ? "Non installée sur ce poste."
+    : `${semanticStatus.phase === "ready" ? "Prête" : semanticStatus.phase} · ${Math.round(semanticStatus.bytes / 1_000_000)} Mo utilisés.`;
+
+  useLayoutEffect(() => {
+    if (contentRef.current) contentRef.current.scrollTop = 0;
+  }, [activeSection]);
 
   async function run(
     kind: NonNullable<typeof pending>,
     operation: () => Promise<void>,
   ) {
     if (pending) return;
-    setPending(kind);
+    onPendingChange(kind);
     setError(null);
     try {
       await operation();
     } catch (caught) {
       setError(cleanError(caught));
     } finally {
-      setPending(null);
+      onPendingChange(null);
     }
   }
 
   return (
-    <Modal onDismiss={() => !pending && onClose()}>
-      <section
-        className="modal-card pilot-tools-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="pilot-tools-title"
-      >
-        <header>
-          <span id="pilot-tools-title">Outils du poste</span>
-          <button type="button" aria-label="Fermer" onClick={onClose} disabled={Boolean(pending)}>
-            <X size={16} />
+    <main
+      className="settings-stage"
+      aria-label="Réglages"
+      aria-hidden={blocked || undefined}
+      inert={blocked || undefined}
+    >
+      <aside className="settings-sidebar">
+        <div className="settings-sidebar__top">
+          <button
+            ref={backButtonRef}
+            type="button"
+            className="settings-back"
+            onClick={onClose}
+            disabled={Boolean(pending)}
+          >
+            <ArrowLeft size={15} />
+            <span>Retour au dashboard</span>
+            <kbd>Échap</kbd>
           </button>
-        </header>
-        <div className="modal-scroll pilot-tools-scroll">
-        <div className={`pilot-tools-update pilot-tools-update--${updateState?.status ?? "unknown"}`}>
-          <span>
-            <strong>VibeDeck {updateState?.currentVersion ?? ""}</strong>
-            {updateStateText(updateState)}
-            {updateState?.status === "downloading" && (
-              <progress
-                aria-label={`Téléchargement de la version ${updateState.availableVersion ?? "suivante"}`}
-                value={updateState.progressPercent ?? undefined}
-                max="100"
-              >
-                {updateState.progressPercent ?? ""}
-              </progress>
-            )}
-          </span>
-          {updateState?.status === "ready" ? (
+          <div className="settings-sidebar__title">
+            <strong>Réglages</strong>
+            <span>Préférences de ce poste</span>
+          </div>
+        </div>
+        <nav className="settings-nav" aria-label="Sections des réglages">
+          {sections.map((section) => (
             <button
-              ref={updateActionRef}
+              key={section.id}
               type="button"
-              className="primary-button"
-              disabled={Boolean(pending)}
-              onClick={onRequestRestart}
+              data-settings-section={section.id}
+              className={section.id === activeSection ? "is-active" : undefined}
+              aria-current={section.id === activeSection ? "page" : undefined}
+              onClick={() => onSectionChange(section.id)}
             >
-              Installer
+              <span aria-hidden="true">{section.icon}</span>
+              <strong>{section.label}</strong>
+              <small>{section.description}</small>
             </button>
-          ) : (
-            <button
-              type="button"
-              className="quiet-button"
-              disabled={
-                Boolean(pending) ||
-                !updateState ||
-                updateState.status === "disabled" ||
-                updateState.status === "checking" ||
-                updateState.status === "downloading"
-              }
-              onClick={() =>
-                void run("update", async () => {
-                  onUpdateState(await window.vibedeck.checkForUpdates());
-                })
-              }
-            >
-              {(pending === "update" || updateState?.status === "checking") && (
-                <LoaderCircle className="is-spinning" size={13} />
-              )}
-              Vérifier
-            </button>
+          ))}
+        </nav>
+        <div className="settings-sidebar__version">
+          VibeDeck {updateState?.currentVersion ?? ""}
+        </div>
+      </aside>
+
+      <section
+        ref={contentRef}
+        className="settings-content"
+        aria-labelledby="settings-page-title"
+      >
+        <div className="settings-content__inner">
+          <header className="settings-page-header">
+            <h1 id="settings-page-title">{activeSectionDetails.label}</h1>
+            <p>{activeSectionDetails.description}</p>
+          </header>
+
+          {error && <p className="settings-error" role="alert">{error}</p>}
+
+          {activeSection === "general" && (
+            <div className="settings-section">
+              <div className="settings-section__heading">
+                <h2>Lecture</h2>
+                <p>Ces préférences s’appliquent par défaut à tous les fils.</p>
+              </div>
+              <div className="settings-group">
+                <div className="settings-row">
+                  <span className="settings-row__copy">
+                    <strong>Taille du texte des fils</strong>
+                    <small>Chaque fil peut conserver sa propre taille depuis son en-tête.</small>
+                  </span>
+                  <div className="settings-scale-control" role="group" aria-label="Taille par défaut du texte des fils">
+                    <button
+                      type="button"
+                      aria-label="Réduire la taille par défaut du texte des fils"
+                      aria-disabled={feedTextScale <= FEED_TEXT_SCALE_MIN || undefined}
+                      onClick={() => {
+                        if (feedTextScale > FEED_TEXT_SCALE_MIN) onTextScale(-1);
+                      }}
+                    >
+                      A−
+                    </button>
+                    <button
+                      type="button"
+                      className="settings-scale-control__value"
+                      aria-label="Réinitialiser la taille par défaut du texte des fils"
+                      title="Revenir à 100 %"
+                      onClick={() => onTextScale(0)}
+                    >
+                      {Math.round(feedTextScale * 100)} %
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Agrandir la taille par défaut du texte des fils"
+                      aria-disabled={feedTextScale >= FEED_TEXT_SCALE_MAX || undefined}
+                      onClick={() => {
+                        if (feedTextScale < FEED_TEXT_SCALE_MAX) onTextScale(1);
+                      }}
+                    >
+                      A+
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="settings-section__heading settings-section__heading--spaced">
+                <h2>Mises à jour</h2>
+                <p>VibeDeck vérifie les versions stables sans interrompre la veille.</p>
+              </div>
+              <div className="settings-group">
+                <div className={`settings-row settings-row--update settings-row--${updateState?.status ?? "unknown"}`}>
+                  <span className="settings-row__copy">
+                    <strong>VibeDeck {updateState?.currentVersion ?? ""}</strong>
+                    <small>{updateStateText(updateState)}</small>
+                    {updateState?.status === "downloading" && (
+                      <progress
+                        aria-label={`Téléchargement de la version ${updateState.availableVersion ?? "suivante"}`}
+                        value={updateState.progressPercent ?? undefined}
+                        max="100"
+                      >
+                        {updateState.progressPercent ?? ""}
+                      </progress>
+                    )}
+                  </span>
+                  {updateState?.status === "ready" ? (
+                    <button
+                      ref={updateActionRef}
+                      type="button"
+                      className="primary-button"
+                      disabled={Boolean(pending)}
+                      onClick={onRequestRestart}
+                    >
+                      Installer
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="quiet-button"
+                      disabled={
+                        Boolean(pending) ||
+                        !updateState ||
+                        updateState.status === "disabled" ||
+                        updateState.status === "checking" ||
+                        updateState.status === "downloading"
+                      }
+                      onClick={() =>
+                        void run("update", async () => {
+                          onUpdateState(await window.vibedeck.checkForUpdates());
+                        })
+                      }
+                    >
+                      {(pending === "update" || updateState?.status === "checking") && (
+                        <LoaderCircle className="is-spinning" size={13} />
+                      )}
+                      Vérifier
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeSection === "data" && (
+            <div className="settings-section">
+              <div className="settings-section__heading">
+                <h2>Dashboard</h2>
+                <p>Transférez uniquement la configuration, jamais les articles ni les cookies.</p>
+              </div>
+              <div className="settings-group">
+                <div className="settings-row">
+                  <span className="settings-row__copy">
+                    <strong>Importer un dashboard</strong>
+                    <small>Prévisualiser puis remplacer ce poste, avec sauvegarde locale automatique.</small>
+                  </span>
+                  <button
+                    type="button"
+                    className="quiet-button"
+                    disabled={Boolean(pending)}
+                    onClick={() =>
+                      void run("import", async () => {
+                        const result = await window.vibedeck.importDashboard();
+                        if (result.state) onImported(result.state, Boolean(result.backupFilePath));
+                      })
+                    }
+                  >
+                    {pending === "import" && <LoaderCircle className="is-spinning" size={13} />}
+                    Importer
+                  </button>
+                </div>
+                <div className="settings-row">
+                  <span className="settings-row__copy">
+                    <strong>Exporter ce dashboard</strong>
+                    <small>Partager les panels et les sources, sans les articles en cache.</small>
+                  </span>
+                  <button
+                    type="button"
+                    className="quiet-button"
+                    disabled={Boolean(pending)}
+                    onClick={() =>
+                      void run("export", async () => {
+                        const result = await window.vibedeck.exportDashboard();
+                        if (!result.canceled) onToast("Dashboard exporté");
+                      })
+                    }
+                  >
+                    {pending === "export" && <LoaderCircle className="is-spinning" size={13} />}
+                    Exporter
+                  </button>
+                </div>
+              </div>
+
+              <div className="settings-section__heading settings-section__heading--spaced settings-section__heading--danger">
+                <h2>Zone sensible</h2>
+                <p>Cette action modifie la structure visible du poste.</p>
+              </div>
+              <div className="settings-group settings-group--danger">
+                <div className="settings-row">
+                  <span className="settings-row__copy">
+                    <strong>Vider le dashboard</strong>
+                    <small>Ferme tous les panels. Les sources et leur cache local sont conservés.</small>
+                  </span>
+                  <button
+                    type="button"
+                    className="danger-button"
+                    disabled={Boolean(pending) || !hasPanels}
+                    onClick={onClearDashboard}
+                  >
+                    Vider le dashboard
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeSection === "storage" && (
+            <div className="settings-section">
+              <div className="settings-section__heading">
+                <h2>Données locales</h2>
+                <p>Tout reste sur cet ordinateur et peut être supprimé indépendamment.</p>
+              </div>
+              <div className="settings-group">
+                <div className="settings-row">
+                  <span className="settings-row__copy">
+                    <strong>Pages web</strong>
+                    <small>Efface cookies et cache si une page intégrée ne fonctionne plus.</small>
+                  </span>
+                  <button
+                    type="button"
+                    className="danger-button"
+                    disabled={Boolean(pending)}
+                    onClick={onRequestClearWebData}
+                  >
+                    Effacer les données
+                  </button>
+                </div>
+                <div className="settings-row">
+                  <span className="settings-row__copy">
+                    <strong>Recherche locale</strong>
+                    <small>{semanticStatusText}</small>
+                  </span>
+                  <button
+                    type="button"
+                    className="danger-button"
+                    disabled={Boolean(pending) || semanticStatus.phase === "not-installed"}
+                    onClick={onRequestRemoveSemanticData}
+                  >
+                    Supprimer
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeSection === "support" && (
+            <div className="settings-section">
+              <div className="settings-section__heading">
+                <h2>Diagnostic</h2>
+                <p>Créez un rapport minimal pour faciliter une demande d’assistance.</p>
+              </div>
+              <div className="settings-group">
+                <div className="settings-row">
+                  <span className="settings-row__copy">
+                    <strong>Exporter un diagnostic</strong>
+                    <small>Rapport technique sans URL ni contenu d’article, prêt à transmettre au support.</small>
+                  </span>
+                  <button
+                    type="button"
+                    className="quiet-button"
+                    disabled={Boolean(pending)}
+                    onClick={() =>
+                      void run("diagnostics", async () => {
+                        const result = await window.vibedeck.exportDiagnostics();
+                        if (!result.canceled) onToast("Diagnostic exporté");
+                      })
+                    }
+                  >
+                    {pending === "diagnostics" && <LoaderCircle className="is-spinning" size={13} />}
+                    Exporter
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
         </div>
-        <div className="pilot-tools-list">
-          <button
-            type="button"
-            disabled={Boolean(pending)}
-            onClick={() =>
-              void run("import", async () => {
-                const result = await window.vibedeck.importDashboard();
-                if (result.state) onImported(result.state, Boolean(result.backupFilePath));
-              })
-            }
-          >
-            <strong>Importer un dashboard</strong>
-            <span>Prévisualiser puis remplacer ce poste, avec sauvegarde locale automatique.</span>
-            {pending === "import" && <LoaderCircle className="is-spinning" size={14} />}
-          </button>
-          <button
-            type="button"
-            disabled={Boolean(pending)}
-            onClick={() =>
-              void run("export", async () => {
-                const result = await window.vibedeck.exportDashboard();
-                if (!result.canceled) onToast("Dashboard exporté");
-              })
-            }
-          >
-            <strong>Exporter ce dashboard</strong>
-            <span>Partager les panels et les sources, sans les articles en cache.</span>
-            {pending === "export" && <LoaderCircle className="is-spinning" size={14} />}
-          </button>
-          <button
-            type="button"
-            disabled={Boolean(pending)}
-            onClick={() =>
-              void run("diagnostics", async () => {
-                const result = await window.vibedeck.exportDiagnostics();
-                if (!result.canceled) onToast("Diagnostic exporté");
-              })
-            }
-          >
-            <strong>Exporter un diagnostic</strong>
-            <span>Rapport technique sans URL ni contenu d’article, prêt à transmettre au support.</span>
-            {pending === "diagnostics" && <LoaderCircle className="is-spinning" size={14} />}
-          </button>
-        </div>
-        <div className="pilot-tools-danger">
-          <span>
-            <strong>Pages web</strong>
-            {confirmWebReset
-              ? "Cette action déconnecte les pages intégrées. Confirmez pour continuer."
-              : "Efface cookies et cache si une page intégrée ne fonctionne plus."}
-          </span>
-          <button
-            type="button"
-            className="danger-button"
-            disabled={Boolean(pending)}
-            onClick={() => {
-              if (!confirmWebReset) {
-                setConfirmWebReset(true);
-                return;
-              }
-              void run("web", async () => {
-                await window.vibedeck.clearWebData();
-                setConfirmWebReset(false);
-                onToast("Données des pages web effacées");
-              });
-            }}
-          >
-            {pending === "web" && <LoaderCircle className="is-spinning" size={13} />}
-            {confirmWebReset ? "Confirmer" : "Réinitialiser"}
-          </button>
-        </div>
-        <div className="pilot-tools-danger">
-          <span>
-            <strong>Recherche locale</strong>
-            {confirmSearchReset
-              ? "Supprime le modèle et l’index dérivé, sans toucher aux articles. Confirmez pour continuer."
-              : semanticStatus.phase === "not-installed"
-                ? "Non installée."
-                : `${semanticStatus.phase === "ready" ? "Prête" : semanticStatus.phase} · ${Math.round(semanticStatus.bytes / 1_000_000)} Mo utilisés.`}
-          </span>
-          <button
-            type="button"
-            className="danger-button"
-            disabled={Boolean(pending) || semanticStatus.phase === "not-installed"}
-            onClick={() => {
-              if (!confirmSearchReset) {
-                setConfirmSearchReset(true);
-                return;
-              }
-              void run("search", async () => {
-                await onRemoveSemanticData();
-                setConfirmSearchReset(false);
-                onToast("Recherche locale supprimée");
-              });
-            }}
-          >
-            {pending === "search" && <LoaderCircle className="is-spinning" size={13} />}
-            {confirmSearchReset ? "Confirmer" : "Supprimer"}
-          </button>
-        </div>
-        {error && <p className="form-error" role="alert">{error}</p>}
-        </div>
-        <footer>
-          <button type="button" className="quiet-button" onClick={onClose} disabled={Boolean(pending)}>
-            Fermer
-          </button>
-        </footer>
       </section>
-    </Modal>
+    </main>
   );
 }
 

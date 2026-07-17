@@ -48,7 +48,7 @@ Une URL explicitement liée à un RSS de rubrique ou à un sitemap reste priorit
 
 Les rafraîchissements passent tous par la même file bornée : six téléchargements simultanés au maximum dans l’application, dont deux par domaine. Ajouter un grand pack de sources ne déclenche donc pas une rafale réseau incontrôlée, et deux demandes simultanées pour une même source mutualisent le téléchargement.
 
-Un dashboard peut disposer jusqu’à trois panels sur un même axe horizontal ou vertical. Si le panel ciblé est trop étroit, l’application choisit l’autre orientation ou demande de l’agrandir. Les séparateurs appliquent ensuite une taille minimale réelle de 256 × 176 px à chaque branche, y compris dans un layout imbriqué ou importé. Cette limite maintient les commandes, les états de lecture et les titres utilisables sur l’écran minimal du pilote.
+Un dashboard peut disposer jusqu’à trois panels sur un même axe horizontal ou vertical. Si le panel ciblé est trop étroit, l’application choisit l’autre orientation ou demande de le redimensionner. Les séparateurs appliquent ensuite une taille minimale réelle de 256 × 176 px à chaque branche, y compris dans un layout imbriqué ou importé. Cette limite maintient les commandes, les états de lecture et les titres utilisables sur l’écran minimal du pilote.
 
 ## Lancer l’application
 
@@ -68,11 +68,11 @@ Raccourcis principaux :
 - double-appui rapide sur `←` / `→` : passer au panel précédent ou suivant ;
 - `Alt + ←` / `Alt + →` : déplacer le panel à la position précédente ou suivante, sans glisser-déposer ;
 - `R` : actualiser le fil actif ;
-- `Échap` : fermer la recherche sans modifier le filtre actif, puis retirer ce filtre depuis le dashboard ; restaurer aussi un panel agrandi ou fermer une fenêtre de réglages.
+- `Échap` : fermer la recherche sans modifier le filtre actif, puis retirer ce filtre depuis le dashboard ; fermer aussi les réglages.
 
 Le simple déplacement de la souris au-dessus d’un panel lui donne le focus clavier, sauf lorsqu’un champ, un bouton ou une page web possède déjà le clavier ; dans ce cas, un clic explicite évite d’interrompre la saisie. Après la fermeture du lecteur intégré avec `Échap`, la navigation dans le fil reprend directement.
 
-Chaque en-tête de panel permet aussi de diviser l’espace verticalement ou horizontalement, d’agrandir le panel et de le déplacer par glisser-déposer. Les séparateurs se manipulent à la souris ou au clavier.
+Chaque en-tête de panel permet aussi de diviser l’espace verticalement ou horizontalement et de déplacer le panel par glisser-déposer. Les séparateurs se manipulent à la souris ou au clavier.
 
 ## Vérifier et construire
 
