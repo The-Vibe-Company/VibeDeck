@@ -974,7 +974,13 @@ export default function App() {
     const cancelReaderReturnForPointerDown = (event: PointerEvent) => {
       if (
         event.target instanceof Element &&
-        event.target.closest('.restore-pill, .link-reader [aria-label="Retour au fil"]')
+        (
+          event.target.closest(".restore-pill, .link-reader") ||
+          (
+            document.querySelector(".link-reader") &&
+            event.target.closest(".panel-action-menu")
+          )
+        )
       ) {
         return;
       }

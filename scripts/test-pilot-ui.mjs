@@ -1923,6 +1923,10 @@ try {
     performance.now() - readerDecisionStartedAt < 1_000,
     "La décision du lecteur doit rester sous une seconde.",
   );
+  await compactReader.getByRole("button", { name: "Ouvrir à l’extérieur" }).dispatchEvent(
+    "pointerdown",
+    { bubbles: true, pointerType: "mouse" },
+  );
   // Fenêtre cachée : le focus OS n'existe pas, isFocused() reste faux côté
   // main process. Le contrat de focus est prouvé après Échap par le retour de
   // document.activeElement sur la ligne du fil ; ici on attend seulement que
