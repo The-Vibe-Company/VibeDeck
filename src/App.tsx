@@ -1775,7 +1775,11 @@ export default function App() {
     function handleKeyDown(event: KeyboardEvent) {
       // Une action clavier explicite après la fermeture du lecteur prime sur
       // la restauration différée qui attend encore la destruction native.
-      if (!linkPreview && readerReturnFocusRef.current) {
+      if (
+        !linkPreview &&
+        readerReturnFocusRef.current &&
+        event.key !== "Escape"
+      ) {
         readerReturnFocusRef.current = null;
         readerOpenPointerPositionRef.current = null;
       }
