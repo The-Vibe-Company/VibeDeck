@@ -1,0 +1,42 @@
+src/App.tsx
+  s_b1cfec40248133::t_d663df8d0a5055 600,1079-1093,1109,1111-1112,2598-2608,4197,4224-4236,4289-4294,4298,4311-4316,4320,4325
+.release-please-manifest.json
+  s_b1cfec40248133::t_d663df8d0a5055 2
+scripts/test-pilot-ui.mjs
+  s_b1cfec40248133::t_823cf7c0d06cfd 3708-3709,3717
+  s_b1cfec40248133::t_d663df8d0a5055 204-220,1251-1298,2222-2256
+  s_b1cfec40248133::t_e8b42f5a5156a5 3702-3707
+  s_b1cfec40248133::t_98d4ee01133114 3710-3716,3718-3724
+package.json
+  s_b1cfec40248133::t_d663df8d0a5055 3,22
+site/downloads.test.mjs
+  s_b1cfec40248133::t_d663df8d0a5055 1-262
+site/index.html
+  s_b1cfec40248133::t_d663df8d0a5055 29-30,34,36,212-214,216,233
+CHANGELOG.md
+  s_b1cfec40248133::t_d663df8d0a5055 3-14
+scripts/verify-release-config.mjs
+  s_b1cfec40248133::t_d663df8d0a5055 50,694-716
+site/downloads.js
+  s_b1cfec40248133::t_d663df8d0a5055 1-298
+site/README.md
+  s_b1cfec40248133::t_d663df8d0a5055 3
+package-lock.json
+  s_b1cfec40248133::t_17aecd416149ef 3,9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "dbb43f6d315070aeea457b8f7a403227f4772da6",
+  "prompts": {},
+  "sessions": {
+    "s_b1cfec40248133": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f7018-6579-7402-928e-88604aa5b7db",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Stan Girard <19614572+StanGirard@users.noreply.github.com>"
+    }
+  }
+}
