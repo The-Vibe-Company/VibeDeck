@@ -1516,6 +1516,12 @@ try {
     };
     ipcMain.on("dashboard:focus", globalThis.__vibedeckPilotDashboardFocusListener);
   });
+  await waitForNativeWebView(
+    electronApp,
+    previewUrl,
+    true,
+    "la vue web native doit être prête avant le scénario de reprise",
+  );
   const nativeFocusProbe = await electronApp.evaluate(async ({ app, BrowserWindow }, expectedUrl) => {
     const window = BrowserWindow.getAllWindows()[0];
     if (!window) throw new Error("La fenêtre pilote est introuvable.");
