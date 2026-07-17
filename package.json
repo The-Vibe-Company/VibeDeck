@@ -1,6 +1,6 @@
 {
   "name": "vibedeck",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "private": true,
   "engines": {
     "node": ">=22.18.0"
@@ -19,7 +19,7 @@
     "dev:conductor": "node scripts/run-conductor.mjs",
     "start": "electron .",
     "build": "tsc --noEmit && vite build",
-    "test": "node --test electron/*.test.mjs && node scripts/test-large-feed.mjs",
+    "test": "node --test electron/*.test.mjs site/*.test.mjs && node scripts/test-large-feed.mjs",
     "test:publications": "node --test electron/publication-registry.test.mjs electron/article-reader.test.mjs",
     "test:conductor": "node scripts/test-conductor-run.mjs",
     "test:pilot-ui": "npm run build && node scripts/test-pilot-ui.mjs",

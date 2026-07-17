@@ -47,6 +47,7 @@ const license = readFileSync(path.join(root, "LICENSE"), "utf8");
 const viteConfig = readFileSync(path.join(root, "vite.config.ts"), "utf8");
 const indexHtml = readFileSync(path.join(root, "index.html"), "utf8");
 const siteLandingHtml = readFileSync(path.join(root, "site/index.html"), "utf8");
+const siteDownloadScript = readFileSync(path.join(root, "site/downloads.js"), "utf8");
 const afterSignHook = readFileSync(path.join(root, "scripts/after-sign.mjs"), "utf8");
 const windowsSigningScript = readFileSync(
   path.join(root, "scripts/build-windows-signed.mjs"),
@@ -690,9 +691,29 @@ assert.match(
   "Le site doit annoncer les deux plateformes prises en charge",
 );
 assert.equal(
-  (siteLandingHtml.match(/https:\/\/github\.com\/The-Vibe-Company\/VibeDeck\/releases\/latest/g) ?? []).length,
-  2,
-  "Les deux boutons plateforme doivent pointer vers la dernière release GitHub",
+  (siteLandingHtml.match(/data-download-platform="macos"/g) ?? []).length,
+  1,
+  "Le site doit proposer exactement un bouton macOS",
+);
+assert.equal(
+  (siteLandingHtml.match(/data-download-platform="windows"/g) ?? []).length,
+  1,
+  "Le site doit proposer exactement un bouton Windows",
+);
+assert.match(
+  siteLandingHtml,
+  /<script src="\.\/downloads\.js"><\/script>/,
+  "Le site doit charger le résolveur de téléchargements directs",
+);
+assert.doesNotMatch(
+  siteLandingHtml,
+  /VibeDeck\/releases\/latest/,
+  "Les boutons ne doivent jamais ouvrir la page de la dernière release GitHub",
+);
+assert.match(
+  siteDownloadScript,
+  /https:\/\/api\.github\.com\/repos\/The-Vibe-Company\/VibeDeck\/releases\/latest/,
+  "Le site doit résoudre la dernière release avec l’API GitHub publique",
 );
 
 console.log(`✓ Configuration de diffusion VibeDeck ${packageJson.version}`);
